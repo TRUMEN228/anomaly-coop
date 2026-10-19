@@ -67,7 +67,7 @@ namespace CoopLauncher
 
         public MainForm()
         {
-            Text = "Anomaly Co-op Launcher v1.0";
+            Text = "Anomaly Co-op Launcher v1.1";
             Font = new Font("Segoe UI", 9f);
             AutoScaleMode = AutoScaleMode.Dpi;
             AutoScaleDimensions = new SizeF(96, 96);
