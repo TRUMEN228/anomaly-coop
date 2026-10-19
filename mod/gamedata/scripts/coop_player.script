@@ -2,6 +2,8 @@
 	Anomaly Co-op: local player state and the partner's puppet.
 	The puppet is an AI-less stalker (stalker_azazel uses the actor profile) under script control:
 	it walks/runs to the partner's last reported position and is teleported when it falls behind.
+	It carries the partner's active weapon and fires it at the partner's aim point whenever the partner
+	shoots (counter in the state). Its bullets are harmless: the real damage arrives as "hit" events.
 --]]
 
 local PUPPET_SECTION = "stalker_azazel"
@@ -18,6 +20,12 @@ local last_level_note = nil
 local last_move_cmd = 0
 local last_target = nil
 local stuck_pos, stuck_since = nil, 0
+local shots = 0            -- local shot counter, sent in the state
+local fire_until = 0       -- puppet keeps firing until this time
+local last_remote_shots = nil
+local puppet_wpn_id, puppet_wpn_sec = nil, nil
+local firing = false
+local release_puppet_weapon  -- defined below
 
 function get_remote() return remote end
 function get_puppet_id() return puppet_id end
@@ -28,6 +36,18 @@ function is_puppet(obj_or_id)
 end
 
 ------------------------------------------------------------------ local state
+-- where the camera looks: the point the partner's puppet should shoot at
+function aim_point()
+	local dist = math.min(level.get_target_dist and level.get_target_dist() or 50, 150)
+	if dist <= 0.5 then dist = 50 end
+	local p = vector():set(device().cam_dir):mul(dist):add(device().cam_pos)
+	return string.format("%.2f:%.2f:%.2f", p.x, p.y, p.z)
+end
+
+local function actor_on_weapon_fired(obj, wpn)
+	if obj and obj:id() == AC_ID then shots = shots + 1 end
+end
+
 coop_main.add_state_provider("p", function()
 	local a = db.actor
 	if not a then return end
@@ -49,6 +69,8 @@ coop_main.add_state_provider("p", function()
 		a:get_visual_name() or "",
 		string.format("%.2f", a.health),
 		coop_main.my_name ~= "" and coop_main.my_name or a:character_name(),
+		shots,
+		aim_point(),
 	}
 end)
 
@@ -61,7 +83,16 @@ coop_main.on_state("p", function(t)
 		crouch = t[8] == "c", moving = tonumber(t[9]) or 0,
 		weapon = t[10], outfit = t[11], visual = t[12],
 		health = tonumber(t[13]) or 1, name = t[14] or "Partner",
+		shots = tonumber(t[15]) or 0,
 	}
+	local ax, ay, az = (t[16] or ""):match("^([^:]+):([^:]+):([^:]+)$")
+	if ax then r.aim = vector():set(tonumber(ax), tonumber(ay), tonumber(az)) end
+	if last_remote_shots and r.shots > last_remote_shots then
+		-- ~10 shots per second for automatic fire, keep firing a bit after the last one
+		if coop_main.debug and time_global() > fire_until then coop_main.log("partner burst start") end
+		fire_until = time_global() + 250
+	end
+	last_remote_shots = r.shots
 	if (not remote or remote.level ~= r.level) and r.level ~= last_level_note then
 		last_level_note = r.level
 		if r.level ~= level.name() then
@@ -83,18 +114,142 @@ coop_main.on_state("p", function(t)
 	remote_time = now
 end)
 
+------------------------------------------------------------------ puppet driven by the AI planner
+-- Script-mode object actions do not make a stalker shoot, so the puppet runs inside its own AI planner:
+-- one high-priority action follows the partner with state_mgr states and fires ("*_fire") when he fires.
+-- Keeping the weapon ready all the time makes the puppet open fire almost immediately.
+local EVA_PUPPET, ACT_PUPPET = 188421, 188421
+local planner_done = {}
+
+function puppet_planner_active(npc)
+	return is_puppet(npc) and planner_done[npc:id()] == true and remote ~= nil
+end
+
+class "evaluator_coop_puppet" (property_evaluator)
+function evaluator_coop_puppet:__init(npc, name) super(nil, name) end
+function evaluator_coop_puppet:evaluate()
+	return puppet_planner_active(self.object)
+end
+
+class "action_coop_puppet" (action_base)
+function action_coop_puppet:__init(npc, name) super(nil, name) end
+function action_coop_puppet:initialize()
+	action_base.initialize(self)
+	self.object:set_desired_position()
+	self.object:set_desired_direction()
+end
+function action_coop_puppet:execute()
+	action_base.execute(self)
+	-- runs inside the engine planner: an error here would crash the game, so never let one escape
+	local ok, err = pcall(self.step, self)
+	if not ok and time_global() > (self.err_at or 0) then
+		self.err_at = time_global() + 5000
+		coop_main.log("puppet action failed: " .. tostring(err))
+	end
+end
+function action_coop_puppet:step()
+	local npc, r = self.object, remote
+	if not r then return end
+	local now = time_global()
+	local pos = npc:position()
+	local dist = pos:distance_to(r.pos)
+
+	-- far behind (partner teleported) or stuck (no path): put the puppet next to the partner
+	if not self.stuck_pos or self.stuck_pos:distance_to(pos) > 0.3 or dist < 1.5 then
+		self.stuck_pos, self.stuck_since = vector():set(pos), now
+	end
+	if dist > SNAP_DIST or now - self.stuck_since > 1500 then
+		npc:set_npc_position(r.pos)
+		self.stuck_pos = nil
+		return
+	end
+
+	local w = puppet_wpn_id and level.object_by_id(puppet_wpn_id)
+	if w and not (w:parent() and w:parent():id() == npc:id()) then w = nil end
+	local fire = w and r.aim and now < fire_until
+	local moving = dist > STOP_DIST or r.moving > 0
+	local running = r.moving == 2 or r.vel:magnitude() > 2.2 or dist > 3
+
+	if moving then
+		local target = vector():set(r.vel):mul(LEAD_SEC):add(r.pos)
+		local lvid = level.vertex_id(target)
+		if lvid >= 4294967295 then lvid = level.vertex_id(r.pos) end
+		if lvid < 4294967295 and lvid ~= self.dest then
+			self.dest = lvid
+			npc:set_path_type(game_object.level_path)
+			npc:set_desired_direction()
+			lvid = utils_obj.send_to_nearest_accessible_vertex(npc, lvid, "coop_player")
+			npc:set_desired_position(level.vertex_position(lvid))
+		end
+	else
+		self.dest = nil
+	end
+
+	local state
+	if fire then
+		if r.crouch then state = moving and "sneak_fire" or "hide_fire"
+		else state = moving and (running and "assault_fire" or "raid_fire") or "threat_fire" end
+	elseif w then
+		if r.crouch then state = moving and "sneak_run" or "hide"
+		else state = moving and (running and "assault" or "raid") or "threat" end
+	else
+		if r.crouch then state = moving and "sneak" or "hide"
+		else state = moving and (running and "run" or "walk") or "idle" end
+	end
+
+	-- look where the partner looks
+	local look_at = r.aim or vector():setHP(r.yaw, 0):mul(10):add(r.pos)
+	state_mgr.set_state(npc, state, nil, nil, { look_position = look_at }, { fast_set = true })
+
+	if fire and npc:active_item() and npc:active_item():id() == w:id() then
+		-- match the partner's rate of fire: no aiming delay, short queues back to back
+		npc:aim_time(w, 0)
+		npc:set_item(object.fire1, w, 3, 60)
+	end
+
+	if coop_main.debug and now > (self.dbg or 0) then
+		self.dbg = now + 1000
+		coop_main.log(string.format("puppet %s dist=%.2f dist_to_actor=%.2f", state, dist, pos:distance_to(db.actor:position())))
+	end
+end
+
+local function add_puppet_planner(npc)
+	local manager = npc:motivation_action_manager()
+	if not manager or planner_done[npc:id()] then return end
+	manager:add_evaluator(EVA_PUPPET, evaluator_coop_puppet(npc, "eva_coop_puppet"))
+	local act = action_coop_puppet(npc, "act_coop_puppet")
+	act:add_precondition(world_property(stalker_ids.property_alive, true))
+	act:add_precondition(world_property(EVA_PUPPET, true))
+	act:add_effect(world_property(EVA_PUPPET, false))
+	manager:add_action(ACT_PUPPET, act)
+	for _, id in ipairs({ stalker_ids.action_combat_planner, stalker_ids.action_danger_planner,
+			xr_actions_id.state_mgr + 2, xr_actions_id.alife }) do
+		local other = manager:action(id)
+		if other then other:add_precondition(world_property(EVA_PUPPET, false)) end
+	end
+	planner_done[npc:id()] = true
+end
+
 ------------------------------------------------------------------ puppet lifecycle
+-- alife_release() ignores stalkers without a squad (it only removes them through the squad), so release directly
+local function release_npc(se)
+	if se then alife():release(se, true) end
+end
+
 local function release_puppet()
 	if puppet_id then
 		local se = alife_object(puppet_id)
 		if se then
 			level.map_remove_object_spot(puppet_id, "ui_pda2_companion_location")
-			alife_release(se)
+			release_npc(se)
+			coop_main.log("puppet released id=" .. puppet_id)
 		end
 	end
+	release_puppet_weapon()
 	puppet_id = nil
 	puppet_visual = nil
 	spawn_pending = false
+	firing = false
 end
 
 local function spawn_puppet()
@@ -119,9 +274,48 @@ local function setup_puppet(npc)
 	npc:set_relation(game_object.friend, db.actor)
 	npc:disable_talk()
 	npc:set_invisible(false)
-	npc:script(true, script_name())
+	local ok, err = pcall(add_puppet_planner, npc)
+	if not ok then
+		coop_main.log("puppet planner failed, falling back to script mode: " .. tostring(err))
+		npc:script(true, script_name())
+	end
 	level.map_add_object_spot_ser(npc:id(), "ui_pda2_companion_location", remote and remote.name or "Partner")
 	npc:give_info_portion("npcx_is_companion")
+end
+
+local function is_firearm(sec)
+	if not (sec and sec ~= "" and ini_sys:section_exist(sec) and ini_sys:line_exist(sec, "ammo_class")) then return false end
+	local cls = ini_sys:r_string_ex(sec, "class") or ""
+	return cls:find("^WP_") ~= nil and cls ~= "WP_KNIFE" and cls ~= "WP_BINOC"
+end
+
+release_puppet_weapon = function()
+	if puppet_wpn_id then
+		local se = alife_object(puppet_wpn_id)
+		if se then alife_release(se) end
+	end
+	puppet_wpn_id, puppet_wpn_sec = nil, nil
+end
+
+-- give the puppet the partner's weapon (plus its ammo); called while the puppet is online
+local function sync_puppet_weapon(npc)
+	local want = is_firearm(remote.weapon) and remote.weapon or nil
+	if want == puppet_wpn_sec and (not want or alife_object(puppet_wpn_id)) then return end
+	release_puppet_weapon()
+	if not want then return end
+	local se = alife_create_item(want, npc)
+	if not se then return end
+	puppet_wpn_id, puppet_wpn_sec = se.id, want
+	local ammo = parse_list(ini_sys, want, "ammo_class")[1]
+	if ammo and ini_sys:section_exist(ammo) then
+		for i = 1, 3 do alife_create_item(ammo, npc) end
+	end
+	coop_main.log("puppet weapon " .. want)
+end
+
+local function puppet_weapon()
+	local w = puppet_wpn_id and level.object_by_id(puppet_wpn_id)
+	if w and w:parent() and w:parent():id() == puppet_id then return w end
 end
 
 local function restart_script(npc)
@@ -130,6 +324,10 @@ local function restart_script(npc)
 end
 
 local function drive_puppet(npc)
+	if planner_done[npc:id()] then
+		if npc:get_script() then npc:script(false, script_name()) end
+		return
+	end
 	if not npc:get_script() then npc:script(true, script_name()) end
 	local r = remote
 	local pos = npc:position()
@@ -151,6 +349,8 @@ local function drive_puppet(npc)
 		return
 	end
 	local face = vector():setHP(r.yaw, 0)
+	local wpn = puppet_weapon()
+
 	local busy = npc:action() ~= nil
 	local target = vector():set(r.vel):mul(LEAD_SEC):add(r.pos)
 	if level.vertex_id(target) >= 4294967295 then target = r.pos end
@@ -163,12 +363,21 @@ local function drive_puppet(npc)
 			local mtype = (r.moving == 2 or speed > 2.2 or dist > 2) and move.run or move.walk
 			local body = r.crouch and move.crouch or move.standing
 			if busy then restart_script(npc) end
-			action(npc, move(body, mtype, move.line, target), cond(cond.move_end))
+			if wpn then
+				action(npc, move(body, mtype, move.line, target), anim(anim.danger, 0), object(wpn, object.idle), cond(cond.move_end))
+			else
+				action(npc, move(body, mtype, move.line, target), cond(cond.move_end))
+			end
 		end
 	elseif not busy then
 		last_target = nil
-		action(npc, move(r.crouch and move.crouch or move.standing, move.stand, move.line, pos),
-			look(look.direction, face), cond(cond.look_end))
+		if wpn then
+			action(npc, move(r.crouch and move.crouch or move.standing, move.stand, move.line, pos),
+				look(look.direction, face), anim(anim.danger, 0), object(wpn, object.idle), cond(cond.look_end))
+		else
+			action(npc, move(r.crouch and move.crouch or move.standing, move.stand, move.line, pos),
+				look(look.direction, face), cond(cond.look_end))
+		end
 	end
 end
 
@@ -203,6 +412,7 @@ local function update()
 		return
 	end
 	if spawn_pending then setup_puppet(npc) end
+	sync_puppet_weapon(npc)
 	if not npc:alive() then
 		release_puppet()
 		return
@@ -228,8 +438,20 @@ local function actor_on_update()
 end
 
 ------------------------------------------------------------------ puppet protection
+local function from_puppet(shit)
+	return puppet_id and shit and shit.draftsman and shit.draftsman:id() == puppet_id
+end
+
 local function npc_on_before_hit(npc, shit, bone_id, flags)
-	if is_puppet(npc) then flags.ret_value = false end
+	if is_puppet(npc) or from_puppet(shit) then flags.ret_value = false end
+end
+
+local function monster_on_before_hit(monster, shit, bone_id, flags)
+	if from_puppet(shit) then flags.ret_value = false end
+end
+
+local function actor_on_before_hit(shit, bone_id, flags)
+	if from_puppet(shit) then flags.ret_value = false end
 end
 
 ------------------------------------------------------------------ teleport to partner
@@ -261,7 +483,7 @@ local function load_state(m_data)
 	-- clean up after older builds or crashes
 	if m_data.coop_puppet_id then
 		local se = alife_object(m_data.coop_puppet_id)
-		if se and se:section_name() == PUPPET_SECTION then alife_release(se) end
+		if se and se:section_name() == PUPPET_SECTION then release_npc(se) end
 		m_data.coop_puppet_id = nil
 	end
 end
@@ -271,7 +493,7 @@ local function on_game_load()
 	for id = 1, 65534 do
 		local se = alife_object(id)
 		if se and se:section_name() == PUPPET_SECTION and se:alive() and IsStalker(nil, se:clsid()) then
-			alife_release(se)
+			release_npc(se)
 		end
 	end
 end
@@ -279,6 +501,16 @@ end
 function on_game_start()
 	RegisterScriptCallback("actor_on_update", actor_on_update)
 	RegisterScriptCallback("npc_on_before_hit", npc_on_before_hit)
+	RegisterScriptCallback("monster_on_before_hit", monster_on_before_hit)
+	RegisterScriptCallback("actor_on_before_hit", actor_on_before_hit)
+	RegisterScriptCallback("actor_on_weapon_fired", actor_on_weapon_fired)
+	-- debug: count the puppet's real shots (NPC magazines may not drain in Anomaly)
+	RegisterScriptCallback("npc_shot_dispersion", function(npc)
+		if coop_main.debug and is_puppet(npc) then
+			puppet_shots = (puppet_shots or 0) + 1
+			coop_main.log("puppet SHOT #" .. puppet_shots)
+		end
+	end)
 	RegisterScriptCallback("on_before_save_input", on_before_save_input)
 	RegisterScriptCallback("save_state", save_state)
 	RegisterScriptCallback("load_state", load_state)

@@ -219,6 +219,9 @@ on_event("info", function(a) msg(a[1] or "") end)
 function on_game_start()
 	path_out = getFS():update_path("$app_data_root$", "coop_out.txt")
 	path_in = getFS():update_path("$app_data_root$", "coop_in.txt")
+	local dbgf = io.open(getFS():update_path("$app_data_root$", "coop_debug.txt"), "r")
+	debug = dbgf ~= nil
+	if dbgf then dbgf:close() end
 	local f = io.open(getFS():update_path("$app_data_root$", "coop_log.txt"), "w")
 	if f then f:write("Anomaly Co-op " .. VERSION .. " log\n"); f:close() end
 	math.randomseed(os.time() + math.floor(os.clock() * 1000))
