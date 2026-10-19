@@ -1,0 +1,69 @@
+-- dev only: QA bot. Active when appdata\coop_bot.txt exists. Steps are logged to coop_log.txt.
+local active, t0, center = false, nil, nil
+local done = {}
+
+local function step(name, at, fn)
+	if not done[name] and time_global() - t0 > at then
+		done[name] = true
+		local ok, err = pcall(fn)
+		coop_main.log("BOT " .. name .. (ok and " ok" or (" FAILED " .. tostring(err))))
+	end
+end
+
+local function nearest_creature(radius)
+	local best, bd = nil, radius
+	for id, st in pairs(db.storage) do
+		local o = st.object
+		if o and id ~= AC_ID and not coop_player.is_puppet(id) and (IsStalker(o) or IsMonster(o)) and o:alive() then
+			local d = o:position():distance_to(db.actor:position())
+			if d < bd then best, bd = o, d end
+		end
+	end
+	return best
+end
+
+local function update()
+	if not active or not coop_main.connected then return end
+	t0 = t0 or time_global()
+	local t = (time_global() - t0) / 1000
+	if t > 10 and t < 30 then
+		center = center or vector():set(db.actor:position())
+		local a = (t - 10) * 0.35
+		local p = vector():set(center.x + 4 * math.cos(a), center.y, center.z + 4 * math.sin(a))
+		if level.vertex_id(p) < 4294967295 then db.actor:set_actor_position(level.vertex_position(level.vertex_id(p))) end
+	end
+	step("walk_done", 31, function() coop_main.log("BOT pos " .. vec_to_str(db.actor:position())) end)
+	step("drop", 33, function()
+		local item
+		db.actor:iterate_inventory(function(_, o) if not item and o:section() == "bandage" then item = o end end, nil)
+		if not item then
+			db.actor:iterate_inventory(function(_, o) if not item and IsItem("consumable", o:section()) then item = o end end, nil)
+		end
+		coop_main.log("BOT dropping " .. (item and (item:section() .. " id=" .. item:id()) or "nothing"))
+		if item then db.actor:drop_item(item) end
+	end)
+	step("kill", 40, function()
+		local npc = nearest_creature(80)
+		coop_main.log("BOT target " .. (npc and (npc:section() .. " id=" .. npc:id()) or "none"))
+		if not npc then return end
+		local h = hit()
+		h.type = hit.fire_wound
+		h.power = 50
+		h.impulse = 10
+		h.draftsman = db.actor
+		h.direction = vector():set(npc:position()):sub(db.actor:position())
+		h:bone("bip01_head")
+		npc:hit(h)
+		coop_main.log(string.format("BOT target health after hit %.2f alive=%s", npc.health, tostring(npc:alive())))
+	end)
+	step("report", 50, function()
+		local r = coop_player.get_remote()
+		coop_main.log("BOT remote " .. (r and vec_to_str(r.pos) or "none") .. " puppet=" .. tostring(coop_player.get_puppet_id()))
+	end)
+end
+
+function on_game_start()
+	local f = io.open(getFS():update_path("$app_data_root$", "coop_bot.txt"), "r")
+	if f then f:close() active = true end
+	RegisterScriptCallback("actor_on_update", function() pcall(update) end)
+end

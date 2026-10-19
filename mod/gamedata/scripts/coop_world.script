@@ -1,0 +1,339 @@
+--[[
+	Anomaly Co-op: world sync.
+	Both players start from the host's save, so object ids match and events are matched by id + section.
+	  host -> client: game time, weather, surge (state "w"), creature positions/health (state "n")
+	  both ways:      damage dealt by the actor ("hit"), deaths ("die"),
+	                  items taken from the ground ("take") or from boxes/corpses ("btake"),
+	                  items dropped ("drop") or put into boxes ("bput")
+--]]
+
+local NPC_SYNC_RADIUS = 70
+local NPC_SNAP_DIST = 3
+
+local applying = false         -- true while we apply a remote event, to avoid echoing it back
+local pending_hits = {}        -- id -> health before the actor's hit
+local pending_take = {}        -- id -> { sec, pos }
+local pending_drop = {}        -- id -> sec
+local box_take = {}            -- item id -> box id (filled by actor_on_item_take_from_box)
+
+local function puppet_obj()
+	local id = coop_player.get_puppet_id()
+	return id and level.object_by_id(id)
+end
+
+local function same(obj, sec)
+	return obj and obj:section() == sec
+end
+
+local function vec(x, y, z) return vector():set(tonumber(x) or 0, tonumber(y) or 0, tonumber(z) or 0) end
+local function f2(n) return string.format("%.2f", n) end
+local function dbg(s) if coop_main.debug then coop_main.log(s) end end
+
+local function is_creature(obj)
+	return obj and (IsStalker(obj) or IsMonster(obj))
+end
+
+------------------------------------------------------------------ time, weather, surge (host authority)
+local function game_minutes()
+	return (level.get_time_days() * 24 + level.get_time_hours()) * 60 + level.get_time_minutes()
+end
+
+coop_main.add_state_provider("w", function()
+	if not coop_main.is_host() then return end
+	return { game_minutes(), level.get_weather() or "", surge_manager.is_started() and 1 or 0 }
+end)
+
+local next_world_apply = 0
+coop_main.on_state("w", function(t)
+	if not coop_main.is_client() then return end
+	local now = time_global()
+	if now < next_world_apply then return end
+	next_world_apply = now + 2000
+
+	local diff = (tonumber(t[1]) or 0) - game_minutes()
+	if diff > 2 then
+		-- only forward: the engine cannot rewind time
+		level.change_game_time(0, math.floor(diff / 60), diff % 60)
+	end
+	local w = t[2]
+	if w and w ~= "" and level.get_weather() ~= w then
+		level.set_weather(w, false)
+	end
+	local host_surge = t[3] == "1"
+	if host_surge and not surge_manager.is_started() then
+		coop_main.msg("У хоста начался выброс!")
+		surge_manager.start_surge()
+	elseif (not host_surge) and surge_manager.is_started() then
+		surge_manager.stop_surge()
+	end
+end)
+
+------------------------------------------------------------------ creature positions (host authority)
+local next_npc_send = 0
+coop_main.add_state_provider("n", function()
+	if not coop_main.is_host() then return end
+	local now = time_global()
+	if now < next_npc_send then return end -- nil = keep the last value on the bridge
+	next_npc_send = now + 1000
+	local remote = coop_player.get_remote()
+	local apos = db.actor:position()
+	local rpos = remote and remote.level == level.name() and remote.pos
+	local list = { tostring(now) }
+	for id, st in pairs(db.storage) do
+		local obj = st.object
+		if obj and id ~= AC_ID and not coop_player.is_puppet(id) and is_creature(obj) and obj:alive() then
+			local p = obj:position()
+			if p:distance_to(apos) < NPC_SYNC_RADIUS or (rpos and p:distance_to(rpos) < NPC_SYNC_RADIUS) then
+				list[#list+1] = string.format("%d:%s:%.1f:%.1f:%.1f:%.2f", id, obj:section(), p.x, p.y, p.z, obj.health)
+			end
+		end
+	end
+	return list
+end)
+
+local last_npc_stamp = nil
+coop_main.on_state("n", function(t)
+	if not coop_main.is_client() or t[1] == last_npc_stamp then return end
+	last_npc_stamp = t[1]
+	applying = true
+	for i = 2, #t do
+		local id, sec, x, y, z, h = t[i]:match("^(%d+):([^:]+):([^:]+):([^:]+):([^:]+):([^:]+)$")
+		id = tonumber(id)
+		local obj = id and level.object_by_id(id)
+		if same(obj, sec) and obj:alive() then
+			local pos = vec(x, y, z)
+			if obj:position():distance_to(pos) > NPC_SNAP_DIST then
+				obj:set_npc_position(pos)
+			end
+			h = tonumber(h)
+			if h and h < obj.health - 0.05 then obj:set_health_ex(h) end
+		end
+	end
+	applying = false
+end)
+
+------------------------------------------------------------------ damage
+local function on_before_hit(obj, shit)
+	if applying or coop_player.is_puppet(obj) then return end
+	if shit.draftsman and shit.draftsman:id() == AC_ID and obj:alive() then
+		if not pending_hits[obj:id()] then pending_hits[obj:id()] = obj.health end
+	end
+end
+
+local function flush_hits()
+	for id, before in pairs(pending_hits) do
+		local obj = level.object_by_id(id)
+		if obj then
+			local delta = before - (obj:alive() and obj.health or 0)
+			if delta > 0.001 then coop_main.send("hit", id, obj:section(), string.format("%.3f", delta)) end
+		end
+	end
+	pending_hits = {}
+end
+
+coop_main.on_event("hit", function(a)
+	local id = tonumber(a[1])
+	local obj = id and level.object_by_id(id)
+	dbg("recv hit " .. tostring(a[1]) .. " " .. tostring(a[2]) .. " match=" .. tostring(same(obj, a[2])))
+	if not (same(obj, a[2]) and obj:alive()) then return end
+	local h = obj.health - (tonumber(a[3]) or 0)
+	applying = true
+	if h <= 0.005 then
+		obj:kill(puppet_obj() or obj)
+	else
+		obj:set_health_ex(h)
+	end
+	applying = false
+end)
+
+------------------------------------------------------------------ deaths
+local function on_death(victim, who)
+	if applying or not coop_main.connected or not victim then return end
+	if coop_player.is_puppet(victim) or victim:id() == AC_ID then return end
+	-- the host reports every death it sees, the client only kills made by the actor
+	if coop_main.is_host() or (who and who:id() == AC_ID) then
+		coop_main.send("die", victim:id(), victim:section())
+	end
+end
+
+coop_main.on_event("die", function(a)
+	local id = tonumber(a[1])
+	local obj = id and level.object_by_id(id)
+	dbg("recv die " .. tostring(a[1]) .. " " .. tostring(a[2]) .. " match=" .. tostring(same(obj, a[2])))
+	if same(obj, a[2]) and obj:alive() then
+		applying = true
+		obj:kill(puppet_obj() or obj)
+		applying = false
+	elseif not obj then
+		-- offline: mark the server object dead so it does not come online alive
+		local se = id and alife_object(id)
+		if se and se:section_name() == a[2] and se.kill and se:alive() then se:kill() end
+	end
+end)
+
+------------------------------------------------------------------ items
+local suppress_until = 0
+-- ignore our own inventory changes for a while (character import)
+function suppress(ms) suppress_until = time_global() + ms end
+local function suppressed() return applying or time_global() < suppress_until end
+
+local function actor_on_item_take(item)
+	if suppressed() or not coop_main.connected then return end
+	pending_take[item:id()] = { item:section(), vector():set(db.actor:position()) }
+end
+
+local function actor_on_item_take_from_box(box, item)
+	if suppressed() or not coop_main.connected or not box or not item then return end
+	box_take[item:id()] = box:id()
+end
+
+local function actor_on_item_drop(item)
+	if suppressed() or not coop_main.connected then return end
+	pending_drop[item:id()] = item:section()
+end
+
+local function item_props(obj)
+	local cond = obj.condition and obj:condition() or 1
+	local ammo = (IsAmmo and IsAmmo(obj) and obj:ammo_get_count()) or 0
+	return string.format("%.3f", cond), ammo
+end
+
+local function flush_items()
+	for id, t in pairs(pending_take) do
+		local box = box_take[id]
+		if box then
+			coop_main.send("btake", box, id, t[1])
+		else
+			coop_main.send("take", id, t[1], f2(t[2].x), f2(t[2].y), f2(t[2].z))
+		end
+	end
+	pending_take, box_take = {}, {}
+
+	for id, sec in pairs(pending_drop) do
+		local obj = level.object_by_id(id)
+		if obj then -- gone = eaten/used/sold to nothing
+			local parent = obj:parent()
+			local cond, ammo = item_props(obj)
+			if not parent then
+				local p = obj:position()
+				coop_main.send("drop", id, sec, cond, ammo, f2(p.x), f2(p.y), f2(p.z), obj:level_vertex_id(), obj:game_vertex_id())
+			elseif parent:id() ~= AC_ID and IsInvbox(parent) then
+				coop_main.send("bput", parent:id(), sec, cond, ammo)
+			end
+		end
+	end
+	pending_drop = {}
+end
+
+-- find a ground item by id, else the nearest one of the same section
+local function find_ground_item(id, sec, pos, radius)
+	local obj = id and level.object_by_id(id)
+	if same(obj, sec) and not obj:parent() then return obj end
+	local best, bd = nil, radius
+	for oid, st in pairs(db.storage) do
+		local o = st.object
+		if o and o:section() == sec and not o:parent() then
+			local d = o:position():distance_to(pos)
+			if d < bd then best, bd = o, d end
+		end
+	end
+	if best then return best end
+	-- items do not always live in db.storage; scan nearby objects
+	level.iterate_nearest(pos, radius, function(o)
+		if o and o:section() == sec and not o:parent() then best = o return true end
+	end)
+	return best
+end
+
+local function release_obj(obj)
+	local se = obj and alife_object(obj:id())
+	if se then alife_release(se) end
+end
+
+coop_main.on_event("take", function(a)
+	local obj = find_ground_item(tonumber(a[1]), a[2], vec(a[3], a[4], a[5]), 4)
+	dbg("recv take " .. tostring(a[2]) .. " found=" .. tostring(obj ~= nil))
+	if obj then
+		applying = true
+		release_obj(obj)
+		applying = false
+	end
+end)
+
+coop_main.on_event("btake", function(a)
+	local box = level.object_by_id(tonumber(a[1]) or -1)
+	local id, sec = tonumber(a[2]), a[3]
+	local item = id and level.object_by_id(id)
+	if not (same(item, sec) and item:parent() and box and item:parent():id() == box:id()) then
+		item = nil
+		if box then
+			box:iterate_inventory_box(function(b, o)
+				if not item and o:section() == sec then item = o end
+			end, box)
+			if not item and box.iterate_inventory then
+				box:iterate_inventory(function(b, o)
+					if not item and o:section() == sec then item = o end
+				end, box)
+			end
+		end
+	end
+	if item then
+		applying = true
+		release_obj(item)
+		applying = false
+	end
+end)
+
+local function spawn_item(sec, owner, cond, ammo)
+	if not ini_sys:section_exist(sec) then return end
+	local t = {}
+	cond = tonumber(cond)
+	ammo = tonumber(ammo)
+	if cond and cond < 0.999 then t.cond = cond end
+	if ammo and ammo > 0 then t.ammo = ammo end
+	applying = true
+	alife_create_item(sec, owner, t)
+	applying = false
+end
+
+coop_main.on_event("drop", function(a)
+	-- a: id, sec, cond, ammo, x, y, z, lvid, gvid
+	if coop_player.get_remote() and coop_player.get_remote().level ~= level.name() then return end
+	local pos = vec(a[5], a[6], a[7])
+	local lvid = tonumber(a[8]) or level.vertex_id(pos)
+	if lvid >= 4294967295 then lvid = level.vertex_id(pos) end
+	spawn_item(a[2], { pos, lvid, tonumber(a[9]) or db.actor:game_vertex_id() }, a[3], a[4])
+	dbg("recv drop " .. tostring(a[2]) .. " at " .. vec_to_str(pos))
+end)
+
+coop_main.on_event("bput", function(a)
+	local box = level.object_by_id(tonumber(a[1]) or -1)
+	if box then spawn_item(a[2], box, a[3], a[4]) end
+end)
+
+------------------------------------------------------------------ main loop
+local next_flush = 0
+local function actor_on_update()
+	local now = time_global()
+	if now < next_flush then return end
+	next_flush = now + 100
+	local ok, err = pcall(function()
+		flush_hits()
+		flush_items()
+	end)
+	if not ok then coop_main.log("world flush failed: " .. tostring(err)) end
+end
+
+local function npc_on_before_hit(npc, shit, bone_id, flags) on_before_hit(npc, shit) end
+local function monster_on_before_hit(m, shit, bone_id, flags) on_before_hit(m, shit) end
+
+function on_game_start()
+	RegisterScriptCallback("actor_on_update", actor_on_update)
+	RegisterScriptCallback("npc_on_before_hit", npc_on_before_hit)
+	RegisterScriptCallback("monster_on_before_hit", monster_on_before_hit)
+	RegisterScriptCallback("npc_on_death_callback", on_death)
+	RegisterScriptCallback("monster_on_death_callback", on_death)
+	RegisterScriptCallback("actor_on_item_take", actor_on_item_take)
+	RegisterScriptCallback("actor_on_item_take_from_box", actor_on_item_take_from_box)
+	RegisterScriptCallback("actor_on_item_drop", actor_on_item_drop)
+end

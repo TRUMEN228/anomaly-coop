@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net48</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <LangVersion>latest</LangVersion>
+    <Nullable>disable</Nullable>
+    <AssemblyName>CoopLauncher</AssemblyName>
+    <RootNamespace>CoopLauncher</RootNamespace>
+    <Version>1.0.0</Version>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <GenerateAssemblyInfo>true</GenerateAssemblyInfo>
+  </PropertyGroup>
+  <ItemGroup>
+    <!-- mod scripts, converted to cp1251 by build.py -->
+    <EmbeddedResource Include="..\build\gamedata\scripts\coop_*.script" LogicalName="mod\%(Filename)%(Extension)" />
+  </ItemGroup>
+</Project>

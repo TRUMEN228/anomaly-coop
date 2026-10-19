@@ -1,0 +1,286 @@
+--[[
+	Anomaly Co-op: local player state and the partner's puppet.
+	The puppet is an AI-less stalker (stalker_azazel uses the actor profile) under script control:
+	it walks/runs to the partner's last reported position and is teleported when it falls behind.
+--]]
+
+local PUPPET_SECTION = "stalker_azazel"
+local SNAP_DIST = 15       -- teleport puppet only when hopelessly behind (or after a teleport of the partner)
+local LEAD_SEC = 0.6       -- aim ahead of the partner by this much of his velocity
+local STOP_DIST = 0.6
+
+local remote = nil         -- last partner state
+local remote_time = 0
+local puppet_id = nil
+local puppet_visual = nil
+local spawn_pending = false
+local last_level_note = nil
+local last_move_cmd = 0
+local last_target = nil
+local stuck_pos, stuck_since = nil, 0
+
+function get_remote() return remote end
+function get_puppet_id() return puppet_id end
+
+function is_puppet(obj_or_id)
+	local id = type(obj_or_id) == "number" and obj_or_id or (obj_or_id and obj_or_id:id())
+	return id ~= nil and id == puppet_id
+end
+
+------------------------------------------------------------------ local state
+coop_main.add_state_provider("p", function()
+	local a = db.actor
+	if not a then return end
+	local pos = a:position()
+	local dir = device().cam_dir
+	local wpn = a:active_item()
+	local outfit = a:item_in_slot(7)
+	local body = IsMoveState("mcCrouch") and "c" or "s"
+	local moving = (IsMoveState("mcAnyMove") and 1 or 0)
+	if moving == 1 and IsMoveState("mcSprint") then moving = 2 end
+	return {
+		level.name(),
+		string.format("%.2f", pos.x), string.format("%.2f", pos.y), string.format("%.2f", pos.z),
+		string.format("%.3f", dir:getH()),
+		a:level_vertex_id(), a:game_vertex_id(),
+		body, moving,
+		wpn and wpn:section() or "",
+		outfit and outfit:section() or "",
+		a:get_visual_name() or "",
+		string.format("%.2f", a.health),
+		coop_main.my_name ~= "" and coop_main.my_name or a:character_name(),
+	}
+end)
+
+coop_main.on_state("p", function(t)
+	local r = {
+		level = t[1],
+		pos = vector():set(tonumber(t[2]) or 0, tonumber(t[3]) or 0, tonumber(t[4]) or 0),
+		yaw = tonumber(t[5]) or 0,
+		lvid = tonumber(t[6]) or 0, gvid = tonumber(t[7]) or 0,
+		crouch = t[8] == "c", moving = tonumber(t[9]) or 0,
+		weapon = t[10], outfit = t[11], visual = t[12],
+		health = tonumber(t[13]) or 1, name = t[14] or "Partner",
+	}
+	if (not remote or remote.level ~= r.level) and r.level ~= last_level_note then
+		last_level_note = r.level
+		if r.level ~= level.name() then
+			coop_main.msg(string.format("%s сейчас на локации: %s", r.name, game.translate_string(r.level)))
+		end
+	end
+	local now = time_global()
+	r.vel = VEC_ZERO
+	if remote and remote.level == r.level and now > remote_time then
+		local dt = (now - remote_time) / 1000
+		local v = vector():set(r.pos):sub(remote.pos):div(dt)
+		-- ignore jumps (teleports, level changes)
+		if v:magnitude() < 12 then
+			r.vel = vector():set(remote.vel or VEC_ZERO):mul(0.5):add(vector():set(v):mul(0.5))
+		end
+	end
+	if remote and remote.pos:distance_to(r.pos) < 0.01 and r.moving == 0 then r.vel = VEC_ZERO end
+	remote = r
+	remote_time = now
+end)
+
+------------------------------------------------------------------ puppet lifecycle
+local function release_puppet()
+	if puppet_id then
+		local se = alife_object(puppet_id)
+		if se then
+			level.map_remove_object_spot(puppet_id, "ui_pda2_companion_location")
+			alife_release(se)
+		end
+	end
+	puppet_id = nil
+	puppet_visual = nil
+	spawn_pending = false
+end
+
+local function spawn_puppet()
+	if not (remote and remote.lvid) then return end
+	local lvid = remote.lvid
+	if lvid >= 4294967295 or level.vertex_position(lvid):distance_to(remote.pos) > 30 then
+		lvid = level.vertex_id(remote.pos)
+	end
+	local se = alife_create(PUPPET_SECTION, remote.pos, lvid, remote.gvid)
+	if not se then return end
+	se:set_character_name(remote.name)
+	local data = alife_storage_manager.get_se_obj_state(se, true)
+	if data and remote.visual ~= "" then data.visual = remote.visual end
+	puppet_id = se.id
+	puppet_visual = remote.visual
+	spawn_pending = true
+	coop_main.log("puppet spawned id=" .. se.id)
+end
+
+local function setup_puppet(npc)
+	spawn_pending = false
+	npc:set_relation(game_object.friend, db.actor)
+	npc:disable_talk()
+	npc:set_invisible(false)
+	npc:script(true, script_name())
+	level.map_add_object_spot_ser(npc:id(), "ui_pda2_companion_location", remote and remote.name or "Partner")
+	npc:give_info_portion("npcx_is_companion")
+end
+
+local function restart_script(npc)
+	if npc:get_script() then npc:script(false, script_name()) end
+	npc:script(true, script_name())
+end
+
+local function drive_puppet(npc)
+	if not npc:get_script() then npc:script(true, script_name()) end
+	local r = remote
+	local pos = npc:position()
+	local dist = pos:distance_to(r.pos)
+	if dist > SNAP_DIST then
+		npc:set_npc_position(r.pos)
+		restart_script(npc)
+		last_target = nil
+		return
+	end
+	local now = time_global()
+	-- stuck detection: no path to the target (ladders, jumps, holes in the AI mesh)
+	if not stuck_pos or stuck_pos:distance_to(pos) > 0.3 or dist < 1.5 then
+		stuck_pos, stuck_since = vector():set(pos), now
+	elseif now - stuck_since > 1500 then
+		npc:set_npc_position(r.pos)
+		restart_script(npc)
+		last_target, stuck_pos = nil, nil
+		return
+	end
+	local face = vector():setHP(r.yaw, 0)
+	local busy = npc:action() ~= nil
+	local target = vector():set(r.vel):mul(LEAD_SEC):add(r.pos)
+	if level.vertex_id(target) >= 4294967295 then target = r.pos end
+	if dist > STOP_DIST or r.moving > 0 then
+		local diverged = (not last_target) or last_target:distance_to(target) > 2
+		if diverged or not busy then
+			last_target = vector():set(target)
+			last_move_cmd = now
+			local speed = r.vel:magnitude()
+			local mtype = (r.moving == 2 or speed > 2.2 or dist > 2) and move.run or move.walk
+			local body = r.crouch and move.crouch or move.standing
+			if busy then restart_script(npc) end
+			action(npc, move(body, mtype, move.line, target), cond(cond.move_end))
+		end
+	elseif not busy then
+		last_target = nil
+		action(npc, move(r.crouch and move.crouch or move.standing, move.stand, move.line, pos),
+			look(look.direction, face), cond(cond.look_end))
+	end
+end
+
+local function update()
+	if not db.actor then return end
+	local active = coop_main.connected and remote and (time_global() - remote_time) < 5000
+		and remote.level == level.name()
+
+	if not active then
+		if puppet_id then release_puppet() end
+		return
+	end
+
+	if puppet_id and not alife_object(puppet_id) then
+		puppet_id = nil
+	end
+	if puppet_id and remote.visual ~= "" and puppet_visual ~= remote.visual then
+		release_puppet() -- outfit changed, respawn with the new visual
+	end
+	if not puppet_id then
+		spawn_puppet()
+		return
+	end
+
+	local npc = level.object_by_id(puppet_id)
+	if not npc then
+		-- puppet offline: drag its server object along so it comes online near the actor
+		local se = alife_object(puppet_id)
+		if se and se.position:distance_to(remote.pos) > 50 then
+			release_puppet()
+		end
+		return
+	end
+	if spawn_pending then setup_puppet(npc) end
+	if not npc:alive() then
+		release_puppet()
+		return
+	end
+	drive_puppet(npc)
+	if coop_main.debug then
+		local now = time_global()
+		if now > (dbg_next or 0) then
+			dbg_next = now + 1000
+			coop_main.log(string.format("puppet dist_to_target=%.2f dist_to_actor=%.2f action=%s pos=%s",
+				npc:position():distance_to(remote.pos), npc:position():distance_to(db.actor:position()), tostring(npc:action() ~= nil), vec_to_str(npc:position())))
+		end
+	end
+end
+
+local next_update = 0
+local function actor_on_update()
+	local now = time_global()
+	if now < next_update then return end
+	next_update = now + 100
+	local ok, err = pcall(update)
+	if not ok then coop_main.log("puppet update failed: " .. tostring(err)) end
+end
+
+------------------------------------------------------------------ puppet protection
+local function npc_on_before_hit(npc, shit, bone_id, flags)
+	if is_puppet(npc) then flags.ret_value = false end
+end
+
+------------------------------------------------------------------ teleport to partner
+coop_main.on_event("_cmd_tp", function()
+	if not (coop_main.connected and remote) then
+		coop_main.msg("Напарник не подключён")
+		return
+	end
+	if remote.level == level.name() then
+		db.actor:set_actor_position(remote.pos)
+		coop_main.msg("Телепорт к " .. remote.name)
+	else
+		coop_main.msg("Переход к " .. remote.name .. "...")
+		ChangeLevel(remote.pos, remote.lvid, remote.gvid, VEC_ZERO, true)
+	end
+end)
+
+------------------------------------------------------------------ saves
+-- never keep the puppet in a save file
+local function on_before_save_input()
+	release_puppet()
+end
+
+local function save_state(m_data)
+	m_data.coop_puppet_id = nil
+end
+
+local function load_state(m_data)
+	-- clean up after older builds or crashes
+	if m_data.coop_puppet_id then
+		local se = alife_object(m_data.coop_puppet_id)
+		if se and se:section_name() == PUPPET_SECTION then alife_release(se) end
+		m_data.coop_puppet_id = nil
+	end
+end
+
+local function on_game_load()
+	-- a puppet saved by mistake keeps our character name: release every stalker_azazel that is alive
+	for id = 1, 65534 do
+		local se = alife_object(id)
+		if se and se:section_name() == PUPPET_SECTION and se:alive() and IsStalker(nil, se:clsid()) then
+			alife_release(se)
+		end
+	end
+end
+
+function on_game_start()
+	RegisterScriptCallback("actor_on_update", actor_on_update)
+	RegisterScriptCallback("npc_on_before_hit", npc_on_before_hit)
+	RegisterScriptCallback("on_before_save_input", on_before_save_input)
+	RegisterScriptCallback("save_state", save_state)
+	RegisterScriptCallback("load_state", load_state)
+	RegisterScriptCallback("on_game_load", on_game_load)
+end

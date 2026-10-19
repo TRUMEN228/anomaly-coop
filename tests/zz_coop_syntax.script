@@ -1,0 +1,14 @@
+-- dev only: compile every coop_*.script with the game's own Lua and write errors to coop_syntax.txt
+function on_game_start()
+	local out = io.open(getFS():update_path("$app_data_root$", "coop_syntax.txt"), "w")
+	local flist = getFS():file_list_open_ex("$game_scripts$", bit_or(FS.FS_ListFiles, FS.FS_RootOnly), "coop_*.script")
+	for i = 0, flist:Size() - 1 do
+		local name = flist:GetAt(i):NameShort()
+		local f = io.open(getFS():update_path("$game_scripts$", name), "rb")
+		local src = f and f:read("*a"); if f then f:close() end
+		local fn, err = loadstring(src or "", name)
+		out:write(name .. ": " .. (fn and "ok" or tostring(err)) .. "\n")
+		if fn and not _G[name:sub(1, -8)] then out:write("  module failed to load\n") end
+	end
+	out:close()
+end

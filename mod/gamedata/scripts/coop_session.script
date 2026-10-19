@@ -1,0 +1,255 @@
+--[[
+	Anomaly Co-op: session save and the guest's own character.
+	- The host saves "coop_session" and CoopLauncher sends the save to the guest.
+	- The save remembers who made it (player id). When anyone else loads it, they are a guest:
+	  their actor is the host's clone, so we swap in the guest's own inventory and money from
+	  appdata\coop_character.txt. The guest keeps that file up to date while playing (solo or co-op).
+--]]
+
+SESSION_SAVE = "coop_session"
+
+local player_id = nil
+local session_owner = nil      -- player id stored in the loaded save
+local char_ready = false       -- false until the actor really is our character
+local next_export = 0
+local import_step = nil
+
+local STARTER_KIT = {
+	{ "wpn_knife" }, { "wpn_pm" }, { "ammo_9x18_fmj" }, { "ammo_9x18_fmj" },
+	{ "novice_outfit" }, { "device_torch" }, { "device_pda_1" }, { "detector_simple" },
+	{ "bandage" }, { "bandage" }, { "bandage" }, { "medkit" }, { "medkit" },
+	{ "bread" }, { "conserva" }, { "mineral_water" },
+}
+local STARTER_MONEY = 3000
+
+local function app_path(name) return getFS():update_path("$app_data_root$", name) end
+
+local function load_player_id()
+	local f = io.open(app_path("coop_player_id.txt"), "r")
+	local id = f and f:read("*l")
+	if f then f:close() end
+	if not id or id == "" then
+		id = tostring(math.random(10000000, 99999999))
+		f = io.open(app_path("coop_player_id.txt"), "w")
+		if f then f:write(id) f:close() end
+	end
+	return id
+end
+
+function is_guest_session()
+	return session_owner ~= nil and session_owner ~= player_id
+end
+
+------------------------------------------------------------------ export / import
+local SKIP = { wpn_binoc = false }
+
+local function item_line(obj)
+	local sec = obj:section()
+	local slot = 0
+	for s = 1, 13 do
+		local o = db.actor:item_in_slot(s)
+		if o and o:id() == obj:id() then slot = s break end
+	end
+	local cond = obj.condition and obj:condition() or 1
+	local extra = 0
+	if IsAmmo(obj) then
+		extra = obj:ammo_get_count()
+	elseif IsWeapon(obj) then
+		extra = obj:get_ammo_in_magazine()
+	elseif obj.get_remaining_uses then
+		extra = obj:get_remaining_uses()
+	end
+	local upg = {}
+	if obj.iterate_installed_upgrades then
+		obj:iterate_installed_upgrades(function(u) upg[#upg+1] = u end)
+	end
+	return string.format("i|%s|%.3f|%d|%d|%s", sec, cond, extra, slot, table.concat(upg, ","))
+end
+
+function export_character()
+	if not (db.actor and char_ready) then return end
+	local lines = { "v|1", "m|" .. db.actor:money(), "n|" .. coop_main.esc(db.actor:character_name()) }
+	db.actor:iterate_inventory(function(_, obj)
+		if obj and SKIP[obj:section()] ~= true then lines[#lines+1] = item_line(obj) end
+	end, nil)
+	lines[#lines+1] = "end\n"
+	local f = io.open(app_path("coop_character.tmp"), "w")
+	if not f then return end
+	f:write(table.concat(lines, "\n"))
+	f:close()
+	-- keep the previous file until the new one is complete (no os.rename in this Lua)
+	local src = io.open(app_path("coop_character.tmp"), "r")
+	local data = src and src:read("*a")
+	if src then src:close() end
+	if data and data:find("\nend") then
+		local dst = io.open(app_path("coop_character.txt"), "w")
+		if dst then dst:write(data) dst:close() end
+	end
+end
+
+local function read_character()
+	local f = io.open(app_path("coop_character.txt"), "r")
+	if not f then return nil end
+	local raw = f:read("*a")
+	f:close()
+	if not raw:find("\nend") then return nil end
+	local c = { money = 0, items = {} }
+	for line in raw:gmatch("[^\n]+") do
+		local t = coop_main.split(line)
+		if t[1] == "m" then
+			c.money = tonumber(t[2]) or 0
+		elseif t[1] == "i" then
+			local upg = {}
+			for u in (t[6] or ""):gmatch("[^,]+") do upg[#upg+1] = u end
+			c.items[#c.items+1] = { sec = t[2], cond = tonumber(t[3]), extra = tonumber(t[4]) or 0, slot = tonumber(t[5]) or 0, upg = upg }
+		end
+	end
+	return c
+end
+
+-- step 1: wipe the clone's inventory and spawn ours; step 2 (next ticks): conditions, upgrades, slots
+local function import_character()
+	local c = read_character()
+	if not c then
+		c = { money = STARTER_MONEY, items = {} }
+		for _, it in ipairs(STARTER_KIT) do c.items[#c.items+1] = { sec = it[1], extra = 0, slot = 0, upg = {} } end
+		coop_main.msg("Сохранённого персонажа нет: выдан стартовый набор")
+	end
+
+	coop_world.suppress(5000)
+	local old = {}
+	db.actor:iterate_inventory(function(_, obj) old[#old+1] = obj:id() end, nil)
+	for _, id in ipairs(old) do
+		local se = alife_object(id)
+		if se then alife_release(se) end
+	end
+	db.actor:give_money(c.money - db.actor:money())
+
+	local spawned = {}
+	for _, it in ipairs(c.items) do
+		if ini_sys:section_exist(it.sec) then
+			local props = {}
+			if it.cond and it.cond < 0.999 then props.cond = it.cond end
+			local is_ammo = ini_sys:line_exist(it.sec, "box_size") and not ini_sys:line_exist(it.sec, "ammo_class")
+			if is_ammo and it.extra > 0 then props.ammo = it.extra end
+			local se = alife_create_item(it.sec, db.actor, props)
+			if se then spawned[#spawned+1] = { id = se.id, it = it } end
+		end
+	end
+	import_step = { at = time_global() + 700, items = spawned, tries = 0 }
+	coop_main.log("character import: " .. #spawned .. " items")
+end
+
+local function finish_import()
+	local s = import_step
+	if time_global() < s.at then return end
+	local missing = 0
+	for _, e in ipairs(s.items) do
+		if not e.done then
+			local obj = level.object_by_id(e.id)
+			if obj then
+				local it = e.it
+				for _, u in ipairs(it.upg) do pcall(obj.install_upgrade, obj, u) end
+				if it.cond and obj.set_condition then obj:set_condition(it.cond) end
+				if IsWeapon(obj) and not IsAmmo(obj) and it.extra >= 0 and obj.set_ammo_elapsed then
+					obj:set_ammo_elapsed(it.extra)
+				elseif obj.set_remaining_uses and it.extra > 0 and not IsAmmo(obj) then
+					obj:set_remaining_uses(it.extra)
+				end
+				if it.slot > 0 then db.actor:move_to_slot(obj, it.slot) end
+				e.done = true
+			else
+				missing = missing + 1
+			end
+		end
+	end
+	s.tries = s.tries + 1
+	if missing == 0 or s.tries > 20 then
+		import_step = nil
+		char_ready = true
+		coop_world.suppress(1000)
+		coop_main.msg("Ваш персонаж перенесён в мир хоста")
+	else
+		s.at = time_global() + 300
+	end
+end
+
+------------------------------------------------------------------ host: send session / guest: load it
+local save_pending = nil
+coop_main.on_event("_cmd_sync", function()
+	if coop_main.role ~= "host" then
+		coop_main.msg("Отправить сессию может только хост")
+		return
+	end
+	save_pending = time_global() + 200
+	exec_console_cmd("save " .. SESSION_SAVE)
+	coop_main.msg("Сессия сохранена, отправляю напарнику...")
+end)
+
+coop_main.on_event("session_ready", function()
+	coop_main.msg("Получена сессия хоста. Нажмите Num3, чтобы войти в его мир")
+end)
+
+coop_main.on_event("_cmd_load", function()
+	if coop_main.role == "host" then
+		coop_main.msg("Вы хост")
+		return
+	end
+	export_character()
+	exec_console_cmd("load " .. SESSION_SAVE)
+end)
+
+------------------------------------------------------------------ callbacks
+local function save_state(m_data)
+	-- sessions saved by the host are owned by the host; a guest's quicksave of a session stays the host's
+	m_data.coop_owner = session_owner or player_id
+	if not session_owner then session_owner = player_id end
+end
+
+local function load_state(m_data)
+	session_owner = m_data.coop_owner
+end
+
+local function actor_on_first_update()
+	if is_guest_session() then
+		char_ready = false
+		import_character()
+	else
+		char_ready = true
+	end
+end
+
+local function actor_on_update()
+	local now = time_global()
+	if import_step then
+		local ok, err = pcall(finish_import)
+		if not ok then
+			coop_main.log("import failed: " .. tostring(err))
+			import_step, char_ready = nil, true
+		end
+	end
+	if save_pending and now > save_pending then
+		save_pending = nil
+		coop_main.send("@saved", SESSION_SAVE)
+	end
+	if now > next_export then
+		next_export = now + 15000
+		local ok, err = pcall(export_character)
+		if not ok then coop_main.log("export failed: " .. tostring(err)) end
+	end
+end
+
+local function on_before_save_input()
+	pcall(export_character)
+end
+
+function on_game_start()
+	player_id = load_player_id()
+	session_owner, char_ready, import_step = nil, false, nil
+	RegisterScriptCallback("save_state", save_state)
+	RegisterScriptCallback("load_state", load_state)
+	RegisterScriptCallback("actor_on_first_update", actor_on_first_update)
+	RegisterScriptCallback("actor_on_update", actor_on_update)
+	RegisterScriptCallback("on_before_save_input", on_before_save_input)
+	RegisterScriptCallback("main_menu_on_quit", function() pcall(export_character) end)
+end

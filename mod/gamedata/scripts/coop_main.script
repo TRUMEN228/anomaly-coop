@@ -1,0 +1,229 @@
+--[[
+	Anomaly Co-op: core module.
+	Talks to CoopBridge.exe through two text files in appdata:
+	  coop_out.txt  game -> bridge (rewritten every tick)
+	  coop_in.txt   bridge -> game (rewritten by the bridge)
+	Both files end with an "end" line; a file without it is a partial write and is skipped.
+	Line kinds:
+	  g|<sid>|<ack>|<ver>|<role>   header written by the game (ack = last bridge event applied)
+	  b|<sid>|<ack>|<role>|<connected>|<peer name>|<my name>   header written by the bridge
+	  s|<tag>|...                  state, latest value wins
+	  e|<id>|<type>|...            reliable event, resent until acked
+	Event types starting with "@" are handled by the bridge itself.
+--]]
+
+VERSION = "1.0"
+debug = false
+local TICK_MS = 100
+
+local path_out, path_in
+local sid = nil
+local out_seq, out_queue = 0, {}
+local in_sid, in_last = nil, 0
+local next_tick = 0
+
+-- shared session info, read by other coop_* modules
+role = "none"          -- "host" | "client" | "none" (from bridge)
+connected = false
+peer_name = ""
+my_name = ""
+bridge_alive = false
+local last_in_change, last_in_raw = 0, nil
+
+local event_handlers = {}
+local state_handlers = {}
+local state_providers = {}
+
+function esc(s)
+	s = tostring(s or "")
+	return (s:gsub("[|\r\n]", " "))
+end
+
+function split(s)
+	local t = {}
+	for part in (s.."|"):gmatch("([^|]*)|") do t[#t+1] = part end
+	return t
+end
+
+function on_event(typ, fn)
+	event_handlers[typ] = event_handlers[typ] or {}
+	table.insert(event_handlers[typ], fn)
+end
+
+function on_state(tag, fn)
+	state_handlers[tag] = fn
+end
+
+-- fn() returns a list of fields (without "s|tag") or nil
+function add_state_provider(tag, fn)
+	state_providers[tag] = fn
+end
+
+-- queue a reliable event for the partner (or the bridge when typ starts with "@")
+function send(typ, ...)
+	out_seq = out_seq + 1
+	local parts = {...}
+	for i = 1, #parts do parts[i] = esc(parts[i]) end
+	local line = "e|" .. out_seq .. "|" .. esc(typ)
+	if #parts > 0 then line = line .. "|" .. table.concat(parts, "|") end
+	out_queue[#out_queue+1] = { out_seq, line }
+end
+
+function msg(text, header, icon)
+	if not db.actor then return end
+	db.actor:give_game_news(header or "Кооператив", text, icon or "ui_inGame2_PD_Lider", 0, 6000)
+	xr_sound.set_sound_play(AC_ID, "pda_tips")
+end
+
+local log_path
+function log(s)
+	log_path = log_path or getFS():update_path("$app_data_root$", "coop_log.txt")
+	local f = io.open(log_path, "a")
+	if f then
+		f:write(string.format("[%d] %s\n", time_global(), tostring(s)))
+		f:close()
+	end
+end
+
+local function write_out()
+	local lines = { "g|" .. sid .. "|" .. in_last .. "|" .. VERSION }
+	for tag, fn in pairs(state_providers) do
+		local ok, fields = pcall(fn)
+		if ok and fields then
+			for i = 1, #fields do fields[i] = esc(fields[i]) end
+			lines[#lines+1] = "s|" .. tag .. "|" .. table.concat(fields, "|")
+		elseif not ok then
+			log("state provider " .. tag .. " failed: " .. tostring(fields))
+		end
+	end
+	for i = 1, #out_queue do lines[#lines+1] = out_queue[i][2] end
+	lines[#lines+1] = "end\n"
+	local f = io.open(path_out, "w")
+	if f then
+		f:write(table.concat(lines, "\n"))
+		f:close()
+	end
+end
+
+local function dispatch_event(typ, args)
+	local list = event_handlers[typ]
+	if not list then return end
+	for i = 1, #list do
+		local ok, err = pcall(list[i], args)
+		if not ok then log("event " .. typ .. " failed: " .. tostring(err)) end
+	end
+end
+
+local function read_in()
+	local f = io.open(path_in, "r")
+	if not f then
+		bridge_alive = false
+		return
+	end
+	local raw = f:read("*a")
+	f:close()
+	if not raw or not raw:find("\nend") then return end -- partial write
+
+	local now = time_global()
+	if raw ~= last_in_raw then
+		last_in_raw = raw
+		last_in_change = now
+	end
+	-- the bridge rewrites the file at least every 500 ms; stale file = bridge closed
+	bridge_alive = (now - last_in_change) < 3000
+
+	local was_connected = connected
+	for line in raw:gmatch("[^\n]+") do
+		local t = split(line)
+		local k = t[1]
+		if k == "b" then
+			if t[2] ~= in_sid then
+				in_sid = t[2]
+				in_last = 0
+			end
+			local ack = tonumber(t[3]) or 0
+			local keep = {}
+			for i = 1, #out_queue do
+				if out_queue[i][1] > ack then keep[#keep+1] = out_queue[i] end
+			end
+			out_queue = keep
+			role = t[4] or "none"
+			connected = bridge_alive and (t[5] == "1")
+			peer_name = t[6] or ""
+			if t[7] and t[7] ~= "" then my_name = t[7] end
+		elseif k == "s" then
+			local fn = state_handlers[t[2]]
+			if fn then
+				local args = {}
+				for i = 3, #t do args[#args+1] = t[i] end
+				local ok, err = pcall(fn, args)
+				if not ok then log("state " .. t[2] .. " failed: " .. tostring(err)) end
+			end
+		elseif k == "e" then
+			local id = tonumber(t[2]) or 0
+			if id > in_last then
+				in_last = id
+				local args = {}
+				for i = 4, #t do args[#args+1] = t[i] end
+				dispatch_event(t[3], args)
+			end
+		end
+	end
+
+	if connected ~= was_connected then
+		if connected then
+			msg(string.format("Подключён %s (вы %s)", peer_name, role == "host" and "хост" or "гость"))
+		else
+			msg("Напарник отключился")
+		end
+		dispatch_event("_connection", { connected and "1" or "0" })
+	end
+end
+
+local function actor_on_update()
+	local now = time_global()
+	if now < next_tick then return end
+	next_tick = now + TICK_MS
+	read_in()
+	write_out()
+end
+
+function is_host() return connected and role == "host" end
+function is_client() return connected and role == "client" end
+
+------------------------------------------------------------------ hotkeys
+-- Num1 teleport to partner, Num2 host: send session save, Num3 client: load received save, Num0 status
+local function on_key_press(key)
+	if key == DIK_keys.DIK_NUMPAD1 then
+		dispatch_event("_cmd_tp", {})
+	elseif key == DIK_keys.DIK_NUMPAD2 then
+		dispatch_event("_cmd_sync", {})
+	elseif key == DIK_keys.DIK_NUMPAD3 then
+		dispatch_event("_cmd_load", {})
+	elseif key == DIK_keys.DIK_NUMPAD0 then
+		if not bridge_alive then
+			msg("Лаунчер кооператива не запущен")
+		elseif not connected then
+			msg("Лаунчер запущен, ждём напарника")
+		else
+			msg(string.format("Напарник: %s, вы %s", peer_name, role == "host" and "хост" or "гость"))
+		end
+	end
+end
+
+-- commands typed into the bridge window arrive as "cmd" events
+on_event("cmd", function(a) dispatch_event("_cmd_" .. (a[1] or ""), { a[2], a[3], a[4] }) end)
+on_event("chat", function(a) msg(a[1] or "", a[2] or peer_name, "ui_inGame2_PD_Lider") end)
+on_event("info", function(a) msg(a[1] or "") end)
+
+function on_game_start()
+	path_out = getFS():update_path("$app_data_root$", "coop_out.txt")
+	path_in = getFS():update_path("$app_data_root$", "coop_in.txt")
+	local f = io.open(getFS():update_path("$app_data_root$", "coop_log.txt"), "w")
+	if f then f:write("Anomaly Co-op " .. VERSION .. " log\n"); f:close() end
+	math.randomseed(os.time() + math.floor(os.clock() * 1000))
+	sid = tostring(math.random(100000, 999999))
+	out_seq, out_queue, in_sid, in_last = 0, {}, nil, 0
+	RegisterScriptCallback("actor_on_update", actor_on_update)
+	RegisterScriptCallback("on_key_press", on_key_press)
+end

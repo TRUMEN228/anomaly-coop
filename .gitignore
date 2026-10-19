@@ -1,0 +1,8 @@
+# private test installs, unpacked game files, logs
+local/
+build/
+launcher/bin/
+launcher/obj/
+dist/
+*.log
+coop_launcher.ini
