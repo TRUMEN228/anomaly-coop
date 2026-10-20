@@ -73,6 +73,8 @@ def pump():
             for line in p.decode(enc).splitlines():
                 f = line.split("|")
                 got["states"][f[1]] = got["states"].get(f[1], 0) + 1
+                if f[1] == "pd" and len(f) > 3:
+                    got.setdefault("doors", []).extend(f[3:])
                 if f[1] == "p":
                     peer_pos = (f[2], float(f[3]), float(f[4]), float(f[5]), f[7], f[8])
                 elif f[1] == "n":
@@ -144,6 +146,12 @@ while time.time() - t0 < secs:
         send_event("die|21564|sim_default_stalker_1")
         send_event("tstock|21552|zat_b22_stalker_medic|777|medkit:1.000:0;bandage:1.000:0;antirad:1.000:0")
         send_event(f"wspawn|60020|bandage|{x + 1:.2f}|{y:.2f}|{z:.2f}|{lv}|{gv}")
+    if "world" in sys.argv and mode == "host" and peer_pos and t > 80 and "rest" not in sent:
+        sent.add("rest")
+        lvl, x, y, z, lv, gv = peer_pos
+        send_event(f"pstash|70001|Тайник бота|{x + 1:.2f}|{y:.2f}|{z:.2f}|{lv}|{gv}|itm_backpack")
+        send_event("tmark|13569|1|тест|bandage,medkit")
+        send_event("surr|41763|sim_default_monolith_4")
     if "world" in sys.argv and mode == "host" and t > 72 and "loot" not in sent and "world" in sent:
         sent.add("loot"); send_event("loot|21564|sim_default_stalker_1|wpn_pm:0.500:0;ammo_9x18_fmj:1.000:16;bread:1.000:0")
     if "world" in sys.argv and mode == "guest" and t > 26 and "treq" not in sent and npcs:
@@ -166,3 +174,4 @@ if reconnect and mode == "guest":
     print("files after reconnect:", len(got["files"]) - files_before, "(0 = host did not resend the world)")
 print("events:", got["events"])
 print("state counts:", got["states"], "npcs listed:", len(npcs))
+print("push doors moved:", got.get("doors", []))

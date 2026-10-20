@@ -49,6 +49,43 @@ local function update()
 			h.direction = vector():set(0, -1, 0); crate:hit(h)
 		end
 	end
+	if t > 40 and not done.rest then
+		done.rest = true
+		local a = db.actor
+		-- player stash from a backpack, as item_backpack does it
+		local se = alife_create("inv_backpack", a:position(), a:level_vertex_id(), a:game_vertex_id())
+		if se then SendScriptCallback("actor_on_stash_create", { stash_id = se.id, stash_name = "Тест", stash_section = "itm_backpack" }) end
+		coop_main.log("SPAWNTEST player stash " .. tostring(se and se.id))
+		-- reward stash on the box used before
+		local box
+		for id, st in pairs(db.storage) do local o = st.object; if o and IsInvbox(o) then box = o break end end
+		if box then treasure_manager.set_random_stash(false, "тест", nil, box:id()) end
+		coop_main.log("SPAWNTEST reward stash on " .. tostring(box and box:id()) .. " content=" .. tostring(box and treasure_manager.caches[box:id()]))
+		-- surrender: nearest living stalker
+		local npc
+		for id, st in pairs(db.storage) do local o = st.object; if o and IsStalker(o) and o:alive() and id ~= AC_ID and not coop_player.is_puppet(id) then npc = o break end end
+		if npc then db.storage[npc:id()].victim_surrender = AC_ID end
+		coop_main.log("SPAWNTEST surrender " .. tostring(npc and npc:id()))
+		-- push door: swing the nearest hinge
+		local door, dd = nil, 1e9
+		level.iterate_nearest(a:position(), 40, function(o)
+			local ok, j = pcall(function() local sh = o:get_physics_shell(); return sh and sh:get_joint_by_bone_name("door") end)
+			if ok and j and not (db.storage[o:id()] and db.storage[o:id()].ph_door) then
+				local d = o:position():distance_to(a:position()); if d < dd then door, dd = o, d end
+			end
+		end)
+		coop_main.log("SPAWNTEST push door " .. tostring(door and door:id()))
+		if door then
+			local j = door:get_physics_shell():get_joint_by_bone_name("door")
+			coop_main.log("SPAWNTEST push door angle before " .. string.format("%.2f", j:get_axis_angle(0)))
+			j:set_max_force_and_velocity(3000, 2, 0)
+			CreateTimeEvent("coop_spawntest", "door_stop", 1.5, function()
+				j:set_max_force_and_velocity(0, 0, 0)
+				coop_main.log("SPAWNTEST push door angle after " .. string.format("%.2f", j:get_axis_angle(0)))
+				return true
+			end)
+		end
+	end
 	if t > 35 and not done.release and squad_id then
 		done.release = true
 		local se = alife_object(squad_id)

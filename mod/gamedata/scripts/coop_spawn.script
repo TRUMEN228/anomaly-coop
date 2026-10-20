@@ -29,6 +29,7 @@ function L(hid) hid = tonumber(hid); return hid and (h2g[hid] or hid) end
 function R(gid) gid = tonumber(gid); return gid and (g2h[gid] or gid) end
 
 local function map(hid, gid) h2g[hid] = gid; g2h[gid] = hid end
+function map_pair(hid, gid) map(tonumber(hid), tonumber(gid)) end
 local function unmap(hid) local g = h2g[hid]; if g then g2h[g] = nil end; h2g[hid] = nil end
 
 -- the host arms after it saved the session the guest will load; the guest after its world is ready
@@ -79,7 +80,8 @@ end
 local function is_inv_item(sec) return ini_sys:line_exist(sec, "inv_weight") end
 
 local function on_created(se)
-	if replicating or not armed or not se or coop_world.is_applying() then return end
+	if replicating or not armed or not se or coop_world.is_applying() or coop_objects.is_applying() then return end
+	if IsInvbox(nil, se:clsid()) then return end -- boxes and stashes are handled by coop_objects
 	local is_art = IsArtefact(nil, se:clsid())
 	local on_ground = se.parent_id == 65535
 	if host() then
@@ -182,6 +184,10 @@ coop_main.on_event("bspawn", function(a)
 	if not (hid and ini_sys:section_exist(sec)) or h2g[hid] then return end
 	local box = box_id and alife_object(box_id)
 	if not box then return end
+	if coop_objects.stash_spawned_here(box_id) then return end
+	if treasure_manager and type(treasure_manager.caches[box_id]) == "string" then
+		treasure_manager.caches[box_id] = true -- the host opened it first: its spawn replaces our lazy one
+	end
 	local se = create(function() return alife_create_item(sec, box) end)
 	if se then map(hid, se.id); stats.made = stats.made + 1; dbg("box item " .. sec .. " -> box " .. box.id) end
 end)
