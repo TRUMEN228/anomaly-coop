@@ -6,3 +6,4 @@ launcher/obj/
 dist/
 *.log
 coop_launcher.ini
+launcher/steam/

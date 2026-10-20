@@ -2,12 +2,13 @@
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
     <TargetFramework>net48</TargetFramework>
+    <PlatformTarget>x64</PlatformTarget>
     <UseWindowsForms>true</UseWindowsForms>
     <LangVersion>latest</LangVersion>
     <Nullable>disable</Nullable>
     <AssemblyName>CoopLauncher</AssemblyName>
     <RootNamespace>CoopLauncher</RootNamespace>
-    <Version>1.2.0</Version>
+    <Version>1.3.0</Version>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <GenerateAssemblyInfo>true</GenerateAssemblyInfo>
   </PropertyGroup>
@@ -17,6 +18,8 @@
     <Reference Include="Microsoft.CSharp" />
   </ItemGroup>
   <ItemGroup>
+    <!-- Valve redistributable from Steamworks.NET standalone 2025.164.1 (SHA-256 eb17909a...fb75), extracted next to the exe at runtime -->
+    <EmbeddedResource Include="steam\steam_api64.dll" LogicalName="steam\steam_api64.dll" />
     <!-- mod scripts, converted to cp1251 by build.py -->
     <EmbeddedResource Include="..\build\gamedata\scripts\coop_*.script" LogicalName="mod\%(Filename)%(Extension)" />
   </ItemGroup>

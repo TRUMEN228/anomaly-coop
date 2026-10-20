@@ -40,9 +40,9 @@ namespace CoopLauncher
             FormBorderStyle = FormBorderStyle.FixedDialog;
             MaximizeBox = MinimizeBox = false;
             StartPosition = FormStartPosition.CenterParent;
-            ClientSize = new Size(340, 100 + Actions.Length * 32);
-            BackColor = Color.FromArgb(30, 30, 30);
-            ForeColor = Color.FromArgb(225, 225, 225);
+            ClientSize = new Size(340, 132 + Actions.Length * 32);
+            BackColor = Theme.Plate;
+            ForeColor = Theme.Text;
 
             for (int i = 0; i < Actions.Length; i++)
             {
@@ -57,8 +57,12 @@ namespace CoopLauncher
             }
             var upnp = new CheckBox { Text = "Хост: открывать порт на роутере (UPnP)", Checked = s.Upnp, Left = 14, Top = 18 + Actions.Length * 32, AutoSize = true };
             Controls.Add(upnp);
-            var ok = new Button { Text = "Сохранить", DialogResult = DialogResult.OK, Left = 150, Top = 58 + Actions.Length * 32, Width = 85, FlatStyle = FlatStyle.Flat };
-            var cancel = new Button { Text = "Отмена", DialogResult = DialogResult.Cancel, Left = 240, Top = 58 + Actions.Length * 32, Width = 85, FlatStyle = FlatStyle.Flat };
+            Controls.Add(new Label { Text = "Порт для прямого IP", Left = 14, Top = 51 + Actions.Length * 32, AutoSize = true });
+            var port = new NumericUpDown { Minimum = 1024, Maximum = 65535, Value = s.Port, Left = 210, Top = 48 + Actions.Length * 32, Width = 115,
+                BackColor = Color.FromArgb(28, 28, 28), ForeColor = ForeColor, BorderStyle = BorderStyle.FixedSingle };
+            Controls.Add(port);
+            var ok = new Button { Text = "Сохранить", DialogResult = DialogResult.OK, Left = 150, Top = 90 + Actions.Length * 32, Width = 85, FlatStyle = FlatStyle.Flat };
+            var cancel = new Button { Text = "Отмена", DialogResult = DialogResult.Cancel, Left = 240, Top = 90 + Actions.Length * 32, Width = 85, FlatStyle = FlatStyle.Flat };
             Controls.AddRange(new Control[] { ok, cancel });
             AcceptButton = ok; CancelButton = cancel;
             ok.Click += (o, e) =>
@@ -72,6 +76,7 @@ namespace CoopLauncher
                 }
                 for (int i = 0; i < Actions.Length; i++) s.SetKey(Actions[i][0], chosen[i]);
                 s.Upnp = upnp.Checked;
+                s.Port = (int)port.Value;
             };
         }
     }

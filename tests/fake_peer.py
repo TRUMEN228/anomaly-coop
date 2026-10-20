@@ -6,9 +6,10 @@
 The fake player circles around the real player's position, then sends chat, a drop, a hit and a kill
 for the nearest creature from the host's creature list. Everything received is summarised at the end.
 """
-import math, os, socket, struct, sys, time
+import math, os, socket, struct, sys, time, zlib
 
-HELLO, STATE, EVENT, FILE, PING = 1, 2, 3, 4, 5
+HELLO, STATE, EVENT, FILE, PING, STATEZ = 1, 2, 3, 4, 5, 6
+PROTO = b"2"
 mode, port, secs = sys.argv[1], int(sys.argv[2]), float(sys.argv[3])
 enc = "cp1251"
 
@@ -33,7 +34,7 @@ else:
     srv = socket.socket(); srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     srv.bind(("0.0.0.0", port)); srv.listen(1)
     print("waiting for guest launcher..."); s, _ = srv.accept()
-s.sendall(frame(HELLO, b"1|Bot" + mode.capitalize().encode()))
+s.sendall(frame(HELLO, PROTO + b"|Bot" + mode.capitalize().encode()))
 s.settimeout(0.05)
 
 got = {"files": [], "events": [], "states": {}}
@@ -65,7 +66,10 @@ def pump():
             ln = struct.unpack("<i", p[:4])[0]; got["files"].append((p[4:4 + ln].decode(), len(p) - 4 - ln))
         elif t == EVENT:
             got["events"].append(p.decode(enc))
-        elif t == STATE:
+        elif t in (STATE, STATEZ):
+            if t == STATEZ:
+                p = zlib.decompress(p, -15)  # raw deflate
+                got["states"]["(compressed frames)"] = got["states"].get("(compressed frames)", 0) + 1
             for line in p.decode(enc).splitlines():
                 f = line.split("|")
                 got["states"][f[1]] = got["states"].get(f[1], 0) + 1
@@ -93,7 +97,7 @@ while time.time() - t0 < secs:
         files_before = len(got["files"])
         s.close(); buf = b""
         time.sleep(2)
-        s = socket.create_connection(("127.0.0.1", port)); s.sendall(frame(HELLO, b"1|BotGuest")); s.settimeout(0.05)
+        s = socket.create_connection(("127.0.0.1", port)); s.sendall(frame(HELLO, PROTO + b"|BotGuest")); s.settimeout(0.05)
         s.sendall(frame(EVENT, ("resume|" + tok).encode(enc)))
         got["events"].append("--- reconnected, sent resume|" + tok)
         print("reconnected and sent resume with token", tok)
@@ -102,7 +106,7 @@ while time.time() - t0 < secs:
         dropped = True
         s.close(); buf = b""
         print("dropped connection at", int(time.time() - t0), "s; waiting for reconnect")
-        s, _ = srv.accept(); s.sendall(frame(HELLO, b"1|BotHost")); s.settimeout(0.05)
+        s, _ = srv.accept(); s.sendall(frame(HELLO, PROTO + b"|BotHost")); s.settimeout(0.05)
         got["events"].append("--- reconnected")
         print("guest reconnected at", int(time.time() - t0), "s")
     pump()

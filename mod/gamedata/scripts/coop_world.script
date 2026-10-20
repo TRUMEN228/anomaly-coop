@@ -70,6 +70,7 @@ end)
 
 ------------------------------------------------------------------ creature positions (host authority)
 local next_npc_send = 0
+local npc_sent, npc_full_at = {}, 0
 coop_main.add_state_provider("n", function()
 	if not coop_main.is_host() then return end
 	local now = time_global()
@@ -78,13 +79,22 @@ coop_main.add_state_provider("n", function()
 	local remote = coop_player.get_remote()
 	local apos = db.actor:position()
 	local rpos = remote and remote.level == level.name() and remote.pos
+	-- deltas: only creatures that moved or got hurt since the last send, everything every 5 s
+	if now > npc_full_at then
+		npc_full_at = now + 5000
+		npc_sent = {}
+	end
 	local list = { tostring(now) }
 	for id, st in pairs(db.storage) do
 		local obj = st.object
 		if obj and id ~= AC_ID and not coop_player.is_puppet(id) and is_creature(obj) and obj:alive() then
 			local p = obj:position()
 			if p:distance_to(apos) < NPC_SYNC_RADIUS or (rpos and p:distance_to(rpos) < NPC_SYNC_RADIUS) then
-				list[#list+1] = string.format("%d:%s:%.1f:%.1f:%.1f:%.2f", id, obj:section(), p.x, p.y, p.z, obj.health)
+				local last = npc_sent[id]
+				if not last or last.pos:distance_to(p) > 0.5 or math.abs(last.h - obj.health) > 0.02 then
+					npc_sent[id] = { pos = vector():set(p), h = obj.health }
+					list[#list+1] = string.format("%d:%s:%.1f:%.1f:%.1f:%.2f", id, obj:section(), p.x, p.y, p.z, obj.health)
+				end
 			end
 		end
 	end

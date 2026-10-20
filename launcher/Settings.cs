@@ -10,6 +10,7 @@ namespace CoopLauncher
         public string GameDir, Nick, HostIp, Mode = "host", LastSave;
         public int Port = 27015;
         public bool Upnp = true;
+        public string Transport = "steam"; // "steam" | "ip"
         readonly Dictionary<string, string> keys = new Dictionary<string, string>
         {
             ["tp"] = "NUMPAD1", ["sync"] = "NUMPAD2", ["load"] = "NUMPAD3", ["status"] = "NUMPAD0",
@@ -51,6 +52,7 @@ namespace CoopLauncher
                         case "last_save": s.LastSave = v; break;
                         case "port": int.TryParse(v, out s.Port); break;
                         case "upnp": s.Upnp = v != "0"; break;
+                        case "transport": s.Transport = v == "ip" ? "ip" : "steam"; break;
                         default:
                             if (k.StartsWith("key_") && v.Length > 0) s.keys[k.Substring(4)] = v;
                             break;
@@ -68,7 +70,7 @@ namespace CoopLauncher
             {
                 var lines = new List<string> {
                     "game_dir=" + GameDir, "nick=" + Nick, "host_ip=" + HostIp,
-                    "mode=" + Mode, "last_save=" + LastSave, "port=" + Port, "upnp=" + (Upnp ? 1 : 0) };
+                    "mode=" + Mode, "last_save=" + LastSave, "port=" + Port, "upnp=" + (Upnp ? 1 : 0), "transport=" + Transport };
                 foreach (var kv in keys) lines.Add("key_" + kv.Key + "=" + kv.Value);
                 File.WriteAllLines(FilePath, lines);
             }

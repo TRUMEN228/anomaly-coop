@@ -10,13 +10,14 @@ using System.Threading;
 namespace CoopLauncher
 {
     /// <summary>
-    /// Relays between the local game (coop_in.txt / coop_out.txt in appdata) and the partner (TCP).
-    /// Frames on the wire: int32 length, byte type, payload.
+    /// Relays between the local game (coop_in.txt / coop_out.txt in appdata) and the partner,
+    /// over direct TCP or Steam (see ILink). A frame is a type byte followed by the payload.
+    /// State frames larger than 512 bytes are deflate-compressed (MsgStateZ).
     /// </summary>
     public sealed class Bridge : IDisposable
     {
-        public const string ProtocolVersion = "1";
-        const byte MsgHello = 1, MsgState = 2, MsgEvent = 3, MsgFile = 4, MsgPing = 5;
+        public const string ProtocolVersion = "2";
+        const byte MsgHello = 1, MsgState = 2, MsgEvent = 3, MsgFile = 4, MsgPing = 5, MsgStateZ = 6;
 
         public static readonly Encoding GameEnc = Encoding.GetEncoding(1251);
 
@@ -31,9 +32,9 @@ namespace CoopLauncher
         public event Action<string> FileReceived;          // file name in savedgames
 
         TcpListener listener;
-        TcpClient client;
-        NetworkStream stream;
+        volatile ILink link;
         Thread netThread, ipcThread;
+        public long BytesSent, BytesReceived;
         volatile bool running = true;
 
         public bool Connected { get; private set; }
@@ -77,12 +78,10 @@ namespace CoopLauncher
                     {
                         var c = listener.AcceptTcpClient();
                         if (Connected) { c.Close(); continue; }
-                        Attach(c);
-                        ReadLoop();
+                        Run(new TcpLink(c));
                     }
                     catch (Exception e) when (running) { Log?.Invoke("Сеть: " + e.Message); }
                     catch { return; }
-                    Detach();
                 }
             }) { IsBackground = true, Name = "net" };
             netThread.Start();
@@ -99,33 +98,112 @@ namespace CoopLauncher
                         Log?.Invoke($"Подключение к {host}:{port}...");
                         var c = new TcpClient();
                         c.Connect(host, port);
-                        Attach(c);
-                        ReadLoop();
+                        Run(new TcpLink(c));
                     }
                     catch (Exception e) when (running) { Log?.Invoke("Сеть: " + e.Message); }
                     catch { return; }
-                    Detach();
                     for (int i = 0; i < 30 && running; i++) Thread.Sleep(100);
                 }
             }) { IsBackground = true, Name = "net" };
             netThread.Start();
         }
 
-        void Attach(TcpClient c)
+        // ---- Steam: host makes a friends-only lobby; each new peer that talks to us becomes the partner
+        public void HostSteam()
         {
-            c.NoDelay = true;
-            client = c;
-            stream = c.GetStream();
+            SteamNet.NewPeer += OnSteamPeer;
+            SteamNet.LobbyCreated += lobby =>
+            {
+                Log?.Invoke("Steam-лобби создано. Друг увидит вас в списке «Друзья в Steam» в своём лаунчере.");
+                SteamNet.SetPresence("Anomaly Co-op: ждёт напарника");
+            };
+            SteamNet.HostLobby();
+        }
+
+        void OnSteamPeer(SteamLink l)
+        {
+            if (!running) return;
+            if (Connected) { l.Close(); return; }
+            new Thread(() =>
+            {
+                try { Run(l); }
+                catch (Exception e) when (running) { Log?.Invoke("Steam: " + e.Message); }
+                catch { }
+                l.Close();
+            }) { IsBackground = true, Name = "steam-peer" }.Start();
+        }
+
+        // ---- Steam: guest joins the friend's lobby, then talks to the lobby owner; rejoins on loss
+        public void JoinSteam(ulong lobby)
+        {
+            netThread = new Thread(() =>
+            {
+                while (running)
+                {
+                    try
+                    {
+                        Log?.Invoke("Вход в Steam-лобби друга...");
+                        var entered = new ManualResetEventSlim();
+                        bool ok = false;
+                        Action<ulong, bool> onEnter = (l, success) => { if (l == lobby) { ok = success; entered.Set(); } };
+                        SteamNet.LobbyEntered += onEnter;
+                        SteamNet.JoinLobby(lobby);
+                        entered.Wait(15000);
+                        SteamNet.LobbyEntered -= onEnter;
+                        if (!ok) throw new IOException("не удалось войти в лобби (друг закрыл лаунчер или лобби полное)");
+                        var owner = SteamNet.LobbyOwner(lobby);
+                        Run(SteamNet.Connect(owner));
+                    }
+                    catch (Exception e) when (running) { Log?.Invoke("Steam: " + e.Message); }
+                    catch { return; }
+                    for (int i = 0; i < 30 && running; i++) Thread.Sleep(100);
+                }
+            }) { IsBackground = true, Name = "net" };
+            netThread.Start();
+        }
+
+        /// <summary>Serve a ready link on a background thread (tests, custom transports).</summary>
+        public void RunLink(ILink l)
+        {
+            new Thread(() => { try { Run(l); } catch { } }) { IsBackground = true, Name = "link" }.Start();
+        }
+
+        /// <summary>Serve one partner over a link until it drops.</summary>
+        void Run(ILink l)
+        {
+            link = l;
             resumeSent = false;
-            Send(MsgHello, Encoding.UTF8.GetBytes(ProtocolVersion + "|" + myName));
+            try
+            {
+                Send(MsgHello, Encoding.UTF8.GetBytes(ProtocolVersion + "|" + myName));
+                var pinger = new Thread(() =>
+                {
+                    while (running && link == l)
+                    {
+                        try { Send(MsgPing, new byte[0]); } catch { return; }
+                        Thread.Sleep(3000);
+                    }
+                }) { IsBackground = true };
+                pinger.Start();
+                while (running)
+                {
+                    var f = l.Receive();
+                    Interlocked.Add(ref BytesReceived, f.Length);
+                    Handle(f[0], f, 1, f.Length - 1);
+                }
+            }
+            finally
+            {
+                if (link == l) link = null;
+                l.Dispose();
+                Detach();
+            }
         }
 
         void Detach()
         {
             bool was = Connected;
             Connected = false;
-            try { client?.Close(); } catch { }
-            client = null; stream = null;
             lock (sync) { peerState.Clear(); lastSentState.Clear(); }
             if (was)
             {
@@ -134,53 +212,27 @@ namespace CoopLauncher
             }
         }
 
-        void ReadLoop()
-        {
-            var s = stream;
-            var lenBuf = new byte[4];
-            var lastPing = DateTime.Now;
-            client.ReceiveTimeout = 15000;
-            var pinger = new Thread(() =>
-            {
-                while (running && s == stream && client != null)
-                {
-                    try { Send(MsgPing, new byte[0]); } catch { return; }
-                    Thread.Sleep(3000);
-                }
-            }) { IsBackground = true };
-            pinger.Start();
-
-            while (running)
-            {
-                ReadExact(s, lenBuf, 4);
-                int len = BitConverter.ToInt32(lenBuf, 0);
-                if (len < 1 || len > 64 * 1024 * 1024) throw new IOException("bad frame");
-                var buf = new byte[len];
-                ReadExact(s, buf, len);
-                Handle(buf[0], buf, 1, len - 1);
-            }
-        }
-
-        static void ReadExact(Stream s, byte[] buf, int n)
-        {
-            int off = 0;
-            while (off < n)
-            {
-                int r = s.Read(buf, off, n - off);
-                if (r <= 0) throw new IOException("соединение закрыто");
-                off += r;
-            }
-        }
-
         void Send(byte type, byte[] payload)
         {
-            var s = stream;
-            if (s == null) return;
-            var frame = new byte[5 + payload.Length];
-            BitConverter.GetBytes(payload.Length + 1).CopyTo(frame, 0);
-            frame[4] = type;
-            payload.CopyTo(frame, 5);
-            lock (s) s.Write(frame, 0, frame.Length);
+            var l = link;
+            if (l == null) return;
+            var frame = new byte[1 + payload.Length];
+            frame[0] = type;
+            payload.CopyTo(frame, 1);
+            l.Send(frame);
+            Interlocked.Add(ref BytesSent, frame.Length);
+        }
+
+        void SendState(string text)
+        {
+            var raw = GameEnc.GetBytes(text);
+            if (raw.Length < 512) { Send(MsgState, raw); return; }
+            using (var ms = new MemoryStream())
+            {
+                using (var z = new System.IO.Compression.DeflateStream(ms, System.IO.Compression.CompressionLevel.Fastest, true))
+                    z.Write(raw, 0, raw.Length);
+                Send(MsgStateZ, ms.ToArray());
+            }
         }
 
         void Handle(byte type, byte[] buf, int off, int len)
@@ -202,8 +254,15 @@ namespace CoopLauncher
                     break;
                 }
                 case MsgState:
+                case MsgStateZ:
                 {
-                    var text = GameEnc.GetString(buf, off, len);
+                    string text;
+                    if (type == MsgStateZ)
+                    {
+                        using (var z = new System.IO.Compression.DeflateStream(new MemoryStream(buf, off, len), System.IO.Compression.CompressionMode.Decompress))
+                        using (var r = new StreamReader(z, GameEnc)) text = r.ReadToEnd();
+                    }
+                    else text = GameEnc.GetString(buf, off, len);
                     lock (sync)
                         foreach (var line in text.Replace("\r", "").Split('\n'))
                         {
@@ -414,7 +473,7 @@ namespace CoopLauncher
                     }
                     if (changed.Length > 0)
                     {
-                        Send(MsgState, GameEnc.GetBytes(changed.ToString()));
+                        SendState(changed.ToString());
                         lastStateSend = DateTime.Now;
                     }
                 }
@@ -426,7 +485,9 @@ namespace CoopLauncher
         {
             running = false;
             try { listener?.Stop(); } catch { }
-            try { client?.Close(); } catch { }
+            try { link?.Dispose(); } catch { }
+            SteamNet.NewPeer -= OnSteamPeer;
+            if (SteamNet.Ready) SteamNet.Leave();
         }
     }
 }
