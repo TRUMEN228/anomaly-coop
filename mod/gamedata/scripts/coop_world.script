@@ -11,6 +11,7 @@ local NPC_SYNC_RADIUS = 70
 local NPC_SNAP_DIST = 3
 
 local applying = false         -- true while we apply a remote event, to avoid echoing it back
+function is_applying() return applying end
 local pending_hits = {}        -- id -> health before the actor's hit
 local pending_take = {}        -- id -> { sec, pos }
 local pending_drop = {}        -- id -> sec
@@ -108,7 +109,7 @@ coop_main.on_state("n", function(t)
 	applying = true
 	for i = 2, #t do
 		local id, sec, x, y, z, h = t[i]:match("^(%d+):([^:]+):([^:]+):([^:]+):([^:]+):([^:]+)$")
-		id = tonumber(id)
+		id = coop_spawn.L(id)
 		local obj = id and level.object_by_id(id)
 		if same(obj, sec) and obj:alive() then
 			local pos = vec(x, y, z)
@@ -135,14 +136,14 @@ local function flush_hits()
 		local obj = level.object_by_id(id)
 		if obj then
 			local delta = before - (obj:alive() and obj.health or 0)
-			if delta > 0.001 then coop_main.send("hit", id, obj:section(), string.format("%.3f", delta)) end
+			if delta > 0.001 then coop_main.send("hit", coop_spawn.R(id), obj:section(), string.format("%.3f", delta)) end
 		end
 	end
 	pending_hits = {}
 end
 
 coop_main.on_event("hit", function(a)
-	local id = tonumber(a[1])
+	local id = coop_spawn.L(a[1])
 	local obj = id and level.object_by_id(id)
 	dbg("recv hit " .. tostring(a[1]) .. " " .. tostring(a[2]) .. " match=" .. tostring(same(obj, a[2])))
 	if not (same(obj, a[2]) and obj:alive()) then return end
@@ -162,12 +163,12 @@ local function on_death(victim, who)
 	if coop_player.is_puppet(victim) or victim:id() == AC_ID then return end
 	-- the host reports every death it sees, the client only kills made by the actor
 	if coop_main.is_host() or (who and who:id() == AC_ID) then
-		coop_main.send("die", victim:id(), victim:section())
+		coop_main.send("die", coop_spawn.R(victim:id()), victim:section())
 	end
 end
 
 coop_main.on_event("die", function(a)
-	local id = tonumber(a[1])
+	local id = coop_spawn.L(a[1])
 	local obj = id and level.object_by_id(id)
 	dbg("recv die " .. tostring(a[1]) .. " " .. tostring(a[2]) .. " match=" .. tostring(same(obj, a[2])))
 	if same(obj, a[2]) and obj:alive() then
@@ -212,9 +213,9 @@ local function flush_items()
 	for id, t in pairs(pending_take) do
 		local box = box_take[id]
 		if box then
-			coop_main.send("btake", box, id, t[1])
+			coop_main.send("btake", coop_spawn.R(box), coop_spawn.R(id), t[1])
 		else
-			coop_main.send("take", id, t[1], f2(t[2].x), f2(t[2].y), f2(t[2].z))
+			coop_main.send("take", coop_spawn.R(id), t[1], f2(t[2].x), f2(t[2].y), f2(t[2].z))
 		end
 	end
 	pending_take, box_take = {}, {}
@@ -228,7 +229,7 @@ local function flush_items()
 				local p = obj:position()
 				coop_main.send("drop", id, sec, cond, ammo, f2(p.x), f2(p.y), f2(p.z), obj:level_vertex_id(), obj:game_vertex_id())
 			elseif parent:id() ~= AC_ID and IsInvbox(parent) then
-				coop_main.send("bput", parent:id(), sec, cond, ammo)
+				coop_main.send("bput", coop_spawn.R(parent:id()), sec, cond, ammo)
 			end
 		end
 	end
@@ -261,7 +262,7 @@ local function release_obj(obj)
 end
 
 coop_main.on_event("take", function(a)
-	local obj = find_ground_item(tonumber(a[1]), a[2], vec(a[3], a[4], a[5]), 4)
+	local obj = find_ground_item(coop_spawn.L(a[1]), a[2], vec(a[3], a[4], a[5]), 4)
 	dbg("recv take " .. tostring(a[2]) .. " found=" .. tostring(obj ~= nil))
 	if obj then
 		applying = true
@@ -271,8 +272,8 @@ coop_main.on_event("take", function(a)
 end)
 
 coop_main.on_event("btake", function(a)
-	local box = level.object_by_id(tonumber(a[1]) or -1)
-	local id, sec = tonumber(a[2]), a[3]
+	local box = level.object_by_id(coop_spawn.L(a[1]) or -1)
+	local id, sec = coop_spawn.L(a[2]), a[3]
 	local item = id and level.object_by_id(id)
 	if not (same(item, sec) and item:parent() and box and item:parent():id() == box:id()) then
 		item = nil
@@ -317,7 +318,7 @@ coop_main.on_event("drop", function(a)
 end)
 
 coop_main.on_event("bput", function(a)
-	local box = level.object_by_id(tonumber(a[1]) or -1)
+	local box = level.object_by_id(coop_spawn.L(a[1]) or -1)
 	if box then spawn_item(a[2], box, a[3], a[4]) end
 end)
 

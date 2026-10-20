@@ -1,0 +1,272 @@
+--[[
+	Anomaly Co-op: host-authoritative spawning (v2.0).
+	Objects that existed in the session save have the same ids in both worlds. Everything spawned
+	after the save comes from the host:
+	  host  -> guest  "sqm"   a squad member was added (the guest creates the squad on the first one)
+	                  "art"   an artefact appeared in the world
+	                  "unreg" a squad, creature or artefact was removed
+	                  "bspawn" an item appeared inside a box or stash (task rewards, PDA stashes)
+	The guest keeps a map host id -> guest id, does not respawn on its own and removes anything its
+	own scripts spawn. Ids on the wire are always host ids: use L() for incoming ids and R() for outgoing.
+--]]
+
+local armed = false          -- host: replicate; guest: block own spawns
+local replicating = false    -- guest: true while we create objects the host sent
+local h2g, g2h = {}, {}
+local pending_art = {}       -- host: artefact ids registered this tick (position is set after register)
+local pending_box = {}       -- host: item ids registered with a parent, checked next tick for a box
+local pending_release = {}   -- guest: own spawns to remove next tick
+local stats = { sent = 0, made = 0, blocked = 0 }
+
+local function host() return coop_main.is_host() end
+local function guest() return coop_session.is_guest_session() end
+local function dbg(s) if coop_main.debug then coop_main.log("spawn: " .. s) end end
+
+-- id translation (identity on the host and for objects from the save)
+function L(hid) hid = tonumber(hid); return hid and (h2g[hid] or hid) end
+function R(gid) gid = tonumber(gid); return gid and (g2h[gid] or gid) end
+
+local function map(hid, gid) h2g[hid] = gid; g2h[gid] = hid end
+local function unmap(hid) local g = h2g[hid]; if g then g2h[g] = nil end; h2g[hid] = nil end
+
+-- the host arms after it saved the session the guest will load; the guest after its world is ready
+function arm(reason)
+	if not armed then dbg("armed (" .. tostring(reason) .. ")") end
+	armed = true
+end
+
+local function f2(n) return string.format("%.2f", n) end
+local function vec(x, y, z) return vector():set(tonumber(x) or 0, tonumber(y) or 0, tonumber(z) or 0) end
+
+------------------------------------------------------------------ host side
+local function squad_on_add_npc(squad, se_npc, sec, pos, lvid, gvid)
+	if not (armed and host() and coop_main.connected and squad and se_npc) then return end
+	local p = pos or se_npc.position
+	coop_main.send("sqm", squad.id, squad:section_name(), se_npc.id, sec or se_npc:section_name(),
+		f2(p.x), f2(p.y), f2(p.z), lvid or se_npc.m_level_vertex_id, gvid or se_npc.m_game_vertex_id, squad.smart_id or "")
+	stats.sent = stats.sent + 1
+end
+
+local REMOVABLE = { sim_squad_scripted = true, se_stalker = true, se_monster = true, se_artefact = true }
+
+local function on_register(se, type_name)
+	-- objects created by mirrored events (a partner's drop) are not new spawns
+	if replicating or not armed or coop_world.is_applying() then return end
+	if host() then
+		if type_name == "se_artefact" and se.parent_id == 65535 then pending_art[se.id] = true
+		elseif se.parent_id and se.parent_id ~= 65535 and se.parent_id ~= AC_ID and type_name:find("^se_") and not REMOVABLE[type_name] then
+			pending_box[se.id] = true
+		end
+	elseif guest() and (type_name == "sim_squad_scripted" or (type_name == "se_artefact" and se.parent_id == 65535)) then
+		-- the guest's own simulation spawned something: the host decides what exists
+		pending_release[se.id] = se:section_name()
+	end
+end
+
+local function on_unregister(se, type_name)
+	if replicating or not (armed and REMOVABLE[type_name]) then return end
+	if host() and coop_main.connected then
+		coop_main.send("unreg", se.id, se:section_name())
+	elseif h2g[g2h[se.id] or -1] then
+		unmap(g2h[se.id])
+	end
+end
+
+-- Most items (engine classes) never raise server_entity_on_register, so also watch the global
+-- alife_create that every Anomaly script (and alife_create_item) spawns through.
+local function on_created(se)
+	if replicating or not armed or not se or coop_world.is_applying() then return end
+	local is_art = IsArtefact(nil, se:clsid())
+	if host() then
+		if is_art and se.parent_id == 65535 then pending_art[se.id] = true
+		elseif se.parent_id and se.parent_id ~= 65535 and se.parent_id ~= AC_ID then pending_box[se.id] = true end
+	elseif guest() and is_art and se.parent_id == 65535 then
+		pending_release[se.id] = se:section_name()
+	end
+end
+
+local function hook_alife_create()
+	if _G.coop_orig_alife_create then return end
+	local orig = _G.alife_create
+	_G.coop_orig_alife_create = orig
+	_G.alife_create = function(...)
+		local se = orig(...)
+		local ok, err = pcall(on_created, se)
+		if not ok then coop_main.log("spawn hook failed: " .. tostring(err)) end
+		return se
+	end
+	-- alife_create_item spawns inventory items with alife():create directly; it returns one object or a list
+	local orig_item = _G.alife_create_item
+	_G.coop_orig_alife_create_item = orig_item
+	_G.alife_create_item = function(...)
+		local res = orig_item(...)
+		local ok, err = pcall(function()
+			if type(res) == "table" then for _, se in pairs(res) do on_created(se) end
+			elseif type(res) == "userdata" then on_created(res) end
+		end)
+		if not ok then coop_main.log("spawn hook failed: " .. tostring(err)) end
+		return res
+	end
+end
+
+-- guest: no respawns in smart terrains, the host's arrive as "sqm"
+local function on_try_respawn(smart, flags)
+	if guest() then flags.disabled = true end
+end
+
+------------------------------------------------------------------ guest side
+local function create(fn)
+	replicating = true
+	local ok, res = pcall(fn)
+	replicating = false
+	if not ok then coop_main.log("spawn failed: " .. tostring(res)) end
+	return ok and res or nil
+end
+
+coop_main.on_event("sqm", function(a)
+	if host() then return end
+	local sq_h, sq_sec, npc_h, npc_sec = tonumber(a[1]), a[2], tonumber(a[3]), a[4]
+	local pos, lvid, gvid, smart = vec(a[5], a[6], a[7]), tonumber(a[8]), tonumber(a[9]), tonumber(a[10])
+	if not (sq_h and npc_h and ini_sys:section_exist(sq_sec) and ini_sys:section_exist(npc_sec)) then return end
+	if h2g[npc_h] and alife_object(h2g[npc_h]) then return end -- already have it
+
+	local squad = h2g[sq_h] and alife_object(h2g[sq_h])
+	if not squad then
+		squad = create(function()
+			local s = alife_create(sq_sec, pos, lvid, gvid)
+			if smart and alife_object(smart) then SIMBOARD:assign_squad_to_smart(s, smart) end
+			return s
+		end)
+		if not squad then return end
+		map(sq_h, squad.id)
+	end
+	local gid = create(function()
+		local id = squad:add_squad_member(npc_sec, pos, lvid, gvid)
+		local se = id and alife_object(id)
+		if se then SIMBOARD:setup_squad_and_group(se) end
+		return id
+	end)
+	if gid then
+		map(npc_h, gid)
+		stats.made = stats.made + 1
+		dbg(string.format("squad %s member %s host=%d guest=%d", sq_sec, npc_sec, npc_h, gid))
+	end
+end)
+
+coop_main.on_event("art", function(a)
+	if host() then return end
+	local hid, sec = tonumber(a[1]), a[2]
+	if not (hid and ini_sys:section_exist(sec)) or h2g[hid] then return end
+	local se = create(function() return alife_create(sec, vec(a[3], a[4], a[5]), tonumber(a[6]), tonumber(a[7])) end)
+	if se then map(hid, se.id); stats.made = stats.made + 1; dbg("artefact " .. sec) end
+end)
+
+coop_main.on_event("bspawn", function(a)
+	if host() then return end
+	local box_id, hid, sec = L(a[1]), tonumber(a[2]), a[3]
+	if not (hid and ini_sys:section_exist(sec)) or h2g[hid] then return end
+	local box = box_id and alife_object(box_id)
+	if not box then return end
+	local se = create(function() return alife_create_item(sec, box) end)
+	if se then map(hid, se.id); stats.made = stats.made + 1; dbg("box item " .. sec .. " -> box " .. box.id) end
+end)
+
+coop_main.on_event("unreg", function(a)
+	if host() then return end
+	local hid, sec = tonumber(a[1]), a[2]
+	local gid = L(hid)
+	local se = gid and alife_object(gid)
+	if se and se:section_name() == sec and se.id ~= AC_ID then
+		replicating = true
+		local ok = pcall(function()
+			if IsStalker(nil, se:clsid()) or IsMonster(nil, se:clsid()) then
+				if not alife_release(se) then alife():release(se, true) end -- lone NPCs have no squad
+			else
+				alife_release(se)
+			end
+		end)
+		replicating = false
+		dbg("removed " .. sec .. " ok=" .. tostring(ok))
+	end
+	unmap(hid)
+end)
+
+------------------------------------------------------------------ main loop
+local next_tick = 0
+local function actor_on_update()
+	local now = time_global()
+	if now < next_tick then return end
+	next_tick = now + 200
+
+	-- host: artefacts get their position after registration
+	for id in pairs(pending_art) do
+		local se = alife_object(id)
+		if se and se.parent_id == 65535 and coop_main.connected then
+			local p = se.position
+			coop_main.send("art", id, se:section_name(), f2(p.x), f2(p.y), f2(p.z), se.m_level_vertex_id, se.m_game_vertex_id)
+			stats.sent = stats.sent + 1
+		end
+	end
+	pending_art = {}
+
+	-- host: items that appeared inside an inventory box (stash rewards, scripted fills)
+	for id in pairs(pending_box) do
+		local se = alife_object(id)
+		local box = se and se.parent_id and alife_object(se.parent_id)
+		if box and IsInvbox(nil, box:clsid()) and coop_main.connected then
+			coop_main.send("bspawn", box.id, id, se:section_name())
+			stats.sent = stats.sent + 1
+		end
+	end
+	pending_box = {}
+
+	-- guest: remove what our own scripts spawned
+	for id, sec in pairs(pending_release) do
+		local se = alife_object(id)
+		if se and se:section_name() == sec and not g2h[id] then
+			replicating = true
+			pcall(alife_release, se)
+			replicating = false
+			stats.blocked = stats.blocked + 1
+			dbg("blocked own spawn " .. sec)
+		end
+	end
+	pending_release = {}
+end
+
+-- arm the guest a few seconds after its world is ready (registrations during loading are the save itself)
+local function actor_on_first_update()
+	CreateTimeEvent("coop_spawn", "arm", 5, function()
+		if guest() then arm("guest world ready") end
+		return true
+	end)
+end
+
+function get_stats() return stats end
+
+local function save_state(m_data)
+	if guest() then
+		local t = {}
+		for h, g in pairs(h2g) do t[#t+1] = h .. ":" .. g end
+		m_data.coop_idmap = table.concat(t, ",")
+	end
+end
+
+local function load_state(m_data)
+	h2g, g2h = {}, {}
+	for h, g in (m_data.coop_idmap or ""):gmatch("(%d+):(%d+)") do map(tonumber(h), tonumber(g)) end
+	m_data.coop_idmap = nil
+end
+
+function on_game_start()
+	armed, replicating = false, false
+	hook_alife_create()
+	RegisterScriptCallback("squad_on_add_npc", squad_on_add_npc)
+	RegisterScriptCallback("server_entity_on_register", on_register)
+	RegisterScriptCallback("server_entity_on_unregister", on_unregister)
+	RegisterScriptCallback("on_try_respawn", on_try_respawn)
+	RegisterScriptCallback("actor_on_update", actor_on_update)
+	RegisterScriptCallback("actor_on_first_update", actor_on_first_update)
+	RegisterScriptCallback("save_state", save_state)
+	RegisterScriptCallback("load_state", load_state)
+end

@@ -236,6 +236,7 @@ local function actor_on_update()
 	if save_pending and now > save_pending then
 		save_pending = nil
 		coop_main.send("@saved", SESSION_SAVE)
+		coop_spawn.arm("session saved")
 	end
 	if now > next_export then
 		next_export = now + 15000

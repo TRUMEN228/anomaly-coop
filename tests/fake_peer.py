@@ -9,7 +9,7 @@ for the nearest creature from the host's creature list. Everything received is s
 import math, os, socket, struct, sys, time, zlib
 
 HELLO, STATE, EVENT, FILE, PING, STATEZ = 1, 2, 3, 4, 5, 6
-PROTO = b"2"
+PROTO = b"3"
 mode, port, secs = sys.argv[1], int(sys.argv[2]), float(sys.argv[3])
 enc = "cp1251"
 
@@ -87,6 +87,7 @@ if mode == "host":
     send_event("session_ready|faketoken")
 
 reconnect = "reconnect" in sys.argv
+spawn = "spawn" in sys.argv  # host mode: send a squad, a hit, a death and a removal with host ids
 dropped = False
 center = None; last_state = 0; last_ping = 0
 while time.time() - t0 < secs:
@@ -124,6 +125,17 @@ while time.time() - t0 < secs:
         if mode == "host":
             lines.append("s|w|0|||0")  # world state with game time 0: guest must not rewind
         s.sendall(frame(STATE, "\n".join(lines).encode(enc)))
+    if spawn and mode == "host" and peer_pos and t > 60 and "sqm" not in sent:
+        sent.add("sqm")
+        lvl, x, y, z, lv, gv = peer_pos
+        # host ids far above anything in the guest's world, so they must be mapped
+        send_event(f"sqm|60001|stalker_sim_squad_novice|60002|sim_default_stalker_0|{x + 3:.2f}|{y:.2f}|{z:.2f}|{lv}|{gv}|")
+        send_event(f"sqm|60001|stalker_sim_squad_novice|60003|sim_default_stalker_0|{x + 4:.2f}|{y:.2f}|{z:.2f}|{lv}|{gv}|")
+        send_event(f"art|60010|af_medusa|{x + 2:.2f}|{y:.2f}|{z:.2f}|{lv}|{gv}")
+    if spawn and mode == "host" and t > 75 and "sdie" not in sent and "sqm" in sent:
+        sent.add("sdie"); send_event("hit|60002|sim_default_stalker_0|0.400"); send_event("die|60002|sim_default_stalker_0")
+    if spawn and mode == "host" and t > 85 and "sunreg" not in sent and "sqm" in sent:
+        sent.add("sunreg"); send_event("unreg|60003|sim_default_stalker_0"); send_event("unreg|60001|stalker_sim_squad_novice")
     if t > 20 and "chat" not in sent:
         sent.add("chat"); send_event("chat|Привет от бота|Bot")
     if t > 24 and "drop" not in sent and center:
@@ -137,5 +149,5 @@ while time.time() - t0 < secs:
 print("files:", got["files"])
 if reconnect and mode == "guest":
     print("files after reconnect:", len(got["files"]) - files_before, "(0 = host did not resend the world)")
-print("events:", got["events"][-10:])
+print("events:", got["events"])
 print("state counts:", got["states"], "npcs listed:", len(npcs))

@@ -1,9 +1,10 @@
 # QA: real host + fake guest that drops, reconnects and sends resume; the host must not resend the world.
 $r = 'D:\Projects\stalker_coop'
 Stop-Process -Name AnomalyDX11AVX, CoopLauncher -Force -ErrorAction SilentlyContinue; Start-Sleep 2
-Copy-Item "$r\dist\CoopLauncher.exe" "$r\local\launcherA\" -Force
+Copy-Item "$r\launcher\bin\Release\net48\CoopLauncher.exe" "$r\local\launcherA\" -Force
 foreach ($x in 'coop_out.txt', 'coop_in.txt', 'coop_log.txt') { Remove-Item "$r\local\testA\appdata\$x" -ErrorAction SilentlyContinue }
 Remove-Item "$r\local\launcherA\coop_launcher.log" -ErrorAction SilentlyContinue
+Start-Process powershell -ArgumentList "-NoProfile", "-File", "$r\tests\wake_game.ps1", "-Dir", "$r\local\testA" -WindowStyle Hidden | Out-Null
 Start-Process "$r\local\launcherA\CoopLauncher.exe" -ArgumentList "--auto", "--no-upnp" -WorkingDirectory "$r\local\launcherA" | Out-Null
 for ($i = 0; $i -lt 60 -and -not (Test-Path "$r\local\testA\appdata\coop_out.txt"); $i++) { Start-Sleep 2 }
 "host in game: $(Test-Path "$r\local\testA\appdata\coop_out.txt")"; Start-Sleep 5
