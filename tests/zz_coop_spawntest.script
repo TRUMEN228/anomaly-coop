@@ -29,6 +29,26 @@ local function update()
 		local item = box and alife_create_item("bandage", box)
 		coop_main.log("SPAWNTEST box item " .. tostring(item and item.id) .. " in box " .. tostring(box and box:id()))
 	end
+	if t > 30 and not done.objects then
+		done.objects = true
+		local a = db.actor
+		local door, crate, dd, cd = nil, nil, 1e9, 1e9
+		for id, st in pairs(db.storage) do
+			local o = st.object
+			if o then
+				local d = o:position():distance_to(a:position())
+				if st.ph_door and st.ph_door.door_action and d < dd then door, dd = st.ph_door.door_action, d end
+				if o:clsid() == clsid.obj_phys_destroyable and o:alive() and d < cd then crate, cd = o, d end
+			end
+		end
+		coop_main.log(string.format("SPAWNTEST door %s at %.0f m, crate %s at %.0f m",
+			tostring(door and door.object:id()), dd, tostring(crate and crate:id()), cd))
+		if door then door:open_door(true) end
+		if crate then
+			local h = hit(); h.type = hit.explosion; h.power = 1000; h.impulse = 0; h.draftsman = a
+			h.direction = vector():set(0, -1, 0); crate:hit(h)
+		end
+	end
 	if t > 35 and not done.release and squad_id then
 		done.release = true
 		local se = alife_object(squad_id)

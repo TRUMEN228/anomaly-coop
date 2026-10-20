@@ -9,7 +9,7 @@ Start-Process powershell -ArgumentList "-NoProfile", "-File", "$r\tests\wake_gam
 Start-Process "$r\local\launcherA\CoopLauncher.exe" -ArgumentList "--auto", "--no-upnp" -WorkingDirectory "$r\local\launcherA" | Out-Null
 for ($i = 0; $i -lt 60 -and -not (Test-Path "$t\appdata\coop_out.txt"); $i++) { Start-Sleep 2 }
 Start-Sleep 5
-python "$r\tests\fake_peer.py" guest 27015 70 | Select-String "events:" | % { $_.Line -replace "'(chat|die|session_ready)[^']*',? ?", "" }
+python "$r\tests\fake_peer.py" guest 27015 70 world | Select-String "events:" | % { $_.Line -replace "'(chat|die|session_ready)[^']*',? ?", "" }
 Get-Content "$t\appdata\coop_syntax.txt" | ? { $_ -notmatch ': ok$' }
-"--- host log"; Get-Content "$t\appdata\coop_log.txt" | Select-String "SPAWNTEST|spawn:|failed" | % Line
+"--- host log"; Get-Content "$t\appdata\coop_log.txt" | Select-String "SPAWNTEST|spawn:|objects:|failed|loot" | % Line
 Remove-Item "$t\appdata\coop_spawntest.txt", "$t\appdata\coop_debug.txt"; Remove-Item "$t\gamedata\scripts\zz_coop_spawntest.script"

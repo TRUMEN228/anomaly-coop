@@ -6,6 +6,7 @@
 	                  "art"   an artefact appeared in the world
 	                  "unreg" a squad, creature or artefact was removed
 	                  "bspawn" an item appeared inside a box or stash (task rewards, PDA stashes)
+	                  "wspawn" an item appeared on the ground (loot from broken crates, scripted drops)
 	The guest keeps a map host id -> guest id, does not respawn on its own and removes anything its
 	own scripts spawn. Ids on the wire are always host ids: use L() for incoming ids and R() for outgoing.
 --]]
@@ -15,6 +16,7 @@ local replicating = false    -- guest: true while we create objects the host sen
 local h2g, g2h = {}, {}
 local pending_art = {}       -- host: artefact ids registered this tick (position is set after register)
 local pending_box = {}       -- host: item ids registered with a parent, checked next tick for a box
+local pending_world = {}     -- host: inventory items spawned on the ground
 local pending_release = {}   -- guest: own spawns to remove next tick
 local stats = { sent = 0, made = 0, blocked = 0 }
 
@@ -74,13 +76,18 @@ end
 
 -- Most items (engine classes) never raise server_entity_on_register, so also watch the global
 -- alife_create that every Anomaly script (and alife_create_item) spawns through.
+local function is_inv_item(sec) return ini_sys:line_exist(sec, "inv_weight") end
+
 local function on_created(se)
 	if replicating or not armed or not se or coop_world.is_applying() then return end
 	local is_art = IsArtefact(nil, se:clsid())
+	local on_ground = se.parent_id == 65535
 	if host() then
-		if is_art and se.parent_id == 65535 then pending_art[se.id] = true
-		elseif se.parent_id and se.parent_id ~= 65535 and se.parent_id ~= AC_ID then pending_box[se.id] = true end
-	elseif guest() and is_art and se.parent_id == 65535 then
+		if is_art and on_ground then pending_art[se.id] = true
+		elseif on_ground and is_inv_item(se:section_name()) then pending_world[se.id] = true
+		elseif se.parent_id and not on_ground and se.parent_id ~= AC_ID then pending_box[se.id] = true end
+	elseif guest() and on_ground and (is_art or is_inv_item(se:section_name())) then
+		-- loot that appears on the ground comes from the host
 		pending_release[se.id] = se:section_name()
 	end
 end
@@ -161,6 +168,14 @@ coop_main.on_event("art", function(a)
 	if se then map(hid, se.id); stats.made = stats.made + 1; dbg("artefact " .. sec) end
 end)
 
+coop_main.on_event("wspawn", function(a)
+	if host() then return end
+	local hid, sec = tonumber(a[1]), a[2]
+	if not (hid and ini_sys:section_exist(sec)) or h2g[hid] then return end
+	local se = create(function() return alife_create(sec, vec(a[3], a[4], a[5]), tonumber(a[6]), tonumber(a[7])) end)
+	if se then map(hid, se.id); stats.made = stats.made + 1; dbg("ground item " .. sec) end
+end)
+
 coop_main.on_event("bspawn", function(a)
 	if host() then return end
 	local box_id, hid, sec = L(a[1]), tonumber(a[2]), a[3]
@@ -208,6 +223,17 @@ local function actor_on_update()
 		end
 	end
 	pending_art = {}
+
+	-- host: items that appeared on the ground
+	for id in pairs(pending_world) do
+		local se = alife_object(id)
+		if se and se.parent_id == 65535 and coop_main.connected then
+			local p = se.position
+			coop_main.send("wspawn", id, se:section_name(), f2(p.x), f2(p.y), f2(p.z), se.m_level_vertex_id, se.m_game_vertex_id)
+			stats.sent = stats.sent + 1
+		end
+	end
+	pending_world = {}
 
 	-- host: items that appeared inside an inventory box (stash rewards, scripted fills)
 	for id in pairs(pending_box) do

@@ -136,6 +136,21 @@ while time.time() - t0 < secs:
         sent.add("sdie"); send_event("hit|60002|sim_default_stalker_0|0.400"); send_event("die|60002|sim_default_stalker_0")
     if spawn and mode == "host" and t > 85 and "sunreg" not in sent and "sqm" in sent:
         sent.add("sunreg"); send_event("unreg|60003|sim_default_stalker_0"); send_event("unreg|60001|stalker_sim_squad_novice")
+    if "world" in sys.argv and mode == "host" and peer_pos and t > 65 and "world" not in sent:
+        # ids from the shared session save (testA, Zaton / Skadovsk)
+        sent.add("world")
+        lvl, x, y, z, lv, gv = peer_pos
+        send_event("door|13696|1")
+        send_event("die|21564|sim_default_stalker_1")
+        send_event("tstock|21552|zat_b22_stalker_medic|777|medkit:1.000:0;bandage:1.000:0;antirad:1.000:0")
+        send_event(f"wspawn|60020|bandage|{x + 1:.2f}|{y:.2f}|{z:.2f}|{lv}|{gv}")
+    if "world" in sys.argv and mode == "host" and t > 72 and "loot" not in sent and "world" in sent:
+        sent.add("loot"); send_event("loot|21564|sim_default_stalker_1|wpn_pm:0.500:0;ammo_9x18_fmj:1.000:16;bread:1.000:0")
+    if "world" in sys.argv and mode == "guest" and t > 26 and "treq" not in sent and npcs:
+        sent.add("treq")
+        for e in npcs[:3]:
+            nid, sec = e.split(":")[0], e.split(":")[1]
+            if "stalker" in sec or "trader" in sec or "barmen" in sec or sec.startswith("zat"): send_event(f"treq|{nid}|{sec}")
     if t > 20 and "chat" not in sent:
         sent.add("chat"); send_event("chat|Привет от бота|Bot")
     if t > 24 and "drop" not in sent and center:

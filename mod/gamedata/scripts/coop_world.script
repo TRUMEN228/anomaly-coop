@@ -2,6 +2,7 @@
 	Anomaly Co-op: world sync.
 	Both players start from the host's save, so object ids match and events are matched by id + section.
 	  host -> client: game time, weather, surge (state "w"), creature positions/health (state "n")
+	  host -> client: corpse inventories after death ("loot"), hostility in the creature state
 	  both ways:      damage dealt by the actor ("hit"), deaths ("die"),
 	                  items taken from the ground ("take") or from boxes/corpses ("btake"),
 	                  items dropped ("drop") or put into boxes ("bput")
@@ -92,9 +93,11 @@ coop_main.add_state_provider("n", function()
 			local p = obj:position()
 			if p:distance_to(apos) < NPC_SYNC_RADIUS or (rpos and p:distance_to(rpos) < NPC_SYNC_RADIUS) then
 				local last = npc_sent[id]
-				if not last or last.pos:distance_to(p) > 0.5 or math.abs(last.h - obj.health) > 0.02 then
-					npc_sent[id] = { pos = vector():set(p), h = obj.health }
-					list[#list+1] = string.format("%d:%s:%.1f:%.1f:%.1f:%.2f", id, obj:section(), p.x, p.y, p.z, obj.health)
+				local rel_now = IsStalker(obj) and obj:relation(db.actor) or 2
+				if not last or last.pos:distance_to(p) > 0.5 or math.abs(last.h - obj.health) > 0.02 or last.rel ~= rel_now then
+					npc_sent[id] = { pos = vector():set(p), h = obj.health, rel = rel_now }
+					local rel = IsStalker(obj) and obj:relation(db.actor) or 2
+					list[#list+1] = string.format("%d:%s:%.1f:%.1f:%.1f:%.2f:%d", id, obj:section(), p.x, p.y, p.z, obj.health, rel)
 				end
 			end
 		end
@@ -108,7 +111,7 @@ coop_main.on_state("n", function(t)
 	last_npc_stamp = t[1]
 	applying = true
 	for i = 2, #t do
-		local id, sec, x, y, z, h = t[i]:match("^(%d+):([^:]+):([^:]+):([^:]+):([^:]+):([^:]+)$")
+		local id, sec, x, y, z, h, rel = t[i]:match("^(%d+):([^:]+):([^:]+):([^:]+):([^:]+):([^:]+):?(%d?)$")
 		id = coop_spawn.L(id)
 		local obj = id and level.object_by_id(id)
 		if same(obj, sec) and obj:alive() then
@@ -118,6 +121,10 @@ coop_main.on_state("n", function(t)
 			end
 			h = tonumber(h)
 			if h and h < obj.health - 0.05 then obj:set_health_ex(h) end
+			-- whoever the NPC is hostile to on the host side, it is hostile to the whole team
+			if rel == "2" and IsStalker(obj) and obj:relation(db.actor) ~= game_object.enemy then
+				obj:set_relation(game_object.enemy, db.actor)
+			end
 		end
 	end
 	applying = false
@@ -148,6 +155,9 @@ coop_main.on_event("hit", function(a)
 	dbg("recv hit " .. tostring(a[1]) .. " " .. tostring(a[2]) .. " match=" .. tostring(same(obj, a[2])))
 	if not (same(obj, a[2]) and obj:alive()) then return end
 	local h = obj.health - (tonumber(a[3]) or 0)
+	if IsStalker(obj) and obj:relation(db.actor) ~= game_object.enemy and not coop_player.is_puppet(obj) then
+		obj:set_relation(game_object.enemy, db.actor)
+	end
 	applying = true
 	if h <= 0.005 then
 		obj:kill(puppet_obj() or obj)
@@ -158,7 +168,12 @@ coop_main.on_event("hit", function(a)
 end)
 
 ------------------------------------------------------------------ deaths
+local pending_loot = {}      -- host: corpse id -> time to send its inventory (after death_manager filled it)
+
 local function on_death(victim, who)
+	if victim and coop_main.is_host() and coop_main.connected and is_creature(victim) and not coop_player.is_puppet(victim) then
+		pending_loot[victim:id()] = time_global() + 3000
+	end
 	if applying or not coop_main.connected or not victim then return end
 	if coop_player.is_puppet(victim) or victim:id() == AC_ID then return end
 	-- the host reports every death it sees, the client only kills made by the actor
@@ -207,6 +222,26 @@ local function item_props(obj)
 	local cond = obj.condition and obj:condition() or 1
 	local ammo = (IsAmmo and IsAmmo(obj) and obj:ammo_get_count()) or 0
 	return string.format("%.3f", cond), ammo
+end
+
+local function flush_loot()
+	local now = time_global()
+	for id, at in pairs(pending_loot) do
+		if now >= at then
+			pending_loot[id] = nil
+			local npc = level.object_by_id(id)
+			if npc and not npc:alive() then
+				local list = {}
+				npc:iterate_inventory(function(_, o)
+					if o and o:section() then
+						local cond, ammo = item_props(o)
+						list[#list+1] = string.format("%s:%s:%s", o:section(), cond, ammo)
+					end
+				end, nil)
+				coop_main.send("loot", coop_spawn.R(id), npc:section(), table.concat(list, ";"))
+			end
+		end
+	end
 end
 
 local function flush_items()
@@ -307,6 +342,30 @@ local function spawn_item(sec, owner, cond, ammo)
 	applying = false
 end
 
+-- guest: replace what the local death_manager put on the body with the host's list
+coop_main.on_event("loot", function(a)
+	if coop_main.is_host() then return end
+	local npc = level.object_by_id(coop_spawn.L(a[1]) or -1)
+	if not (same(npc, a[2]) and not npc:alive()) then return end
+	applying = true
+	local old = {}
+	npc:iterate_inventory(function(_, o) if o then old[#old+1] = o:id() end end, nil)
+	for _, id in ipairs(old) do
+		local se = alife_object(id)
+		if se then alife_release(se) end
+	end
+	local n = 0
+	for entry in (a[3] or ""):gmatch("[^;]+") do
+		local sec, cond, ammo = entry:match("^([^:]+):([^:]*):(%d*)$")
+		if sec and ini_sys:section_exist(sec) then
+			spawn_item(sec, npc, cond, ammo)
+			n = n + 1
+		end
+	end
+	applying = false
+	if coop_main.debug then coop_main.log("loot " .. npc:section() .. ": " .. n .. " items from host, replaced " .. #old) end
+end)
+
 coop_main.on_event("drop", function(a)
 	-- a: id, sec, cond, ammo, x, y, z, lvid, gvid
 	if coop_player.get_remote() and coop_player.get_remote().level ~= level.name() then return end
@@ -331,6 +390,7 @@ local function actor_on_update()
 	local ok, err = pcall(function()
 		flush_hits()
 		flush_items()
+		flush_loot()
 	end)
 	if not ok then coop_main.log("world flush failed: " .. tostring(err)) end
 end
