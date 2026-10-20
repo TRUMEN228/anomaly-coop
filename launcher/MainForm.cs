@@ -392,11 +392,9 @@ namespace CoopLauncher
 
         void BrowseGame()
         {
-            using (var d = new FolderBrowserDialog { Description = "Папка с игрой (где лежат fsgame.ltx и bin)" })
-            {
-                if (IsGameDir(gameDir.Text)) d.SelectedPath = gameDir.Text;
+            var start = IsGameDir(gameDir.Text) ? Path.GetDirectoryName(gameDir.Text.TrimEnd('\\')) : "";
+            using (var d = new FolderDialog(start))
                 if (d.ShowDialog(this) == DialogResult.OK) { gameDir.Text = d.SelectedPath; FillSaves(); }
-            }
         }
 
         void FillSaves()
@@ -440,6 +438,7 @@ namespace CoopLauncher
         void UninstallMod()
         {
             if (!IsGameDir(gameDir.Text) || bridge != null) return;
+            if (!ZoneMessage.Ask(this, "Удалить файлы мода из папки игры? Сейвы и персонаж гостя останутся.", "Удалить мод")) return;
             var dir = Path.Combine(gameDir.Text, "gamedata", "scripts");
             int n = 0;
             if (Directory.Exists(dir))
@@ -670,7 +669,7 @@ namespace CoopLauncher
 
         void EditOptions()
         {
-            using (var d = new KeysDialog(settings))
+            using (var d = new OptionsDialog(settings))
                 if (d.ShowDialog(this) != DialogResult.OK) return;
             settings.Save();
             UpdateHint();

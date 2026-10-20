@@ -21,5 +21,9 @@ if not dll.exists() or hashlib.sha256(dll.read_bytes()).hexdigest() != STEAM_SHA
     dll.parent.mkdir(exist_ok=True); dll.write_bytes(data)
 subprocess.check_call(["dotnet", "build", str(root / "launcher" / "CoopLauncher.csproj"), "-c", "Release", "-nologo", "-v", "q"])
 dist = root / "dist"; dist.mkdir(exist_ok=True)
-shutil.copy2(root / "launcher" / "bin" / "Release" / "net48" / "CoopLauncher.exe", dist / "CoopLauncher.exe")
-print("built", dist / "CoopLauncher.exe")
+built = root / "launcher" / "bin" / "Release" / "net48" / "CoopLauncher.exe"
+try:
+    shutil.copy2(built, dist / "CoopLauncher.exe")
+    print("built", dist / "CoopLauncher.exe")
+except PermissionError:
+    print("built", built, "(dist/CoopLauncher.exe is running, close it to refresh dist)")

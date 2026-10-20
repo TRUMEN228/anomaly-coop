@@ -4,8 +4,9 @@ using System.Windows.Forms;
 
 namespace CoopLauncher
 {
-    /// <summary>Choose the in-game co-op keys. Values are DirectInput names (DIK_*) the mod understands.</summary>
-    public sealed class KeysDialog : Form
+    /// <summary>The in-game co-op actions and the keys a player may bind (DirectInput names the mod understands).
+    /// The dialog itself is OptionsDialog.</summary>
+    public static class KeysDialog
     {
         public static readonly string[][] Actions =
         {
@@ -16,7 +17,7 @@ namespace CoopLauncher
         };
 
         // keys Anomaly does not use by default (F5/F9 are quicksave/quickload, F1-F4 slots)
-        static readonly string[] Choices =
+        public static readonly string[] Choices =
         {
             "NUMPAD0", "NUMPAD1", "NUMPAD2", "NUMPAD3", "NUMPAD4", "NUMPAD5", "NUMPAD6", "NUMPAD7", "NUMPAD8", "NUMPAD9",
             "F6", "F7", "F8", "F10", "F11", "F12", "INSERT", "HOME", "PRIOR", "NEXT", "END", "DELETE",
@@ -29,55 +30,5 @@ namespace CoopLauncher
             key == "SEMICOLON" ? ";" : key == "APOSTROPHE" ? "'" : key == "BACKSLASH" ? "\\" : key == "PERIOD" ? "." :
             key == "SLASH" ? "/" : key == "INSERT" ? "Ins" : key == "DELETE" ? "Del" : key;
 
-        readonly ComboBox[] boxes = new ComboBox[Actions.Length];
-
-        public KeysDialog(Settings s)
-        {
-            Text = "Настройки";
-            Font = new Font("Segoe UI", 9f);
-            AutoScaleMode = AutoScaleMode.Dpi;
-            AutoScaleDimensions = new SizeF(96, 96);
-            FormBorderStyle = FormBorderStyle.FixedDialog;
-            MaximizeBox = MinimizeBox = false;
-            StartPosition = FormStartPosition.CenterParent;
-            ClientSize = new Size(340, 132 + Actions.Length * 32);
-            BackColor = Theme.Plate;
-            ForeColor = Theme.Text;
-
-            for (int i = 0; i < Actions.Length; i++)
-            {
-                Controls.Add(new Label { Text = Actions[i][1], Left = 14, Top = 17 + i * 32, AutoSize = true });
-                var cb = new ComboBox { Left = 210, Top = 14 + i * 32, Width = 115, DropDownStyle = ComboBoxStyle.DropDownList, FlatStyle = FlatStyle.Flat,
-                    BackColor = Color.FromArgb(28, 28, 28), ForeColor = ForeColor };
-                cb.Items.AddRange(Choices.Select(Pretty).ToArray<object>());
-                cb.SelectedIndex = System.Array.IndexOf(Choices, s.Key(Actions[i][0]));
-                if (cb.SelectedIndex < 0) cb.SelectedIndex = 0;
-                boxes[i] = cb;
-                Controls.Add(cb);
-            }
-            var upnp = new CheckBox { Text = "Хост: открывать порт на роутере (UPnP)", Checked = s.Upnp, Left = 14, Top = 18 + Actions.Length * 32, AutoSize = true };
-            Controls.Add(upnp);
-            Controls.Add(new Label { Text = "Порт для прямого IP", Left = 14, Top = 51 + Actions.Length * 32, AutoSize = true });
-            var port = new NumericUpDown { Minimum = 1024, Maximum = 65535, Value = s.Port, Left = 210, Top = 48 + Actions.Length * 32, Width = 115,
-                BackColor = Color.FromArgb(28, 28, 28), ForeColor = ForeColor, BorderStyle = BorderStyle.FixedSingle };
-            Controls.Add(port);
-            var ok = new Button { Text = "Сохранить", DialogResult = DialogResult.OK, Left = 150, Top = 90 + Actions.Length * 32, Width = 85, FlatStyle = FlatStyle.Flat };
-            var cancel = new Button { Text = "Отмена", DialogResult = DialogResult.Cancel, Left = 240, Top = 90 + Actions.Length * 32, Width = 85, FlatStyle = FlatStyle.Flat };
-            Controls.AddRange(new Control[] { ok, cancel });
-            AcceptButton = ok; CancelButton = cancel;
-            ok.Click += (o, e) =>
-            {
-                var chosen = boxes.Select(b => Choices[b.SelectedIndex]).ToArray();
-                if (chosen.Distinct().Count() != chosen.Length)
-                {
-                    MessageBox.Show(this, "Одна клавиша назначена на два действия. Выберите разные.", Text);
-                    DialogResult = DialogResult.None;
-                    return;
-                }
-                for (int i = 0; i < Actions.Length; i++) s.SetKey(Actions[i][0], chosen[i]);
-                s.Upnp = upnp.Checked;
-                s.Port = (int)port.Value;
-            };
-        }
     }
 }

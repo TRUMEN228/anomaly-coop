@@ -28,6 +28,7 @@ namespace CoopLauncher
             {
                 if (mode == "--selftest-loopback") Loopback();
                 else if (mode == "--selftest-steam") Steam();
+                else if (mode == "--selftest-dialogs") Dialogs();
             }
             catch (Exception e) { Check("exception: " + e, false); }
             File.WriteAllText(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "selftest.txt"), report.ToString());
@@ -107,6 +108,33 @@ namespace CoopLauncher
             Note("leaving...");
             SteamNet.Leave();
             Check("left the lobby and cleared presence", SteamNet.CurrentLobby == 0);
+        }
+
+        /// <summary>Render every window of the launcher to PNG files next to the exe (visual check).</summary>
+        static void Dialogs()
+        {
+            System.Windows.Forms.Application.EnableVisualStyles();
+            var dir = AppDomain.CurrentDomain.BaseDirectory;
+            void Snap(System.Windows.Forms.Form f, string name)
+            {
+                f.StartPosition = System.Windows.Forms.FormStartPosition.Manual;
+                f.Location = new System.Drawing.Point(40, 40);
+                f.Show();
+                for (int i = 0; i < 20; i++) { System.Windows.Forms.Application.DoEvents(); Thread.Sleep(25); }
+                using (var bmp = new System.Drawing.Bitmap(f.Width, f.Height))
+                {
+                    f.DrawToBitmap(bmp, new System.Drawing.Rectangle(0, 0, f.Width, f.Height));
+                    bmp.Save(Path.Combine(dir, "ui_" + name + ".png"));
+                }
+                f.Close();
+                Check("rendered " + name, File.Exists(Path.Combine(dir, "ui_" + name + ".png")));
+            }
+            var settings = Settings.Load();
+            Snap(new MainForm(), "main");
+            Snap(new OptionsDialog(settings), "options");
+            Snap(new FolderDialog(Path.GetDirectoryName((settings.GameDir ?? "C:\\").TrimEnd('\\')) ?? ""), "folder");
+            var msg = typeof(ZoneMessage).GetConstructors(System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)[0];
+            Snap((System.Windows.Forms.Form)msg.Invoke(new object[] { "Удалить мод", "Удалить файлы мода из папки игры? Сейвы и персонаж гостя останутся.", true }), "message");
         }
 
         static void Wait(Func<bool> cond, int ms)
