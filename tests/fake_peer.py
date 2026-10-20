@@ -80,10 +80,31 @@ if mode == "host":
     for ext in ("scop", "scoc", "dds"):
         name = f"coop_session.{ext}"; data = open(os.path.join(d, name), "rb").read()
         nb = name.encode(); s.sendall(frame(FILE, struct.pack("<i", len(nb)) + nb + data))
-    send_event("session_ready")
+    send_event("session_ready|faketoken")
 
+reconnect = "reconnect" in sys.argv
+dropped = False
 center = None; last_state = 0; last_ping = 0
 while time.time() - t0 < secs:
+    if reconnect and mode == "guest" and not dropped and time.time() - t0 > secs / 2:
+        # guest side: drop, reconnect and claim we are still in the host's world
+        dropped = True
+        tok = next((e.split("|", 1)[1] for e in got["events"] if e.startswith("session_ready|")), "")
+        files_before = len(got["files"])
+        s.close(); buf = b""
+        time.sleep(2)
+        s = socket.create_connection(("127.0.0.1", port)); s.sendall(frame(HELLO, b"1|BotGuest")); s.settimeout(0.05)
+        s.sendall(frame(EVENT, ("resume|" + tok).encode(enc)))
+        got["events"].append("--- reconnected, sent resume|" + tok)
+        print("reconnected and sent resume with token", tok)
+    if reconnect and mode == "host" and not dropped and time.time() - t0 > secs / 2:
+        # simulate a network drop: close, wait for the guest launcher to come back, do NOT resend the session
+        dropped = True
+        s.close(); buf = b""
+        print("dropped connection at", int(time.time() - t0), "s; waiting for reconnect")
+        s, _ = srv.accept(); s.sendall(frame(HELLO, b"1|BotHost")); s.settimeout(0.05)
+        got["events"].append("--- reconnected")
+        print("guest reconnected at", int(time.time() - t0), "s")
     pump()
     if time.time() - last_ping > 2:
         last_ping = time.time(); s.sendall(frame(PING, b""))
@@ -110,5 +131,7 @@ while time.time() - t0 < secs:
         send_event(f"die|{nid}|{sec}")
 
 print("files:", got["files"])
+if reconnect and mode == "guest":
+    print("files after reconnect:", len(got["files"]) - files_before, "(0 = host did not resend the world)")
 print("events:", got["events"][-10:])
 print("state counts:", got["states"], "npcs listed:", len(npcs))

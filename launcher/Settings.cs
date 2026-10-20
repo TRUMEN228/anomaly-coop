@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 
 namespace CoopLauncher
@@ -8,6 +9,24 @@ namespace CoopLauncher
     {
         public string GameDir, Nick, HostIp, Mode = "host", LastSave;
         public int Port = 27015;
+        public bool Upnp = true;
+        readonly Dictionary<string, string> keys = new Dictionary<string, string>
+        {
+            ["tp"] = "NUMPAD1", ["sync"] = "NUMPAD2", ["load"] = "NUMPAD3", ["status"] = "NUMPAD0",
+        };
+
+        public string Key(string action) => keys.TryGetValue(action, out var k) ? k : "NUMPAD0";
+        public void SetKey(string action, string key) => keys[action] = key;
+
+        /// <summary>Tell the mod which keys to use (appdata\coop_keys.txt, read when a game loads).</summary>
+        public void WriteGameKeys(string gameDir)
+        {
+            var lines = new List<string>();
+            foreach (var kv in keys) lines.Add(kv.Key + "=DIK_" + kv.Value);
+            var dir = Path.Combine(gameDir, "appdata");
+            Directory.CreateDirectory(dir);
+            File.WriteAllLines(Path.Combine(dir, "coop_keys.txt"), lines);
+        }
 
         static string FilePath => Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "coop_launcher.ini");
 
@@ -31,6 +50,10 @@ namespace CoopLauncher
                         case "mode": s.Mode = v; break;
                         case "last_save": s.LastSave = v; break;
                         case "port": int.TryParse(v, out s.Port); break;
+                        case "upnp": s.Upnp = v != "0"; break;
+                        default:
+                            if (k.StartsWith("key_") && v.Length > 0) s.keys[k.Substring(4)] = v;
+                            break;
                     }
                 }
                 if (s.Port < 1024 || s.Port > 65535) s.Port = 27015;
@@ -43,9 +66,11 @@ namespace CoopLauncher
         {
             try
             {
-                File.WriteAllLines(FilePath, new[] {
+                var lines = new List<string> {
                     "game_dir=" + GameDir, "nick=" + Nick, "host_ip=" + HostIp,
-                    "mode=" + Mode, "last_save=" + LastSave, "port=" + Port });
+                    "mode=" + Mode, "last_save=" + LastSave, "port=" + Port, "upnp=" + (Upnp ? 1 : 0) };
+                foreach (var kv in keys) lines.Add("key_" + kv.Key + "=" + kv.Value);
+                File.WriteAllLines(FilePath, lines);
             }
             catch { }
         }

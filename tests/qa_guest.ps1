@@ -6,7 +6,7 @@ foreach ($x in 'coop_out.txt', 'coop_in.txt', 'coop_log.txt') { Remove-Item "$r\
 Remove-Item "$r\local\launcherB\coop_launcher.log" -ErrorAction SilentlyContinue
 $peer = Start-Process python -ArgumentList "$r\tests\fake_peer.py", "host", "27015", "150", "$r\local\testA\appdata\savedgames" -NoNewWindow -PassThru -RedirectStandardOutput "$env:TEMP\claude\fake_host.txt"
 Start-Sleep 2
-Start-Process "$r\local\launcherB\CoopLauncher.exe" -ArgumentList "--auto" -WorkingDirectory "$r\local\launcherB" | Out-Null
+Start-Process "$r\local\launcherB\CoopLauncher.exe" -ArgumentList "--auto", "--no-upnp" -WorkingDirectory "$r\local\launcherB" | Out-Null
 $peer.WaitForExit()
 powershell -File "$r\tests\screen.ps1" -Out "$env:TEMP\claude\qa_guest.png" | Out-Null
 "--- fake host"; Get-Content "$env:TEMP\claude\fake_host.txt"

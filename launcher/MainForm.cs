@@ -28,11 +28,16 @@ namespace CoopLauncher
         readonly Button stop = Btn("Остановить сессию", 575, 288, 358, 36);
         readonly Button sendSession = Btn("Отправить сессию другу", 575, 330, 358, 36);
         readonly Button teleport = Btn("Телепорт к другу", 575, 372, 358, 36);
-        readonly Button uninstall = Btn("Удалить мод из игры", 575, 414, 175, 36);
-        readonly Button quit = Btn("Выход", 758, 414, 175, 36);
+        readonly Button keysBtn = Btn("Опции", 575, 414, 85, 36);
+        readonly Button logsBtn = Btn("Логи", 666, 414, 85, 36);
+        readonly Button uninstall = Btn("Удалить", 757, 414, 85, 36);
+        readonly Button quit = Btn("Выход", 848, 414, 85, 36);
+        readonly Button update = Btn("", 758, 456, 175, 28);
+        readonly Button copyIp = Btn("Копировать IP", 405, 172, 120, 25);
+        readonly Label hint = Lbl("", 8, 462);
         readonly Button browse = Btn("...", 475, 49, 50, 25);
         readonly Button refresh = Btn("↻", 475, 141, 50, 25);
-        readonly Label status = Lbl("", 14, 176, true);
+        readonly Label status = new Label { Left = 14, Top = 176, Width = 385, Height = 20, AutoEllipsis = true, ForeColor = Fore, BackColor = Color.Transparent, Font = new Font("Segoe UI", 9, FontStyle.Bold) };
         readonly TextBox log = new TextBox { Left = 14, Top = 200, Width = 511, Height = 158, Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Vertical, BackColor = FieldBack, ForeColor = Fore, BorderStyle = BorderStyle.FixedSingle };
         readonly TextBox chatInput = Field(14, 366, 430);
         readonly Button chatSend = Btn("Чат", 450, 365, 75, 25);
@@ -45,6 +50,10 @@ namespace CoopLauncher
         Process game;
         bool sessionSent;
         DateTime gameSeenSince = DateTime.MinValue;
+        DateTime connectedSince = DateTime.MinValue;
+        string ipText = "";
+        bool upnpMapped;
+        Updater.Release pendingUpdate;
 
         static TextBox Field(int x, int y, int w) =>
             new TextBox { Left = x, Top = y, Width = w, BackColor = FieldBack, ForeColor = Fore, BorderStyle = BorderStyle.FixedSingle };
@@ -58,7 +67,7 @@ namespace CoopLauncher
         }
         static Button Btn(string t, int x, int y, int w, int h, float size = 9)
         {
-            var b = new Button { Text = t, Left = x, Top = y, Width = w, Height = h, FlatStyle = FlatStyle.Flat, BackColor = ButtonBack, ForeColor = Fore, Font = new Font("Segoe UI", size), UseVisualStyleBackColor = false, Cursor = Cursors.Hand };
+            var b = new Button { Text = t, Left = x, Top = y, Width = w, Height = h, Padding = Padding.Empty, FlatStyle = FlatStyle.Flat, BackColor = ButtonBack, ForeColor = Fore, Font = new Font("Segoe UI", size), UseVisualStyleBackColor = false, Cursor = Cursors.Hand };
             b.FlatAppearance.BorderColor = Color.FromArgb(85, 85, 85);
             b.FlatAppearance.MouseOverBackColor = Color.FromArgb(60, 60, 60);
             b.FlatAppearance.MouseDownBackColor = Color.FromArgb(80, 80, 80);
@@ -67,7 +76,7 @@ namespace CoopLauncher
 
         public MainForm()
         {
-            Text = "Anomaly Co-op Launcher v1.1";
+            Text = "Anomaly Co-op Launcher v" + Updater.CurrentText;
             Font = new Font("Segoe UI", 9f);
             AutoScaleMode = AutoScaleMode.Dpi;
             AutoScaleDimensions = new SizeF(96, 96);
@@ -85,12 +94,19 @@ namespace CoopLauncher
                 Lbl("Ваш ник:", 14, 80), nick, Lbl("Порт:", 355, 80), port,
                 Lbl("Режим:", 14, 112), modeHost, modeJoin,
                 saveLabel, saves, ipLabel, hostIp, refresh,
-                status, log, chatInput, chatSend });
+                status, copyIp, log, chatInput, chatSend });
             Controls.Add(panel);
-            Controls.AddRange(new Control[] { start, stop, sendSession, teleport, uninstall, quit });
-            var hint = Lbl("Num1 — телепорт к другу · Num2 — отправить сессию · Num3 — загрузить сессию · Num0 — статус", 8, 462);
+            Controls.AddRange(new Control[] { start, stop, sendSession, teleport, keysBtn, logsBtn, uninstall, quit, update });
             hint.ForeColor = Color.FromArgb(170, 170, 170);
             Controls.Add(hint);
+            update.Visible = false;
+            var tips = new ToolTip();
+            tips.SetToolTip(keysBtn, "Клавиши в игре и автопроброс порта (UPnP)");
+            tips.SetToolTip(logsBtn, "Собрать логи в архив на рабочий стол");
+            tips.SetToolTip(uninstall, "Удалить мод из игры (сейвы не трогаются)");
+            tips.SetToolTip(copyIp, "Скопировать ваши адреса, чтобы отправить другу");
+            copyIp.Visible = false;
+            UpdateHint();
 
             gameDir.Text = settings.GameDir ?? DetectGameDir();
             nick.Text = string.IsNullOrWhiteSpace(settings.Nick) ? Environment.UserName : settings.Nick;
@@ -111,6 +127,18 @@ namespace CoopLauncher
             sendSession.Click += (s, e) => RequestSessionSave();
             teleport.Click += (s, e) => bridge?.ToGame("cmd|tp");
             uninstall.Click += (s, e) => UninstallMod();
+            keysBtn.Click += (s, e) => EditKeys();
+            logsBtn.Click += (s, e) => CollectLogs();
+            copyIp.Click += (s, e) => CopyIp();
+            update.Click += (s, e) => ApplyUpdate();
+            Shown += async (s, e) =>
+            {
+                pendingUpdate = await Updater.CheckAsync();
+                if (pendingUpdate == null) return;
+                update.Text = "Обновить до " + pendingUpdate.Tag;
+                update.Visible = true;
+                Print($"Вышла новая версия {pendingUpdate.Tag}. Нажмите «Обновить» внизу справа (обновиться должны оба игрока).");
+            };
             quit.Click += (s, e) => Close();
             chatSend.Click += (s, e) => SendChat();
             chatInput.KeyDown += (s, e) => { if (e.KeyCode == Keys.Enter) { SendChat(); e.SuppressKeyPress = true; } };
@@ -231,13 +259,23 @@ namespace CoopLauncher
             settings.Port = (int)port.Value; settings.Mode = host ? "host" : "client"; settings.LastSave = saves.SelectedItem as string;
             settings.Save();
 
-            try { InstallMod(); }
+            try { InstallMod(); settings.WriteGameKeys(gameDir.Text); }
             catch (Exception e) { Print("Не удалось установить мод: " + e.Message); return; }
 
             bridge = new Bridge(gameDir.Text, host ? "host" : "client", settings.Nick);
             bridge.Log += s => Ui(() => Print(s));
             bridge.Chat += (name, text) => Ui(() => Print($"[{name}] {text}"));
-            bridge.ConnectionChanged += (up, name) => Ui(() => { if (!up) sessionSent = false; });
+            bridge.ConnectionChanged += (up, name) => Ui(() =>
+            {
+                connectedSince = up ? DateTime.Now : DateTime.MinValue;
+                if (!up) sessionSent = false;
+            });
+            bridge.PeerResumed += () => Ui(() =>
+            {
+                // the guest is still in our world: no need to resend it
+                sessionSent = true;
+                Print($"{bridge.PeerName} вернулся в сессию, мир не перезагружается");
+            });
             bridge.GameSaved += name => { if (bridge.Connected) bridge.SendSaveFiles(name); };
             bridge.SessionReady += () => Ui(OnSessionReady);
 
@@ -254,6 +292,28 @@ namespace CoopLauncher
                 return;
             }
 
+            if (host)
+            {
+                ShowHostAddresses();
+                var port = settings.Port;
+                if (settings.Upnp && !Environment.GetCommandLineArgs().Contains("--no-upnp"))
+                System.Threading.Tasks.Task.Run(() =>
+                {
+                    var lan = NetInfo.PrimaryLanIp();
+                    string why = "нет локальной сети";
+                    var ext = lan == null ? null : NetInfo.UpnpMap(port, lan, out why);
+                    Ui(() =>
+                    {
+                        if (ext != null)
+                        {
+                            upnpMapped = true;
+                            Print($"Порт {port} открыт на роутере через UPnP. IP для друга через интернет: {ext}");
+                            ipText = ipText.Length > 0 ? ipText + ", " + ext : ext;
+                        }
+                        else Print($"Автопроброс порта не удался ({why}). Для игры через интернет используйте Radmin VPN или откройте порт {port} вручную.");
+                    });
+                });
+            }
             if (host && !GameRunning()) LaunchGame(settings.LastSave);
             if (!host) Print("Гость: игра запустится автоматически, когда хост пришлёт сессию.");
 
@@ -263,6 +323,8 @@ namespace CoopLauncher
 
         void StopSession()
         {
+            if (upnpMapped) { NetInfo.UpnpUnmap(settings.Port); upnpMapped = false; }
+            copyIp.Visible = false;
             bridge?.Dispose();
             bridge = null;
             start.Enabled = true; stop.Enabled = false;
@@ -347,7 +409,8 @@ namespace CoopLauncher
             else if (gameSeenSince == DateTime.MinValue) gameSeenSince = DateTime.Now;
 
             // host: send the world to the guest once both are ready
-            if (host && bridge.Connected && !sessionSent && seen && (DateTime.Now - gameSeenSince).TotalSeconds > 5)
+            if (host && bridge.Connected && !sessionSent && seen && (DateTime.Now - gameSeenSince).TotalSeconds > 5
+                && (DateTime.Now - connectedSince).TotalSeconds > 3)
                 RequestSessionSave();
 
             sendSession.Enabled = host && bridge.Connected && seen;
@@ -355,6 +418,7 @@ namespace CoopLauncher
             var peer = bridge.Connected ? $"друг: {bridge.PeerName}" : (host ? "ждём друга" : "нет связи с хостом");
             var g = seen ? "игра: в игре" : (GameRunning() ? "игра: загрузка/меню" : "игра: не запущена");
             status.Text = $"{(host ? "Хост" : "Гость")} · {peer} · {g}";
+            if (host && !bridge.Connected && ipText.Length > 0) status.Text += " · IP: " + ipText;
         }
 
         void Print(string s)
@@ -374,9 +438,81 @@ namespace CoopLauncher
             try { BeginInvoke(a); } catch (InvalidOperationException) { }
         }
 
+        // ------------------------------------------------------------------ v1.2 helpers
+        void ShowHostAddresses()
+        {
+            var list = NetInfo.LocalAddresses();
+            if (list.Count == 0) { Print("Не найдено ни одного сетевого адреса."); return; }
+            Print("Ваши адреса для друга: " + string.Join(", ", list.Select(a => a.ToString())));
+            Print("Друг в той же сети вписывает LAN-адрес, через Radmin VPN/ZeroTier/Tailscale — адрес этой сети.");
+            ipText = string.Join(", ", list.Select(a => a.Ip));
+            copyIp.Visible = true;
+        }
+
+        void CopyIp()
+        {
+            var vpn = NetInfo.LocalAddresses();
+            var best = vpn.FirstOrDefault()?.Ip ?? "";
+            var text = ipText.Contains(",") ? ipText : best;
+            try { Clipboard.SetText(text); Print("Скопировано: " + text); }
+            catch (Exception e) { Print("Не удалось скопировать: " + e.Message); }
+        }
+
+        void UpdateHint()
+        {
+            string K(string a) => KeysDialog.Pretty(settings.Key(a));
+            hint.Text = $"{K("tp")} — телепорт · {K("sync")} — отправить сессию · {K("load")} — загрузить сессию · {K("status")} — статус";
+        }
+
+        void EditKeys()
+        {
+            using (var d = new KeysDialog(settings))
+            {
+                if (d.ShowDialog(this) != DialogResult.OK) return;
+            }
+            settings.Save();
+            UpdateHint();
+            if (IsGameDir(gameDir.Text))
+            {
+                try { settings.WriteGameKeys(gameDir.Text); } catch { }
+            }
+            Print("Настройки сохранены. Новые клавиши заработают после следующей загрузки сейва.");
+        }
+
+        void CollectLogs()
+        {
+            try
+            {
+                var zip = LogCollector.Collect(gameDir.Text);
+                Print("Логи собраны: " + zip);
+                Process.Start("explorer.exe", $"/select,\"{zip}\"");
+            }
+            catch (Exception e) { Print("Не удалось собрать логи: " + e.Message); }
+        }
+
+        async void ApplyUpdate()
+        {
+            if (pendingUpdate == null) return;
+            update.Enabled = false;
+            update.Text = "Скачиваю...";
+            try
+            {
+                await System.Threading.Tasks.Task.Run(() => Updater.Apply(pendingUpdate));
+                Print("Обновление скачано, лаунчер перезапускается...");
+                Close();
+            }
+            catch (Exception e)
+            {
+                Print("Не удалось обновиться: " + e.Message);
+                update.Text = "Обновить до " + pendingUpdate.Tag;
+                update.Enabled = true;
+            }
+        }
+
         protected override void OnFormClosing(FormClosingEventArgs e)
         {
             FileLog("closing: " + e.CloseReason);
+            if (upnpMapped) NetInfo.UpnpUnmap(settings.Port);
             bridge?.Dispose();
             base.OnFormClosing(e);
         }

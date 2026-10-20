@@ -116,6 +116,7 @@ namespace CoopLauncher
             c.NoDelay = true;
             client = c;
             stream = c.GetStream();
+            resumeSent = false;
             Send(MsgHello, Encoding.UTF8.GetBytes(ProtocolVersion + "|" + myName));
         }
 
@@ -214,13 +215,26 @@ namespace CoopLauncher
                 case MsgEvent:
                 {
                     var text = GameEnc.GetString(buf, off, len);
+                    if (text.StartsWith("resume"))
+                    {
+                        // only a guest still in the world we sent this run may skip the resend
+                        var token = text.Length > 7 ? text.Substring(7) : "";
+                        if (sessionToken != null && token == sessionToken) PeerResumed?.Invoke();
+                        break;
+                    }
+                    if (text.StartsWith("session_ready"))
+                    {
+                        receivedToken = text.Length > 14 ? text.Substring(14) : null;
+                        ToGame("session_ready");
+                        SessionReady?.Invoke();
+                        break;
+                    }
                     if (text.StartsWith("chat|"))
                     {
                         var p = text.Split('|');
                         Chat?.Invoke(p.Length > 2 ? p[2] : PeerName, p.Length > 1 ? p[1] : "");
                     }
                     ToGame(text);
-                    if (text == "session_ready") SessionReady?.Invoke();
                     break;
                 }
                 case MsgFile:
@@ -274,12 +288,18 @@ namespace CoopLauncher
                 data.CopyTo(payload, 4 + name.Length);
                 Send(MsgFile, payload);
             }
-            Send(MsgEvent, GameEnc.GetBytes("session_ready"));
+            sessionToken = Guid.NewGuid().ToString("N").Substring(0, 12);
+            Send(MsgEvent, GameEnc.GetBytes("session_ready|" + sessionToken));
             Log?.Invoke($"Сейв «{saveName}» отправлен напарнику");
         }
 
         public event Action<string> GameSaved;
         public event Action SessionReady;
+        public event Action PeerResumed;          // host: a reconnecting guest is still in our world
+        volatile bool resumeSent;
+        volatile string sessionToken;             // host: id of the last world sent this run
+        volatile string receivedToken;            // guest: id of the world we received this run                 // guest: told the host once per connection
+        volatile bool gameInGuestSession;         // guest: the game reports it runs the host's session
 
         // ------------------------------------------------------------------ game IPC
         void IpcLoop()
@@ -349,7 +369,11 @@ namespace CoopLauncher
                     }
                     long.TryParse(p[2], out ack);
                 }
-                else if (p[0] == "s" && p.Length >= 2) states.Add(line);
+                else if (p[0] == "s" && p.Length >= 2)
+                {
+                    if (p[1] == "g") gameInGuestSession = p.Length > 2 && p[2] == "1";
+                    else states.Add(line);
+                }
                 else if (p[0] == "e" && p.Length >= 3 && long.TryParse(p[1], out var id) && id > lastGameEvent)
                 {
                     lastGameEvent = id;
@@ -365,6 +389,12 @@ namespace CoopLauncher
                     if (p[0] == "@saved" && p.Length > 1) GameSaved?.Invoke(p[1]);
                 }
                 else if (Connected) Send(MsgEvent, GameEnc.GetBytes(e));
+            }
+
+            if (Connected && role == "client" && gameInGuestSession && !resumeSent && receivedToken != null)
+            {
+                resumeSent = true;
+                Send(MsgEvent, GameEnc.GetBytes("resume|" + receivedToken));
             }
 
             if (Connected)

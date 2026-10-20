@@ -7,10 +7,15 @@
     <Nullable>disable</Nullable>
     <AssemblyName>CoopLauncher</AssemblyName>
     <RootNamespace>CoopLauncher</RootNamespace>
-    <Version>1.1.0</Version>
+    <Version>1.2.0</Version>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <GenerateAssemblyInfo>true</GenerateAssemblyInfo>
   </PropertyGroup>
+  <ItemGroup>
+    <Reference Include="System.IO.Compression" />
+    <Reference Include="System.IO.Compression.FileSystem" />
+    <Reference Include="Microsoft.CSharp" />
+  </ItemGroup>
   <ItemGroup>
     <!-- mod scripts, converted to cp1251 by build.py -->
     <EmbeddedResource Include="..\build\gamedata\scripts\coop_*.script" LogicalName="mod\%(Filename)%(Extension)" />

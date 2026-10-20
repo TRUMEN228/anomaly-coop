@@ -12,7 +12,7 @@
 	Event types starting with "@" are handled by the bridge itself.
 --]]
 
-VERSION = "1.1"
+VERSION = "1.2"
 debug = false
 local TICK_MS = 100
 
@@ -192,15 +192,33 @@ function is_host() return connected and role == "host" end
 function is_client() return connected and role == "client" end
 
 ------------------------------------------------------------------ hotkeys
--- Num1 teleport to partner, Num2 host: send session save, Num3 client: load received save, Num0 status
+-- defaults; CoopLauncher writes the player's choice to appdata\coop_keys.txt ("tp=DIK_NUMPAD1")
+local keys = { tp = "DIK_NUMPAD1", sync = "DIK_NUMPAD2", load = "DIK_NUMPAD3", status = "DIK_NUMPAD0" }
+
+local function load_keys()
+	local f = io.open(getFS():update_path("$app_data_root$", "coop_keys.txt"), "r")
+	if not f then return end
+	for line in f:lines() do
+		local action, dik = line:match("^%s*(%w+)%s*=%s*(DIK_[%w_]+)")
+		if action and keys[action] and DIK_keys[dik] then keys[action] = dik end
+	end
+	f:close()
+end
+
+-- "DIK_NUMPAD3" -> "Num3" for messages
+function key_name(action)
+	local k = (keys[action] or ""):gsub("^DIK_", "")
+	return (k:gsub("^NUMPAD", "Num"))
+end
+
 local function on_key_press(key)
-	if key == DIK_keys.DIK_NUMPAD1 then
+	if key == DIK_keys[keys.tp] then
 		dispatch_event("_cmd_tp", {})
-	elseif key == DIK_keys.DIK_NUMPAD2 then
+	elseif key == DIK_keys[keys.sync] then
 		dispatch_event("_cmd_sync", {})
-	elseif key == DIK_keys.DIK_NUMPAD3 then
+	elseif key == DIK_keys[keys.load] then
 		dispatch_event("_cmd_load", {})
-	elseif key == DIK_keys.DIK_NUMPAD0 then
+	elseif key == DIK_keys[keys.status] then
 		if not bridge_alive then
 			msg("Лаунчер кооператива не запущен")
 		elseif not connected then
@@ -228,5 +246,6 @@ function on_game_start()
 	sid = tostring(math.random(100000, 999999))
 	out_seq, out_queue, in_sid, in_last = 0, {}, nil, 0
 	RegisterScriptCallback("actor_on_update", actor_on_update)
+	load_keys()
 	RegisterScriptCallback("on_key_press", on_key_press)
 end

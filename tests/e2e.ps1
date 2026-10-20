@@ -9,13 +9,13 @@ foreach ($n in 'A', 'B') {
     foreach ($x in 'coop_out.txt', 'coop_in.txt', 'coop_log.txt', 'coop_syntax.txt') { Remove-Item "$r\local\test$n\appdata\$x" -ErrorAction SilentlyContinue }
 }
 foreach ($x in 'scop', 'scoc', 'dds') { Remove-Item "$r\local\testB\appdata\savedgames\coop_session.$x" -ErrorAction SilentlyContinue }
-Start-Process "$r\local\launcherA\CoopLauncher.exe" -ArgumentList "--auto" -WorkingDirectory "$r\local\launcherA" | Out-Null
+Start-Process "$r\local\launcherA\CoopLauncher.exe" -ArgumentList "--auto", "--no-upnp" -WorkingDirectory "$r\local\launcherA" | Out-Null
 $guestStarted = $false; $t0 = Get-Date
 while (((Get-Date) - $t0).TotalSeconds -lt $Timeout) {
     Start-Sleep 10
     $sec = [int]((Get-Date) - $t0).TotalSeconds
     if (-not $guestStarted -and (Test-Path "$r\local\testA\appdata\coop_out.txt")) {
-        Start-Process "$r\local\launcherB\CoopLauncher.exe" -ArgumentList "--auto" -WorkingDirectory "$r\local\launcherB" | Out-Null
+        Start-Process "$r\local\launcherB\CoopLauncher.exe" -ArgumentList "--auto", "--no-upnp" -WorkingDirectory "$r\local\launcherB" | Out-Null
         $guestStarted = $true
     }
     $procs = (Get-Process AnomalyDX11AVX, CoopLauncher -ErrorAction SilentlyContinue | % ProcessName) -join ','

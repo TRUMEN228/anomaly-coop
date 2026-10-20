@@ -174,6 +174,11 @@ local function finish_import()
 	end
 end
 
+-- tells CoopLauncher that this game runs the host's world, so a reconnect does not resend it
+coop_main.add_state_provider("g", function()
+	return { (is_guest_session() and char_ready) and 1 or 0 }
+end)
+
 ------------------------------------------------------------------ host: send session / guest: load it
 local save_pending = nil
 coop_main.on_event("_cmd_sync", function()
@@ -187,7 +192,7 @@ coop_main.on_event("_cmd_sync", function()
 end)
 
 coop_main.on_event("session_ready", function()
-	coop_main.msg("Получена сессия хоста. Нажмите Num3, чтобы войти в его мир")
+	coop_main.msg("Получена сессия хоста. Нажмите " .. coop_main.key_name("load") .. ", чтобы войти в его мир")
 end)
 
 coop_main.on_event("_cmd_load", function()
