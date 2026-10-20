@@ -9,7 +9,7 @@ for the nearest creature from the host's creature list. Everything received is s
 import math, os, socket, struct, sys, time, zlib
 
 HELLO, STATE, EVENT, FILE, PING, STATEZ = 1, 2, 3, 4, 5, 6
-PROTO = b"3"
+PROTO = b"4"
 mode, port, secs = sys.argv[1], int(sys.argv[2]), float(sys.argv[3])
 enc = "cp1251"
 
@@ -88,6 +88,29 @@ if mode == "host":
         nb = name.encode(); s.sendall(frame(FILE, struct.pack("<i", len(nb)) + nb + data))
     send_event("session_ready|faketoken")
 
+def qvars(d):
+    # coop_quests wire format for a table of strings
+    out = "t" + "".join(f"s{len(k)}:{k}s{len(v)}:{v}" for k, v in d.items()) + "e"
+    return out.replace("%", "%25").replace("|", "%7C")
+
+
+def quest_steps(t):
+    """v2.1: the fake partner's side of the task sync (ids from the testA save, Zaton)."""
+    mech, medic = "zat_a2_stalker_mechanic_task_1", "zat_b22_stalker_medic_task_1"
+    if mode == "guest" and t > 30 and "qreq" not in sent:
+        sent.add("qreq")
+        send_event("qinfo|coop_guest_info|1")
+        send_event(f"qreq|{mech}|21552|" + qvars({mech + "_fetch": "itm_basickit"}))
+    if mode == "guest" and t > 50 and "qdone" not in sent:
+        sent.add("qdone"); send_event(f"qdone|{mech}|complete|1000|1")
+    if mode == "host" and peer_pos and t > 65 and "qgive" not in sent:
+        sent.add("qgive")
+        send_event("qinfo|coop_host_info|1")
+        send_event(f"qgive|{medic}|21552|0|" + qvars({medic + "_fetch": "itm_drugkit"}))
+    if mode == "host" and t > 100 and "qinfo0" not in sent and "qgive" in sent:
+        sent.add("qinfo0"); send_event("qinfo|coop_host_info|0")
+
+
 reconnect = "reconnect" in sys.argv
 spawn = "spawn" in sys.argv  # host mode: send a squad, a hit, a death and a removal with host ids
 dropped = False
@@ -159,11 +182,13 @@ while time.time() - t0 < secs:
         for e in npcs[:3]:
             nid, sec = e.split(":")[0], e.split(":")[1]
             if "stalker" in sec or "trader" in sec or "barmen" in sec or sec.startswith("zat"): send_event(f"treq|{nid}|{sec}")
+    if "quest" in sys.argv:
+        quest_steps(t)
     if t > 20 and "chat" not in sent:
         sent.add("chat"); send_event("chat|Привет от бота|Bot")
     if t > 24 and "drop" not in sent and center:
         sent.add("drop"); send_event(f"drop|1|bandage|1.000|0|{center[0]:.2f}|{center[1]:.2f}|{center[2]:.2f}|{peer_pos[4]}|{peer_pos[5]}")
-    if t > 28 and "kill" not in sent and npcs:
+    if t > 28 and "kill" not in sent and npcs and "quest" not in sys.argv:
         sent.add("kill")
         nid, sec = npcs[0].split(":")[0], npcs[0].split(":")[1]
         send_event(f"hit|{nid}|{sec}|0.300")

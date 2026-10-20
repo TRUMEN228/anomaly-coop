@@ -1,0 +1,359 @@
+--[[
+	Anomaly Co-op: story flags and tasks (v2.1).
+	Both players have the same tasks. A task is created by the host (so its squads and items come
+	from the host's world) and either player can finish it: the end is repeated on the other side.
+	  both ways:      "qinfo" an info portion (story flag) was given (1) or removed (0)
+	                  "qdone" a task ended here: id, complete|fail|cancel, money the player got, share
+	  guest -> host:  "qreq"  the guest took a task in a dialog: id, giver, task vars
+	  host -> guest:  "qgive" a task was given: id, giver, stage, task vars
+	Task vars are the actor's pstor entries named after the task (targets, fetch items, counters).
+	Rewards for the partner's task: money the partner got, items if the host shares rewards.
+--]]
+
+local applying = false
+local ready_at = nil         -- story flags change while a save loads: ignore that
+local info_known = {}        -- info id -> last state seen or applied
+local info_sent = {}         -- info id -> changes sent this minute (flags that flicker are not synced)
+local info_reset = 0
+local remote_end = {}        -- task id -> { money, share } while the partner's end is applied here
+local suppress = nil         -- "all" | "money" while such an end runs its on_complete effects
+local pending_done = {}      -- ends to report once delayed rewards (fetch payment) have arrived
+local share_rewards = true   -- host option (coop_keys.txt "rewards=0|1")
+local resync_at = nil
+
+local function host() return coop_main.is_host() end
+local function guest() return coop_session.is_guest_session() end
+local function dbg(s) if coop_main.debug then coop_main.log("quests: " .. s) end end
+local L, R = function(x) return coop_spawn.L(x) end, function(x) return coop_spawn.R(x) end
+local function ready() return coop_main.connected and ready_at and time_global() > ready_at end
+local function tm() return task_manager.get_task_manager() end
+
+local function task_title(id)
+	local t = task_manager.task_ini:r_string_ex(id, "title")
+	return t and game.translate_string(t) or id
+end
+
+------------------------------------------------------------------ values on the wire
+-- n<number>;  s<len>:<text>  b0/b1  t<key value>...e  x (anything else). Whole ids (100..65534)
+-- are passed through idf so objects keep pointing at the same thing in both worlds.
+local function is_id(v) return v == math.floor(v) and v >= 100 and v < 65535 end
+
+local function ser(v, idf, out, depth)
+	local tp = type(v)
+	if tp == "number" then
+		out[#out+1] = "n" .. tostring(is_id(v) and idf(v) or v) .. ";"
+	elseif tp == "string" then
+		out[#out+1] = "s" .. #v .. ":" .. v
+	elseif tp == "boolean" then
+		out[#out+1] = v and "b1" or "b0"
+	elseif tp == "table" and depth < 8 then
+		out[#out+1] = "t"
+		for k, x in pairs(v) do
+			ser(k, idf, out, depth + 1)
+			ser(x, idf, out, depth + 1)
+		end
+		out[#out+1] = "e"
+	else
+		out[#out+1] = "x"
+	end
+end
+
+local function deser(s, i, idf)
+	local c = s:sub(i, i)
+	if c == "n" then
+		local j = s:find(";", i, true)
+		if not j then return nil, #s + 1 end
+		local v = tonumber(s:sub(i + 1, j - 1))
+		if v and is_id(v) then v = idf(v) end
+		return v, j + 1
+	elseif c == "s" then
+		local j = s:find(":", i, true)
+		local n = j and tonumber(s:sub(i + 1, j - 1))
+		if not n then return nil, #s + 1 end
+		return s:sub(j + 1, j + n), j + n + 1
+	elseif c == "b" then
+		return s:sub(i + 1, i + 1) == "1", i + 2
+	elseif c == "t" then
+		local t = {}
+		i = i + 1
+		while i <= #s and s:sub(i, i) ~= "e" do
+			local k, v
+			k, i = deser(s, i, idf)
+			v, i = deser(s, i, idf)
+			if k ~= nil and v ~= nil then t[k] = v end
+		end
+		return t, i + 1
+	end
+	return nil, i + 1
+end
+
+-- event fields cannot hold "|" or line breaks
+local function pack(v, idf)
+	local out = {}
+	ser(v, idf, out, 0)
+	return (table.concat(out):gsub("[%%|\r\n]", function(ch) return string.format("%%%02X", ch:byte()) end))
+end
+
+local function unpack_value(s, idf)
+	s = (s or ""):gsub("%%(%x%x)", function(h) return string.char(tonumber(h, 16)) end)
+	if s == "" then return nil end
+	return (deser(s, 1, idf))
+end
+
+------------------------------------------------------------------ task vars (actor pstor)
+local function pstor()
+	local st = db.storage[AC_ID]
+	if not st then return {} end
+	st.pstor = st.pstor or {}
+	return st.pstor
+end
+
+local function task_vars(id)
+	local t = {}
+	for k, v in pairs(pstor()) do
+		if type(k) == "string" and k:sub(1, #id) == id and type(v) ~= "userdata" then t[k] = v end
+	end
+	return t
+end
+
+local function apply_vars(vars)
+	if type(vars) ~= "table" then return end
+	local p = pstor()
+	for k, v in pairs(vars) do p[k] = v end
+end
+
+------------------------------------------------------------------ story flags
+local function send_info(info, on)
+	local n = (info_sent[info] or 0) + 1
+	info_sent[info] = n
+	if n <= 3 then coop_main.send("qinfo", info, on and 1 or 0) end
+end
+
+local function actor_on_info_callback(actor, info)
+	if applying or not ready() or type(info) ~= "string" then return end
+	info_known[info] = true
+	send_info(info, true)
+end
+
+-- flags can be removed by any script: watch the ones we know of
+local function check_infos()
+	for info, had in pairs(info_known) do
+		local has = has_alife_info(info)
+		if had and not has then
+			info_known[info] = false
+			send_info(info, false)
+		end
+	end
+end
+
+coop_main.on_event("qinfo", function(a)
+	local info, on = a[1], a[2] == "1"
+	if not info or info == "" or not db.actor then return end
+	applying = true
+	if on and not has_alife_info(info) then db.actor:give_info_portion(info)
+	elseif not on and has_alife_info(info) then db.actor:disable_info_portion(info) end
+	applying = false
+	info_known[info] = on
+	dbg("info " .. info .. "=" .. tostring(on))
+end)
+
+------------------------------------------------------------------ tasks
+local function active(id)
+	local t = tm().task_info[id]
+	return t and db.actor and db.actor:get_task(id, true) and t or nil
+end
+
+local function send_give(id)
+	local t = active(id)
+	if not t then return end
+	coop_main.send("qgive", id, R(t.task_giver_id) or "", t.stage or 0, pack(task_vars(id), R))
+	dbg("gave " .. id)
+end
+
+local function hook_give()
+	local m = tm()
+	if m.coop_give_hooked then return end
+	local orig = m.give_task
+	m.give_task = function(self, id, giver)
+		if applying or not ready() then return orig(self, id, giver) end
+		if guest() then
+			-- the host creates the task: its squads and items must come from the host's world
+			coop_main.send("qreq", id, R(giver) or "", pack(task_vars(id), R))
+			dbg("asked host for " .. tostring(id))
+			return
+		end
+		local res = orig(self, id, giver)
+		pcall(send_give, id)
+		return res
+	end
+	m.coop_give_hooked = true
+end
+
+coop_main.on_event("qreq", function(a)
+	if not host() then return end
+	local id = a[1]
+	if not (id and task_manager.task_ini:section_exist(id)) then return end
+	apply_vars(unpack_value(a[3], L))
+	if active(id) then send_give(id) return end
+	tm():give_task(id, tonumber(a[2]))
+	coop_main.msg(string.format("%s взял задание: %s", coop_main.peer_name, task_title(id)))
+end)
+
+coop_main.on_event("qgive", function(a)
+	if host() then return end
+	local id = a[1]
+	if not (id and db.actor and task_manager.task_ini:section_exist(id)) then return end
+	apply_vars(unpack_value(a[4], L))
+	local t = active(id)
+	if not t then
+		-- same as task_manager's give_task, without on_init: its spawns already happened at the host
+		t = task_objects.CGeneralTask(id)
+		t.on_init = nil
+		applying = true
+		local ok, err = pcall(function() t:give_task() end)
+		applying = false
+		if not ok then coop_main.log("task " .. id .. " failed: " .. tostring(err)) return end
+		tm().task_info[id] = t
+	end
+	t.task_giver_id = L(a[2])
+	t.stage = tonumber(a[3]) or t.stage
+	dbg("task from host " .. id)
+end)
+
+-- the partner finished a task: repeat its end here (on_complete effects run, rewards are ours)
+coop_main.on_event("qdone", function(a)
+	local id, kind = a[1], a[2]
+	local t = id and active(id)
+	if not t then return end
+	local share = host() and share_rewards or (not host() and a[4] == "1")
+	remote_end[id] = { money = tonumber(a[3]) or 0, share = share }
+	local m = tm()
+	if kind == "complete" then m:set_task_completed(id)
+	elseif kind == "cancel" then m:set_task_cancelled(id)
+	else m:set_task_failed(id) end
+	dbg("partner ended " .. id .. " " .. tostring(kind))
+end)
+
+-- effects that take things from the player or pay them; for the partner's end they are skipped
+-- (or replaced by the partner's money). The host alone marks reward stashes.
+local TAKE = { "fetch_reward_and_remove", "remove_item", "remove_fetch_item", "remove_quest_item",
+	"remove_delivery_item", "remove_artefact_item", "lttz_ll_take_strelok_pendrive", "lttz_ll_take_x8_documents",
+	"lttz_ll_take_wpn_gauss_quest", "reward_random_money", "reward_money", "reward_random_money_by_dist",
+	"drx_sl_money_task_payment" }
+local GIVE = { "reward_item", "reward_random_item" }
+
+local function hook_effects()
+	if rawget(_G, "coop_quest_effects_hooked") then return end
+	_G.coop_quest_effects_hooked = true
+	local function wrap(name, skip)
+		local fn = xr_effects[name]
+		if type(fn) ~= "function" then return end
+		xr_effects[name] = function(...)
+			if skip() then dbg("skipped " .. name) return end
+			return fn(...)
+		end
+	end
+	for _, n in ipairs(TAKE) do wrap(n, function() return suppress ~= nil end) end
+	for _, n in ipairs(GIVE) do wrap(n, function() return suppress == "all" end) end
+	wrap("reward_stash", function() return guest() and coop_main.connected end)
+end
+
+local function hook_callback()
+	if rawget(_G, "coop_quest_cb_hooked") then return end
+	_G.coop_quest_cb_hooked = true
+	local orig = task_manager.task_callback
+	task_manager.task_callback = function(tsk, state)
+		local id = tsk and tsk:get_id()
+		local t = id and tm().task_info[id]
+		local remote = id and remote_end[id]
+		local cancelled = t and t.cancelled_by_actor
+		if remote then
+			remote_end[id] = nil
+			suppress = remote.share and "money" or "all"
+		end
+		local m0 = db.actor and db.actor:money() or 0
+		local ok, err = pcall(orig, tsk, state)
+		suppress = nil
+		if not ok then coop_main.log("task end " .. tostring(id) .. " failed: " .. tostring(err)) end
+		if not t or not (state == task.completed or state == task.fail) then return end
+		if remote then
+			if state == task.completed and remote.share and remote.money > 0 then
+				dialogs.relocate_money(db.actor, remote.money, "in")
+			end
+			coop_main.msg(string.format("%s: задание «%s» %s", coop_main.peer_name, task_title(id),
+				state == task.completed and "выполнено" or "провалено"))
+		elseif coop_main.connected then
+			local kind = state == task.completed and "complete" or (cancelled and "cancel" or "fail")
+			-- fetch rewards are paid a second later: report the money after that
+			pending_done[#pending_done+1] = { id = id, kind = kind, m0 = m0, at = time_global() + 2000 }
+		end
+	end
+end
+
+local function flush_done()
+	local now = time_global()
+	local keep = {}
+	for _, d in ipairs(pending_done) do
+		if now >= d.at then
+			local got = math.max(0, db.actor:money() - d.m0)
+			coop_main.send("qdone", d.id, d.kind, got, share_rewards and 1 or 0)
+			dbg("ended " .. d.id .. " " .. d.kind .. " +" .. got)
+		else
+			keep[#keep+1] = d
+		end
+	end
+	pending_done = keep
+end
+
+-- after a reconnect the guest may have missed tasks: the host sends its list again
+coop_main.on_event("_connection", function(a)
+	resync_at = (a[1] == "1" and host()) and time_global() + 10000 or nil
+end)
+
+local function resync()
+	resync_at = nil
+	for id in pairs(tm().task_info) do pcall(send_give, id) end
+end
+
+------------------------------------------------------------------ options and update
+local function load_options()
+	share_rewards = true
+	local f = io.open(getFS():update_path("$app_data_root$", "coop_keys.txt"), "r")
+	if not f then return end
+	for line in f:lines() do
+		local v = line:match("^%s*rewards%s*=%s*(%d)")
+		if v then share_rewards = v ~= "0" end
+	end
+	f:close()
+end
+
+local next_tick = 0
+local function actor_on_update()
+	local now = time_global()
+	if now < next_tick then return end
+	next_tick = now + 500
+	local ok, err = pcall(function()
+		if #pending_done > 0 then flush_done() end
+		if ready() then
+			if now > info_reset then info_sent, info_reset = {}, now + 60000 end
+			check_infos()
+			if resync_at and now > resync_at then resync() end
+		end
+	end)
+	if not ok then coop_main.log("quests update failed: " .. tostring(err)) end
+end
+
+local function actor_on_first_update()
+	ready_at = time_global() + 8000
+	hook_give()
+	hook_effects()
+	hook_callback()
+end
+
+function on_game_start()
+	info_known, info_sent, remote_end, pending_done, suppress, ready_at, resync_at = {}, {}, {}, {}, nil, nil, nil
+	load_options()
+	RegisterScriptCallback("actor_on_first_update", actor_on_first_update)
+	RegisterScriptCallback("actor_on_update", actor_on_update)
+	RegisterScriptCallback("actor_on_info_callback", actor_on_info_callback)
+end

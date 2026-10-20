@@ -177,12 +177,13 @@ namespace CoopLauncher
         public static readonly string[][] Actions = KeysDialog.Actions;
         readonly ZoneSelect[] boxes = new ZoneSelect[Actions.Length];
         readonly ZoneCheck upnp = new ZoneCheck("Хост: открывать порт на роутере (UPnP)");
+        readonly ZoneCheck rewards = new ZoneCheck("Хост: награда за задание обоим игрокам");
         readonly TextBox port = new TextBox();
         readonly Settings settings;
 
         sealed class Key { public string Dik; public override string ToString() => KeysDialog.Pretty(Dik); }
 
-        public OptionsDialog(Settings s) : base("Опции", 440, 412)
+        public OptionsDialog(Settings s) : base("Опции", 440, 482)
         {
             settings = s;
             for (int i = 0; i < Actions.Length; i++)
@@ -201,9 +202,11 @@ namespace CoopLauncher
             Add(new FieldFrame(port), 250, 258, 166, 30);
             upnp.Checked = s.Upnp;
             Add(upnp, 24, 300, 392, 26);
+            rewards.Checked = s.ShareRewards;
+            Add(rewards, 24, 370, 392, 26);
 
-            var save = Add(new ZoneButton("Сохранить"), 196, 352, 120, 38);
-            var cancel = Add(new ZoneButton("Отмена"), 324, 352, 92, 38);
+            var save = Add(new ZoneButton("Сохранить"), 196, 422, 120, 38);
+            var cancel = Add(new ZoneButton("Отмена"), 324, 422, 92, 38);
             save.Click += (o, e) => Save();
             cancel.Click += (o, e) => { DialogResult = DialogResult.Cancel; Close(); };
         }
@@ -212,6 +215,7 @@ namespace CoopLauncher
         {
             Section(g, "Клавиши в игре", 24, 64, 392);
             Section(g, "Сеть", 24, 244, 392);
+            Section(g, "Задания", 24, 350, 392);
         }
 
         void Save()
@@ -230,6 +234,7 @@ namespace CoopLauncher
             for (int i = 0; i < Actions.Length; i++) settings.SetKey(Actions[i][0], chosen[i]);
             settings.Port = p;
             settings.Upnp = upnp.Checked;
+            settings.ShareRewards = rewards.Checked;
             DialogResult = DialogResult.OK;
             Close();
         }

@@ -1,0 +1,67 @@
+-- dev only: when appdata\coop_questtest.txt exists, exercises v2.1 task sync. Steps go to coop_log.txt.
+-- host: gives a story flag and a fetch task, removes the flag, completes the task.
+-- guest: waits for the host's task, takes another one in "dialog" (must go to the host), completes the first.
+local active, t0, done, seen_at = false, nil, {}, nil
+local MEDIC, MECH, GIVER = "zat_b22_stalker_medic_task_1", "zat_a2_stalker_mechanic_task_1", 21552
+
+local function log(s) coop_main.log("QUESTTEST " .. s) end
+local function tm() return task_manager.get_task_manager() end
+local function has_task(id) return db.actor:get_task(id, true) ~= nil and tm().task_info[id] ~= nil end
+
+local function report(tag)
+	log(string.format("%s money=%d medic=%s mech=%s info_test=%s info_guest=%s info_host=%s fetch=%s", tag, db.actor:money(),
+		tostring(has_task(MEDIC)), tostring(has_task(MECH)), tostring(has_alife_info("coop_test_info")),
+		tostring(has_alife_info("coop_guest_info")), tostring(has_alife_info("coop_host_info")),
+		tostring(load_var(db.actor, MEDIC .. "_fetch"))))
+end
+
+local function host_steps(t)
+	if t > 20 and not done.info then done.info = true; give_info("coop_test_info"); report("gave info") end
+	if t > 25 and not done.task then
+		done.task = true
+		alife_create_item("itm_drugkit", db.actor)
+		save_var(db.actor, MEDIC .. "_fetch", "itm_drugkit"); save_var(db.actor, MEDIC .. "_fetch_count", 1)
+		tm():give_task(MEDIC, GIVER)
+		report("gave task")
+	end
+	if t > 40 and not done.noinfo then done.noinfo = true; disable_info("coop_test_info"); report("removed info") end
+	if t > 45 and not done.complete then done.complete = true; report("before complete"); tm():set_task_completed(MEDIC) end
+	if t > 52 and not done.r1 then done.r1 = true; report("after complete") end
+	if t > 68 and not done.r2 then done.r2 = true; report("final") end
+end
+
+local function guest_steps()
+	local now = time_global()
+	if not seen_at and has_task(MEDIC) then seen_at = now; report("got host task") end
+	if not seen_at then return end
+	local t = (now - seen_at) / 1000
+	if t > 5 and not done.take then
+		done.take = true
+		save_var(db.actor, MECH .. "_fetch", "itm_basickit")
+		tm():give_task(MECH, GIVER)
+		report("took task in dialog")
+	end
+	if t > 10 and not done.complete then done.complete = true; report("before complete"); tm():set_task_completed(MEDIC) end
+	if t > 16 and not done.r1 then done.r1 = true; report("after complete") end
+	if t > 40 and not done.r2 then done.r2 = true; report("final") end
+end
+
+local function update()
+	if not (active and coop_main.connected and db.actor) then return end
+	local ok, err = pcall(function()
+		if coop_main.is_host() then
+			t0 = t0 or time_global()
+			host_steps((time_global() - t0) / 1000)
+		else
+			guest_steps()
+		end
+	end)
+	if not ok then log("error " .. tostring(err)) end
+end
+
+function on_game_start()
+	local f = io.open(getFS():update_path("$app_data_root$", "coop_questtest.txt"), "r")
+	active = f ~= nil
+	if f then f:close() end
+	RegisterScriptCallback("actor_on_update", update)
+end

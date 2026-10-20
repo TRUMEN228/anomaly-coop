@@ -10,6 +10,7 @@ namespace CoopLauncher
         public string GameDir, Nick, HostIp, Mode = "host", LastSave;
         public int Port = 27015;
         public bool Upnp = true;
+        public bool ShareRewards = true;
         public string Transport = "steam"; // "steam" | "ip"
         readonly Dictionary<string, string> keys = new Dictionary<string, string>
         {
@@ -24,6 +25,7 @@ namespace CoopLauncher
         {
             var lines = new List<string>();
             foreach (var kv in keys) lines.Add(kv.Key + "=DIK_" + kv.Value);
+            lines.Add("rewards=" + (ShareRewards ? 1 : 0));
             var dir = Path.Combine(gameDir, "appdata");
             Directory.CreateDirectory(dir);
             File.WriteAllLines(Path.Combine(dir, "coop_keys.txt"), lines);
@@ -52,6 +54,7 @@ namespace CoopLauncher
                         case "last_save": s.LastSave = v; break;
                         case "port": int.TryParse(v, out s.Port); break;
                         case "upnp": s.Upnp = v != "0"; break;
+                        case "share_rewards": s.ShareRewards = v != "0"; break;
                         case "transport": s.Transport = v == "ip" ? "ip" : "steam"; break;
                         default:
                             if (k.StartsWith("key_") && v.Length > 0) s.keys[k.Substring(4)] = v;
@@ -70,7 +73,7 @@ namespace CoopLauncher
             {
                 var lines = new List<string> {
                     "game_dir=" + GameDir, "nick=" + Nick, "host_ip=" + HostIp,
-                    "mode=" + Mode, "last_save=" + LastSave, "port=" + Port, "upnp=" + (Upnp ? 1 : 0), "transport=" + Transport };
+                    "mode=" + Mode, "last_save=" + LastSave, "port=" + Port, "upnp=" + (Upnp ? 1 : 0), "share_rewards=" + (ShareRewards ? 1 : 0), "transport=" + Transport };
                 foreach (var kv in keys) lines.Add("key_" + kv.Key + "=" + kv.Value);
                 File.WriteAllLines(FilePath, lines);
             }
