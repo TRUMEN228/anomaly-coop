@@ -11,7 +11,7 @@ namespace CoopLauncher
     ///   --selftest-loopback  two bridges in one process over a fake Steam channel: hello, compressed state, 2 MB save in 60 KB pieces
     ///   --selftest-steam     real Steam API: init, friends-only lobby, rich presence, leave
     /// </summary>
-    public static class SelfTest
+    public static partial class SelfTest
     {
         static readonly StringBuilder report = new StringBuilder();
         static bool ok = true;
@@ -30,6 +30,7 @@ namespace CoopLauncher
                 else if (mode == "--selftest-steam") Steam();
                 else if (mode == "--selftest-dialogs") Dialogs();
                 else if (mode == "--selftest-rebind") Rebind();
+                else if (mode == "--selftest-report") Report();
             }
             catch (Exception e) { Check("exception: " + e, false); }
             File.WriteAllText(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "selftest.txt"), report.ToString());

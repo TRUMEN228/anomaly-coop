@@ -41,7 +41,7 @@ namespace CoopLauncher
         readonly ZoneButton teleport = new ZoneButton("Телепорт к другу");
         readonly ZoneButton copyIp = new ZoneButton("Копировать адрес");
         readonly ZoneButton optionsBtn = new ZoneButton("Опции");
-        readonly ZoneButton logsBtn = new ZoneButton("Логи");
+        readonly ZoneButton logsBtn = new ZoneButton("Сообщить");
         readonly ZoneButton uninstall = new ZoneButton("Удалить мод");
         readonly ZoneButton controlsBtn = new ZoneButton("⌨ Управление");
         readonly ZoneButton chatSend = new ZoneButton("Чат");
@@ -154,7 +154,7 @@ namespace CoopLauncher
             update.Font = Theme.Label(9);
             refresh.Font = browse.Font = Theme.Label(11);
             tips.SetToolTip(optionsBtn, "Клавиши в игре, порт и автопроброс (UPnP)");
-            tips.SetToolTip(logsBtn, "Собрать логи в архив на рабочий стол");
+            tips.SetToolTip(logsBtn, "Сообщить об ошибке: готовый отчёт на GitHub и архив логов");
             tips.SetToolTip(uninstall, "Удалить мод из игры (сейвы не трогаются)");
             tips.SetToolTip(controlsBtn, "Клавиатура с клавишами кооператива и игры");
             tips.SetToolTip(copyIp, "Скопировать ваши адреса, чтобы отправить другу");
@@ -343,7 +343,7 @@ namespace CoopLauncher
             teleport.Click += (s, e) => bridge?.ToGame("cmd|tp");
             copyIp.Click += (s, e) => CopyIp();
             optionsBtn.Click += (s, e) => EditOptions();
-            logsBtn.Click += (s, e) => CollectLogs();
+            logsBtn.Click += (s, e) => Report(false);
             uninstall.Click += (s, e) => UninstallMod();
             controlsBtn.Click += (s, e) => { using (var d = new ControlsDialog(settings)) d.ShowDialog(this); };
             chatSend.Click += (s, e) => SendChat();
@@ -611,6 +611,7 @@ namespace CoopLauncher
         {
             var before = (lampGame, lampNet, lampPeer, textGame, textNet, textPeer, textAddr);
             bool running = GameRunning();
+            WatchForCrash(running);
             if (bridge == null)
             {
                 lampGame = running ? Lamp.Wait : Lamp.Off; textGame = running ? "запущена" : "не запущена";
@@ -677,6 +678,29 @@ namespace CoopLauncher
             UpdateHint();
             if (IsGameDir(gameDir.Text)) { try { settings.WriteGameKeys(gameDir.Text); } catch { } }
             Print("Настройки сохранены. Новые клавиши заработают после следующей загрузки сейва.", Theme.TextDim);
+        }
+
+        void Report(bool crashed)
+        {
+            using (var d = new ReportDialog(settings, gameDir.Text, crashed)) d.ShowDialog(this);
+        }
+
+        // the game closed: if its log ends with a crash, offer a report once
+        bool wasRunning;
+        void WatchForCrash(bool running)
+        {
+            bool stopped = wasRunning && !running;
+            wasRunning = running; // before the dialog: the timer keeps ticking while it is open
+            if (stopped && IsGameDir(gameDir.Text))
+            {
+                var crash = ErrorReport.CrashExcerpt(gameDir.Text, fatalOnly: true);
+                if (crash != null)
+                {
+                    Print("Игра завершилась с ошибкой.", Theme.Danger);
+                    if (ZoneMessage.Ask(this, "Похоже, игра вылетела. Отправить отчёт об ошибке? Перед отправкой вы увидите всё, что в нём будет.", "Вылет игры"))
+                        Report(true);
+                }
+            }
         }
 
         void CollectLogs()

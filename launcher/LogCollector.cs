@@ -8,7 +8,8 @@ namespace CoopLauncher
     /// <summary>Packs the launcher, mod and engine logs into one zip on the desktop for bug reports.</summary>
     public static class LogCollector
     {
-        public static string Collect(string gameDir)
+        /// <summary>With <paramref name="scrub"/> the text logs lose the player's name, nick, IPs and Steam ids (see ErrorReport.Scrub).</summary>
+        public static string Collect(string gameDir, Settings scrub = null)
         {
             var zip = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Desktop),
                 $"anomaly-coop-logs-{DateTime.Now:yyyyMMdd-HHmmss}.zip");
@@ -21,7 +22,13 @@ namespace CoopLauncher
                     // the game may still be writing its log: copy through a shared read
                     using (var src = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
                     using (var dst = archive.CreateEntry(name).Open())
-                        src.CopyTo(dst);
+                    {
+                        if (scrub == null) { src.CopyTo(dst); return; }
+                        string text;
+                        using (var r = new StreamReader(src, Bridge.GameEnc)) text = r.ReadToEnd();
+                        var bytes = Bridge.GameEnc.GetBytes(ErrorReport.Scrub(text, scrub));
+                        dst.Write(bytes, 0, bytes.Length);
+                    }
                 }
                 Add(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "coop_launcher.log"), "coop_launcher.log");
                 foreach (var f in new[] { "coop_log.txt", "coop_out.txt", "coop_in.txt", "coop_keys.txt" })
