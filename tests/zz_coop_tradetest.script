@@ -1,0 +1,56 @@
+-- dev only: when appdata\coop_tradetest.txt exists, the HOST gives the partner its weapon and a bandage
+-- through the exchange box and reports what the fake partner gave back.
+local active, t0, done = false, nil, {}
+local function log(s) coop_main.log("TRADETEST " .. s) end
+local function inv()
+	local t = {}
+	db.actor:iterate_inventory(function(_, o)
+		local s = o:section()
+		if s == "wpn_ak74" or s == "ammo_5.45x39_fmj" or s == "medkit" or s == "bandage" or s:find("wpn_") then
+			local extra = IsWeapon(o) and string.format("(cond %.2f mag %d ups %s)", o:condition(), o:get_ammo_in_magazine(),
+				(function() local u = {}; o:iterate_installed_upgrades(function(x) u[#u+1] = x end); return table.concat(u, "+") end)())
+				or (IsAmmo(o) and string.format("(%d)", o:ammo_get_count())) or ""
+			t[#t+1] = s .. extra
+		end
+	end, nil)
+	return table.concat(t, ", ")
+end
+
+local function update()
+	if not (active and coop_main.connected and db.actor and coop_main.is_host()) then return end
+	t0 = t0 or time_global()
+	local t = (time_global() - t0) / 1000
+	local ok, err = pcall(function()
+		if t > 20 and not done.open then
+			done.open = true
+			alife_create_item("bandage", db.actor)
+			log("inventory before: " .. inv())
+			SendScriptCallback("on_key_press", DIK_keys[ "DIK_NUMPAD4" ])
+		end
+		if t > 24 and not done.put then
+			done.put = true
+			local box = level.object_by_id(coop_trade.current_box() or -1)
+			local gui = ui_inventory.GUI
+			log("box " .. tostring(box and box:id()) .. " window shown " .. tostring(gui and gui:IsShown()))
+			local wpn = db.actor:item_in_slot(2) or db.actor:item_in_slot(3)
+			local band = db.actor:object("bandage")
+			if box and wpn then db.actor:transfer_item(wpn, box) end
+			if box and band then db.actor:transfer_item(band, box) end
+			log("put " .. tostring(wpn and wpn:section()) .. " and bandage")
+		end
+		if t > 27 and not done.close then
+			done.close = true
+			if ui_inventory.GUI and ui_inventory.GUI:IsShown() then ui_inventory.GUI:Close() end
+		end
+		if t > 30 and not done.r1 then done.r1 = true; log("inventory after giving: " .. inv()) end
+		if t > 48 and not done.r2 then done.r2 = true; log("inventory after the partner's gift: " .. inv()) end
+	end)
+	if not ok then log("error " .. tostring(err)) end
+end
+
+function on_game_start()
+	local f = io.open(getFS():update_path("$app_data_root$", "coop_tradetest.txt"), "r")
+	active = f ~= nil
+	if f then f:close() end
+	RegisterScriptCallback("actor_on_update", update)
+end

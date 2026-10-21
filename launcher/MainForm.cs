@@ -43,6 +43,7 @@ namespace CoopLauncher
         readonly ZoneButton optionsBtn = new ZoneButton("Опции");
         readonly ZoneButton logsBtn = new ZoneButton("Логи");
         readonly ZoneButton uninstall = new ZoneButton("Удалить мод");
+        readonly ZoneButton controlsBtn = new ZoneButton("⌨ Управление");
         readonly ZoneButton chatSend = new ZoneButton("Чат");
         readonly ZoneButton minBtn = new ZoneButton("—");
         readonly ZoneButton closeBtn = new ZoneButton("✕");
@@ -145,7 +146,8 @@ namespace CoopLauncher
                 l.Font = Theme.Label(8.5f);
                 Controls.Add(l);
             }
-            hint.SetBounds(28, 580, 700, 18);
+            hint.SetBounds(28, 580, 584, 18);
+            Place(controlsBtn, 618, 572, 354, 28);
             hint.Font = Theme.Mono(8.5f);
 
             minBtn.Font = closeBtn.Font = Theme.Label(10);
@@ -154,6 +156,7 @@ namespace CoopLauncher
             tips.SetToolTip(optionsBtn, "Клавиши в игре, порт и автопроброс (UPnP)");
             tips.SetToolTip(logsBtn, "Собрать логи в архив на рабочий стол");
             tips.SetToolTip(uninstall, "Удалить мод из игры (сейвы не трогаются)");
+            tips.SetToolTip(controlsBtn, "Клавиатура с клавишами кооператива и игры");
             tips.SetToolTip(copyIp, "Скопировать ваши адреса, чтобы отправить другу");
             tips.SetToolTip(refresh, "Обновить список");
             tips.SetToolTip(browse, "Выбрать папку игры");
@@ -344,6 +347,7 @@ namespace CoopLauncher
             optionsBtn.Click += (s, e) => EditOptions();
             logsBtn.Click += (s, e) => CollectLogs();
             uninstall.Click += (s, e) => UninstallMod();
+            controlsBtn.Click += (s, e) => { using (var d = new ControlsDialog(settings)) d.ShowDialog(this); };
             chatSend.Click += (s, e) => SendChat();
             chatInput.KeyDown += (s, e) => { if (e.KeyCode == Keys.Enter) { SendChat(); e.SuppressKeyPress = true; } };
             minBtn.Click += (s, e) => WindowState = FormWindowState.Minimized;
@@ -664,7 +668,7 @@ namespace CoopLauncher
         void UpdateHint()
         {
             string K(string a) => KeysDialog.Pretty(settings.Key(a));
-            hint.Text = $"В ИГРЕ:  {K("tp")} телепорт · {K("sync")} отправить сессию · {K("load")} загрузить сессию · {K("status")} статус";
+            hint.Text = $"В ИГРЕ:  {K("tp")} телепорт · {K("sync")}/{K("load")} сессия · {K("status")} статус · {K("give")} передать вещи";
         }
 
         void EditOptions()

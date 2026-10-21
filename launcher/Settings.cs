@@ -14,7 +14,7 @@ namespace CoopLauncher
         public string Transport = "steam"; // "steam" | "ip"
         readonly Dictionary<string, string> keys = new Dictionary<string, string>
         {
-            ["tp"] = "NUMPAD1", ["sync"] = "NUMPAD2", ["load"] = "NUMPAD3", ["status"] = "NUMPAD0",
+            ["tp"] = "NUMPAD1", ["sync"] = "NUMPAD2", ["load"] = "NUMPAD3", ["status"] = "NUMPAD0", ["give"] = "NUMPAD4",
         };
 
         public string Key(string action) => keys.TryGetValue(action, out var k) ? k : "NUMPAD0";

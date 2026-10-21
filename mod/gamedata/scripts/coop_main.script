@@ -193,7 +193,7 @@ function is_client() return connected and role == "client" end
 
 ------------------------------------------------------------------ hotkeys
 -- defaults; CoopLauncher writes the player's choice to appdata\coop_keys.txt ("tp=DIK_NUMPAD1")
-local keys = { tp = "DIK_NUMPAD1", sync = "DIK_NUMPAD2", load = "DIK_NUMPAD3", status = "DIK_NUMPAD0" }
+local keys = { tp = "DIK_NUMPAD1", sync = "DIK_NUMPAD2", load = "DIK_NUMPAD3", status = "DIK_NUMPAD0", give = "DIK_NUMPAD4" }
 local options = nil          -- launcher options from the same file ("rewards=1")
 
 local function load_keys()
@@ -230,6 +230,8 @@ local function on_key_press(key)
 		dispatch_event("_cmd_sync", {})
 	elseif key == DIK_keys[keys.load] then
 		dispatch_event("_cmd_load", {})
+	elseif key == DIK_keys[keys.give] then
+		dispatch_event("_cmd_give", {})
 	elseif key == DIK_keys[keys.status] then
 		if not bridge_alive then
 			msg("Лаунчер кооператива не запущен")

@@ -247,7 +247,9 @@ end
 local function flush_items()
 	for id, t in pairs(pending_take) do
 		local box = box_take[id]
-		if box then
+		if box and coop_trade.is_exchange_box(box) then
+			-- taken back from the exchange box: not a world event
+		elseif box then
 			coop_main.send("btake", coop_spawn.R(box), coop_spawn.R(id), t[1])
 		else
 			coop_main.send("take", coop_spawn.R(id), t[1], f2(t[2].x), f2(t[2].y), f2(t[2].z))
@@ -263,7 +265,7 @@ local function flush_items()
 			if not parent then
 				local p = obj:position()
 				coop_main.send("drop", id, sec, cond, ammo, f2(p.x), f2(p.y), f2(p.z), obj:level_vertex_id(), obj:game_vertex_id())
-			elseif parent:id() ~= AC_ID and IsInvbox(parent) then
+			elseif parent:id() ~= AC_ID and IsInvbox(parent) and not coop_trade.is_exchange_box(parent:id()) then
 				coop_main.send("bput", coop_spawn.R(parent:id()), sec, cond, ammo)
 			end
 		end

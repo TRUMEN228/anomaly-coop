@@ -14,6 +14,7 @@ namespace CoopLauncher
             new[] { "sync", "Отправить сессию (хост)" },
             new[] { "load", "Загрузить сессию (гость)" },
             new[] { "status", "Статус подключения" },
+            new[] { "give", "Передать вещи напарнику" },
         };
 
         // keys Anomaly does not use by default (F5/F9 are quicksave/quickload, F1-F4 slots)

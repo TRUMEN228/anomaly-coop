@@ -132,6 +132,13 @@ namespace CoopLauncher
             var settings = Settings.Load();
             Snap(new MainForm(), "main");
             Snap(new OptionsDialog(settings), "options");
+            Snap(new ControlsDialog(settings), "controls");
+            foreach (var c in new[] { "Движение", "Оружие", "Снаряжение", "Прочее" })
+            {
+                var d = new ControlsDialog(settings);
+                d.Show(c);
+                Snap(d, "controls_" + Array.IndexOf(new[] { "Движение", "Оружие", "Снаряжение", "Прочее" }, c));
+            }
             Snap(new FolderDialog(Path.GetDirectoryName((settings.GameDir ?? "C:\\").TrimEnd('\\')) ?? ""), "folder");
             var msg = typeof(ZoneMessage).GetConstructors(System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)[0];
             Snap((System.Windows.Forms.Form)msg.Invoke(new object[] { "Удалить мод", "Удалить файлы мода из папки игры? Сейвы и персонаж гостя останутся.", true }), "message");

@@ -204,11 +204,14 @@ while time.time() - t0 < secs:
         quest_steps(t)
     if "team" in sys.argv:
         team_steps(t)
+    if "trade" in sys.argv and mode == "guest" and t > 40 and "gift" not in sent:
+        sent.add("gift")
+        send_event("gift|wpn_ak74:0.800:20:0:up_firsta_ak74+up_fiftha_ak74;ammo_5.45x39_fmj:1.000:15:0:;medkit:1.000:0:0:")
     if t > 20 and "chat" not in sent:
         sent.add("chat"); send_event("chat|Привет от бота|Bot")
     if t > 24 and "drop" not in sent and center:
         sent.add("drop"); send_event(f"drop|1|bandage|1.000|0|{center[0]:.2f}|{center[1]:.2f}|{center[2]:.2f}|{peer_pos[4]}|{peer_pos[5]}")
-    if t > 28 and "kill" not in sent and npcs and "quest" not in sys.argv:
+    if t > 28 and "kill" not in sent and npcs and "quest" not in sys.argv and "trade" not in sys.argv:
         sent.add("kill")
         nid, sec = npcs[0].split(":")[0], npcs[0].split(":")[1]
         send_event(f"hit|{nid}|{sec}|0.300")

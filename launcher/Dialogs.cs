@@ -178,7 +178,7 @@ namespace CoopLauncher
         readonly ZoneSelect[] boxes = new ZoneSelect[Actions.Length];
         readonly ZoneCheck upnp = new ZoneCheck("Хост: открывать порт на роутере (UPnP)");
         readonly ZoneCheck rewards = new ZoneCheck("Хост: награда за задание обоим игрокам");
-        readonly ZoneCheck revive = new ZoneCheck("Хост: нокдаун вместо смерти, поднять аптечкой");
+        readonly ZoneCheck revive = new ZoneCheck("Хост: нокдаун вместо смерти");
         readonly ZoneCheck ff = new ZoneCheck("Хост: огонь по своим");
         readonly ZoneCheck money = new ZoneCheck("Хост: общие деньги");
         readonly ZoneCheck follow = new ZoneCheck("Переходить на локацию вслед за напарником");
@@ -187,7 +187,7 @@ namespace CoopLauncher
 
         sealed class Key { public string Dik; public override string ToString() => KeysDialog.Pretty(Dik); }
 
-        public OptionsDialog(Settings s) : base("Опции", 440, 602)
+        public OptionsDialog(Settings s) : base("Опции", 440, 642)
         {
             settings = s;
             for (int i = 0; i < Actions.Length; i++)
@@ -200,21 +200,21 @@ namespace CoopLauncher
                 Add(new FieldFrame(sel), 250, y, 166, 30);
                 boxes[i] = sel;
             }
-            Caption("Порт для прямого IP", 24, 263, 210);
+            Caption("Порт для прямого IP", 24, 303, 210);
             port.Text = s.Port.ToString();
             port.KeyPress += (o, e) => { if (!char.IsDigit(e.KeyChar) && !char.IsControl(e.KeyChar)) e.Handled = true; };
-            Add(new FieldFrame(port), 250, 258, 166, 30);
+            Add(new FieldFrame(port), 250, 298, 166, 30);
             upnp.Checked = s.Upnp;
-            Add(upnp, 24, 300, 392, 26);
+            Add(upnp, 24, 340, 392, 26);
             rewards.Checked = s.ShareRewards;
-            Add(rewards, 24, 370, 392, 26);
-            revive.Checked = s.Revive; Add(revive, 24, 400, 392, 26);
-            ff.Checked = s.FriendlyFire; Add(ff, 24, 430, 392, 26);
-            money.Checked = s.SharedMoney; Add(money, 24, 460, 392, 26);
-            follow.Checked = s.Follow; Add(follow, 24, 490, 392, 26);
+            Add(rewards, 24, 410, 392, 26);
+            revive.Checked = s.Revive; Add(revive, 24, 440, 392, 26);
+            ff.Checked = s.FriendlyFire; Add(ff, 24, 470, 392, 26);
+            money.Checked = s.SharedMoney; Add(money, 24, 500, 392, 26);
+            follow.Checked = s.Follow; Add(follow, 24, 530, 392, 26);
 
-            var save = Add(new ZoneButton("Сохранить"), 196, 542, 120, 38);
-            var cancel = Add(new ZoneButton("Отмена"), 324, 542, 92, 38);
+            var save = Add(new ZoneButton("Сохранить"), 196, 582, 120, 38);
+            var cancel = Add(new ZoneButton("Отмена"), 324, 582, 92, 38);
             save.Click += (o, e) => Save();
             cancel.Click += (o, e) => { DialogResult = DialogResult.Cancel; Close(); };
         }
@@ -222,8 +222,8 @@ namespace CoopLauncher
         protected override void PaintExtra(Graphics g)
         {
             Section(g, "Клавиши в игре", 24, 64, 392);
-            Section(g, "Сеть", 24, 244, 392);
-            Section(g, "Игра вдвоём", 24, 350, 392);
+            Section(g, "Сеть", 24, 284, 392);
+            Section(g, "Игра вдвоём", 24, 390, 392);
         }
 
         void Save()

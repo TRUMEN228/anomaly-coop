@@ -1,0 +1,169 @@
+--[[
+	Anomaly Co-op: giving items to the partner (v2.2).
+	The "give" key opens a temporary box next to the actor in the inventory window. Whatever is left
+	in it when the window closes goes straight into the partner's inventory.
+	  both ways:      "gift"   a list of items: section:condition:ammo:uses:upgrades (upgrades joined by "+")
+--]]
+
+local BOX_SECTION = "inv_backpack"
+local box_id = nil           -- the exchange box while it exists
+local box_opened = false
+local open_at = nil
+local pending_upgrades = {}  -- received items waiting to come online: id -> { upgrades }, ammo in magazine
+
+local function dbg(s) if coop_main.debug then coop_main.log("trade: " .. s) end end
+
+local exchange_ids = {}      -- every exchange box of this game: item moves into or out of it are not world events
+function current_box() return box_id end -- for tests
+function is_exchange_box(id) return id ~= nil and exchange_ids[id] == true end
+
+local function release_box()
+	local se = box_id and alife_object(box_id)
+	if se then alife_release(se) end
+	box_id, box_opened, open_at = nil, false, nil
+end
+
+coop_main.on_event("_cmd_give", function()
+	if not coop_main.connected then coop_main.msg("Напарник не подключён") return end
+	if box_id then return end
+	local a = db.actor
+	local se = alife_create(BOX_SECTION, a:position(), a:level_vertex_id(), a:game_vertex_id())
+	if not se then return end
+	box_id = se.id
+	exchange_ids[se.id] = true
+	open_at = time_global() + 5000 -- give up if it does not come online
+	dbg("box " .. box_id)
+end)
+
+local function item_entry(obj)
+	local sec = obj:section()
+	local cond = obj.condition and obj:condition() or 1
+	local ammo = 0
+	if IsAmmo(obj) then ammo = obj:ammo_get_count()
+	elseif IsWeapon(obj) and obj.get_ammo_in_magazine then ammo = obj:get_ammo_in_magazine() end
+	local uses = obj.get_remaining_uses and obj:get_remaining_uses() or 0
+	local ups = {}
+	if obj.iterate_installed_upgrades then
+		obj:iterate_installed_upgrades(function(u) ups[#ups+1] = u end)
+	end
+	return string.format("%s:%.3f:%d:%d:%s", sec, cond, ammo, uses, table.concat(ups, "+"))
+end
+
+local function names(list)
+	local t = {}
+	for i = 1, math.min(#list, 6) do t[#t+1] = ui_item.get_sec_name(list[i]) or list[i] end
+	local s = table.concat(t, ", ")
+	if #list > 6 then s = s .. string.format(" и ещё %d", #list - 6) end
+	return s
+end
+
+-- the window closed: send what is in the box, or give it back when the partner is gone
+local function close_box(box)
+	local items, entries, secs = {}, {}, {}
+	box:iterate_inventory_box(function(b, o) items[#items+1] = o end, box)
+	if #items > 0 and coop_main.connected then
+		for _, o in ipairs(items) do
+			entries[#entries+1] = item_entry(o)
+			secs[#secs+1] = o:section()
+		end
+		coop_main.send("gift", table.concat(entries, ";"))
+		for _, o in ipairs(items) do
+			local se = alife_object(o:id())
+			if se then alife_release(se) end
+		end
+		coop_main.msg("Передано напарнику: " .. names(secs))
+	elseif #items > 0 then
+		for _, o in ipairs(items) do box:transfer_item(o, db.actor) end
+		coop_main.msg("Напарник отключился, вещи возвращены")
+	end
+	dbg("box closed, items " .. #items)
+	release_box()
+end
+
+coop_main.on_event("gift", function(a)
+	if not db.actor then return end
+	local secs = {}
+	coop_world.suppress(2000) -- these are not pickups from the ground
+	for e in (a[1] or ""):gmatch("[^;]+") do
+		local sec, cond, ammo, uses, ups = e:match("^([^:]+):([^:]*):([^:]*):([^:]*):(.*)$")
+		if sec and ini_sys:section_exist(sec) then
+			local t = {}
+			cond, ammo, uses = tonumber(cond), tonumber(ammo) or 0, tonumber(uses) or 0
+			if cond and cond < 1 then t.cond = cond end
+			if ammo > 0 and ini_sys:line_exist(sec, "box_size") then t.ammo = ammo end
+			if uses > 0 then t.uses = uses end
+			local se = alife_create_item(sec, db.actor, t)
+			if se and type(se) == "userdata" and (ups ~= "" or ammo > 0 or t.cond) then
+				pending_upgrades[se.id] = { ups = ups, mag = ammo, cond = t.cond, at = time_global() + 5000 }
+			end
+			secs[#secs+1] = sec
+		end
+	end
+	if #secs > 0 then
+		coop_main.msg(string.format("%s передал вам: %s", coop_main.peer_name, names(secs)))
+		xr_sound.set_sound_play(AC_ID, "pda_tips")
+	end
+end)
+
+-- upgrades and the loaded magazine need the online object
+local function apply_pending()
+	local now = time_global()
+	for id, p in pairs(pending_upgrades) do
+		local obj = level.object_by_id(id)
+		if obj then
+			pending_upgrades[id] = nil
+			if p.cond and obj.set_condition then pcall(obj.set_condition, obj, p.cond) end
+			-- installing an upgrade unloads the magazine into the inventory: empty it first
+			if IsWeapon(obj) and p.ups ~= "" and obj.set_ammo_elapsed then pcall(obj.set_ammo_elapsed, obj, 0) end
+			-- installed as a technician does it for NPCs: no tool or mechanic checks
+			inventory_upgrades.force_upgrade = true
+			for u in p.ups:gmatch("[^+]+") do
+				local ok = pcall(obj.install_upgrade, obj, u)
+				dbg("upgrade " .. u .. " " .. tostring(ok and obj:has_upgrade(u)))
+			end
+			inventory_upgrades.force_upgrade = false
+			if IsWeapon(obj) and p.mag > 0 and obj.set_ammo_elapsed then pcall(obj.set_ammo_elapsed, obj, p.mag) end
+		elseif now > p.at then
+			pending_upgrades[id] = nil
+		end
+	end
+end
+
+local next_tick = 0
+local function actor_on_update()
+	local now = time_global()
+	if now < next_tick then return end
+	next_tick = now + 200
+	local ok, err = pcall(function()
+		if next(pending_upgrades) then apply_pending() end
+		if not box_id then return end
+		local box = level.object_by_id(box_id)
+		local gui = ui_inventory.GUI
+		if not box_opened then
+			if box then
+				ui_inventory.start("loot", box)
+				box_opened = true
+			elseif now > open_at then
+				release_box()
+			end
+		elseif not (gui and gui:IsShown()) then
+			if box then close_box(box) else release_box() end
+		end
+	end)
+	if not ok then coop_main.log("trade update failed: " .. tostring(err)) end
+end
+
+-- never keep the exchange box in a save
+local function on_before_save_input()
+	local box = box_id and level.object_by_id(box_id)
+	if box then
+		box:iterate_inventory_box(function(b, o) b:transfer_item(o, db.actor) end, box)
+	end
+	release_box()
+end
+
+function on_game_start()
+	box_id, box_opened, open_at, pending_upgrades, exchange_ids = nil, false, nil, {}, {}
+	RegisterScriptCallback("actor_on_update", actor_on_update)
+	RegisterScriptCallback("on_before_save_input", on_before_save_input)
+end
