@@ -12,7 +12,7 @@
 	Event types starting with "@" are handled by the bridge itself.
 --]]
 
-VERSION = "2.1"
+VERSION = "2.2"
 debug = false
 local TICK_MS = 100
 
@@ -194,15 +194,27 @@ function is_client() return connected and role == "client" end
 ------------------------------------------------------------------ hotkeys
 -- defaults; CoopLauncher writes the player's choice to appdata\coop_keys.txt ("tp=DIK_NUMPAD1")
 local keys = { tp = "DIK_NUMPAD1", sync = "DIK_NUMPAD2", load = "DIK_NUMPAD3", status = "DIK_NUMPAD0" }
+local options = nil          -- launcher options from the same file ("rewards=1")
 
 local function load_keys()
+	options = {}
 	local f = io.open(getFS():update_path("$app_data_root$", "coop_keys.txt"), "r")
 	if not f then return end
 	for line in f:lines() do
 		local action, dik = line:match("^%s*(%w+)%s*=%s*(DIK_[%w_]+)")
 		if action and keys[action] and DIK_keys[dik] then keys[action] = dik end
+		local name, v = line:match("^%s*(%w+)%s*=%s*(%d+)%s*$")
+		if name then options[name] = v ~= "0" end
 	end
 	f:close()
+end
+
+-- launcher option (true/false); def when the launcher did not write it
+function option(name, def)
+	if not options then load_keys() end
+	local v = options[name]
+	if v == nil then return def end
+	return v
 end
 
 -- "DIK_NUMPAD3" -> "Num3" for messages

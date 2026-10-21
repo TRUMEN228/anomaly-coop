@@ -1,0 +1,261 @@
+--[[
+	Anomaly Co-op: playing together (v2.2).
+	  state "dn"      1 while the actor is knocked down, seconds left
+	  state "o"       host options: friendly fire, shared money, knockdown
+	  both ways:      "revive" the partner used a medkit next to the downed actor's puppet
+	                  "ffhit"  friendly fire: the actor shot the partner's puppet (power, hit type)
+	                  "money"  shared money changed by this amount ("mset" sets the guest's total)
+	  guest -> host:  "sleep"  the guest slept this many hours: the host's time moves too
+	Following the partner to another level is local: when the partner leaves from near the actor,
+	the actor follows a few seconds later.
+--]]
+
+local DOWN_SEC = 60          -- time to be revived before dying
+local REVIVE_DIST = 3
+local FOLLOW_DIST = 30
+
+local downed_until = nil     -- time_global when the knocked-down actor dies
+local down_pos = nil
+local partner_down = false
+local host_opt = { ff = false, money = false, revive = true }
+local money_last = nil
+local applying_money = false
+local near_at = 0            -- last time the partner was near on this level
+local partner_level = nil
+local follow_at = nil
+local next_down_note = 0
+local protect_until = 0      -- after standing up: wounds of the knockdown must not finish the actor
+
+local function host() return coop_main.is_host() end
+local function dbg(s) if coop_main.debug then coop_main.log("team: " .. s) end end
+
+-- options: the host's choice applies to both
+local function opt(name, def)
+	if host() then return coop_main.option(name, def) end
+	return host_opt[name]
+end
+
+function shared_money() return coop_main.connected and opt("money", false) end
+function is_partner_down() return partner_down end
+function is_downed() return downed_until ~= nil end
+
+local function same_level_partner()
+	local r = coop_player.get_remote()
+	return r and r.level == level.name() and coop_main.connected and r or nil
+end
+
+coop_main.add_state_provider("o", function()
+	if not host() then return end
+	return { opt("ff", false) and 1 or 0, opt("money", false) and 1 or 0, opt("revive", true) and 1 or 0 }
+end)
+
+coop_main.on_state("o", function(t)
+	if host() then return end
+	host_opt.ff, host_opt.money, host_opt.revive = t[1] == "1", t[2] == "1", t[3] ~= "0"
+end)
+
+------------------------------------------------------------------ knockdown
+coop_main.add_state_provider("dn", function()
+	if not downed_until then return { 0 } end
+	return { 1, math.max(0, math.floor((downed_until - time_global()) / 1000)) }
+end)
+
+local last_dn = nil
+coop_main.on_state("dn", function(t)
+	local down = t[1] == "1"
+	if down and not partner_down then
+		local r = coop_player.get_remote()
+		coop_main.msg(string.format("%s тяжело ранен! Подойдите и используйте аптечку (%s с)",
+			r and r.name or "Напарник", t[2] or DOWN_SEC))
+	end
+	partner_down = down
+	last_dn = t[2]
+end)
+
+local function knock_down()
+	downed_until = time_global() + DOWN_SEC * 1000
+	down_pos = vector():set(db.actor:position())
+	db.actor:set_health_ex(0.1)
+	db.actor.bleeding = 1
+	db.actor:hide_weapon()
+	level.add_pp_effector("deimos1.ppe", 210420, false)
+	coop_main.msg(string.format("Вы тяжело ранены. Напарник может поднять вас аптечкой (%d с)", DOWN_SEC))
+	dbg("knocked down")
+end
+
+local function stand_up(health)
+	downed_until, down_pos = nil, nil
+	protect_until = time_global() + 5000
+	db.actor:set_health_ex(health)
+	db.actor.bleeding = 1 -- closes wounds
+	db.actor:restore_weapon()
+end
+
+local function actor_on_before_death(who_id, flags)
+	if downed_until or time_global() < protect_until then
+		flags.ret_value = false -- invulnerable while waiting for the partner
+		return
+	end
+	local r = same_level_partner()
+	if not (r and opt("revive", true) and not partner_down and (r.health or 0) > 0) then return end
+	flags.ret_value = false
+	knock_down()
+end
+
+local function actor_on_before_hit(shit, bone_id, flags)
+	if downed_until then flags.ret_value = false end
+end
+
+local function update_downed(now)
+	if db.actor.health < 0.1 then db.actor:set_health_ex(0.1) end
+	db.actor.bleeding = 1 -- closes wounds
+	if down_pos and db.actor:position():distance_to(down_pos) > 0.5 then db.actor:set_actor_position(down_pos) end
+	if now > downed_until then
+		dbg("bled out")
+		downed_until, down_pos = nil, nil
+		db.actor:restore_weapon()
+		db.actor:kill(db.actor, true)
+		return
+	end
+	if now > next_down_note then
+		next_down_note = now + 10000
+		actor_menu.set_msg(1, string.format("Ждём напарника с аптечкой: %d с", math.floor((downed_until - now) / 1000)), 4)
+	end
+end
+
+coop_main.on_event("revive", function()
+	if not downed_until then return end
+	stand_up(0.35)
+	coop_main.msg(string.format("%s поднял вас", coop_main.peer_name))
+	dbg("revived")
+end)
+
+local function actor_on_item_use(obj, sec)
+	sec = sec or (obj and obj:section()) or ""
+	if not (partner_down and sec:find("medkit")) then return end
+	local id = coop_player.get_puppet_id()
+	local npc = id and level.object_by_id(id)
+	if npc and npc:position():distance_to(db.actor:position()) <= REVIVE_DIST then
+		partner_down = false
+		coop_main.send("revive")
+		coop_main.msg("Вы подняли напарника")
+	end
+end
+
+------------------------------------------------------------------ friendly fire
+local function npc_on_before_hit(npc, shit, bone_id, flags)
+	if not (coop_player.is_puppet(npc) and shit and shit.draftsman and shit.draftsman:id() == AC_ID) then return end
+	if not opt("ff", false) or (shit.power or 0) <= 0 then return end
+	coop_main.send("ffhit", string.format("%.3f", shit.power), shit.type or 0)
+end
+
+coop_main.on_event("ffhit", function(a)
+	if not db.actor or downed_until then return end
+	local h = hit()
+	h.power = tonumber(a[1]) or 0
+	h.type = tonumber(a[2]) or hit.fire_wound
+	h.impulse = 0
+	h.direction = vector():set(0, 0, 1)
+	h.draftsman = db.actor
+	db.actor:hit(h)
+end)
+
+------------------------------------------------------------------ shared money
+local function update_money()
+	local m = db.actor:money()
+	if not shared_money() then money_last = m return end
+	if money_last and m ~= money_last and not applying_money then coop_main.send("money", m - money_last) end
+	money_last = m
+end
+
+local function apply_money(delta)
+	if delta == 0 then return end
+	applying_money = true
+	db.actor:give_money(delta)
+	money_last = db.actor:money()
+	applying_money = false
+end
+
+coop_main.on_event("money", function(a)
+	if shared_money() then apply_money(tonumber(a[1]) or 0) end
+end)
+
+coop_main.on_event("mset", function(a)
+	if host() or not db.actor then return end
+	apply_money((tonumber(a[1]) or 0) - db.actor:money())
+	coop_main.msg("Деньги общие с хостом: " .. a[1] .. " руб.")
+end)
+
+local mset_at = nil
+coop_main.on_event("_connection", function(a)
+	mset_at = (a[1] == "1" and host()) and time_global() + 8000 or nil
+	if a[1] ~= "1" then partner_down = false end
+end)
+
+------------------------------------------------------------------ sleep
+local function actor_on_sleep(hours)
+	if host() or not coop_main.connected then return end
+	coop_main.send("sleep", tonumber(hours) or 0)
+end
+
+coop_main.on_event("sleep", function(a)
+	if not host() then return end
+	local h = math.floor(tonumber(a[1]) or 0)
+	if h <= 0 or h > 48 then return end
+	level.change_game_time(0, h, 0)
+	coop_main.msg(string.format("%s поспал %d ч, время идёт для обоих", coop_main.peer_name, h))
+end)
+
+------------------------------------------------------------------ follow to another level
+local function update_follow(now)
+	local r = coop_player.get_remote()
+	if not (r and coop_main.connected) then partner_level = nil return end
+	local here = level.name()
+	if r.level == here then
+		if r.pos:distance_to(db.actor:position()) < FOLLOW_DIST then near_at = now end
+		follow_at = nil
+	elseif partner_level == here and now - near_at < 15000 and not downed_until and coop_main.option("follow", true) then
+		follow_at = now + 4000
+		coop_main.msg(string.format("%s ушёл на локацию %s, переход через 4 с", r.name, game.translate_string(r.level)))
+	end
+	partner_level = r.level
+	if follow_at and now > follow_at then
+		follow_at = nil
+		dbg("following to " .. r.level)
+		ChangeLevel(r.pos, r.lvid, r.gvid, VEC_ZERO, true)
+	end
+end
+
+------------------------------------------------------------------ update
+local next_tick = 0
+local function actor_on_update()
+	local now = time_global()
+	if downed_until then
+		local ok, err = pcall(update_downed, now)
+		if not ok then coop_main.log("downed update failed: " .. tostring(err)) end
+	elseif now < protect_until then
+		if db.actor.health < 0.35 then db.actor:set_health_ex(0.35) end
+		db.actor.bleeding = 1 -- closes wounds
+	end
+	if now < next_tick then return end
+	next_tick = now + 250
+	local ok, err = pcall(function()
+		update_money()
+		update_follow(now)
+		if mset_at and now > mset_at then
+			mset_at = nil
+			if shared_money() then coop_main.send("mset", db.actor:money()) end
+		end
+	end)
+	if not ok then coop_main.log("team update failed: " .. tostring(err)) end
+end
+
+function on_game_start()
+	downed_until, down_pos, partner_down, money_last, follow_at, partner_level, mset_at = nil, nil, false, nil, nil, nil, nil
+	RegisterScriptCallback("actor_on_update", actor_on_update)
+	RegisterScriptCallback("actor_on_before_death", actor_on_before_death)
+	RegisterScriptCallback("actor_on_before_hit", actor_on_before_hit)
+	RegisterScriptCallback("actor_on_item_use", actor_on_item_use)
+	RegisterScriptCallback("npc_on_before_hit", npc_on_before_hit)
+	RegisterScriptCallback("actor_on_sleep", actor_on_sleep)
+end

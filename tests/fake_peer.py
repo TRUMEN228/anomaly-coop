@@ -9,7 +9,7 @@ for the nearest creature from the host's creature list. Everything received is s
 import math, os, socket, struct, sys, time, zlib
 
 HELLO, STATE, EVENT, FILE, PING, STATEZ = 1, 2, 3, 4, 5, 6
-PROTO = b"4"
+PROTO = b"5"
 mode, port, secs = sys.argv[1], int(sys.argv[2]), float(sys.argv[3])
 enc = "cp1251"
 
@@ -73,6 +73,8 @@ def pump():
             for line in p.decode(enc).splitlines():
                 f = line.split("|")
                 got["states"][f[1]] = got["states"].get(f[1], 0) + 1
+                if f[1] in ("dn", "o"):
+                    got.setdefault("last_" + f[1], set()).add("|".join(f[2:]))
                 if f[1] == "pd" and len(f) > 3:
                     got.setdefault("doors", []).extend(f[3:])
                 if f[1] == "p":
@@ -111,6 +113,18 @@ def quest_steps(t):
         sent.add("qinfo0"); send_event("qinfo|coop_host_info|0")
 
 
+def team_steps(t):
+    """v2.2: revive, shared money, friendly fire, sleep; the fake host finally leaves the level."""
+    if mode == "guest" and t > 30 and "revive" not in sent:
+        sent.add("revive"); send_event("revive")
+    if mode == "guest" and t > 45 and "money" not in sent:
+        sent.add("money"); send_event("money|-200")
+    if mode == "guest" and t > 50 and "ff" not in sent:
+        sent.add("ff"); send_event("ffhit|0.200|7"); send_event("sleep|2")
+    if mode == "host" and peer_pos and t > 60 and "mset" not in sent:
+        sent.add("mset"); send_event("mset|77777")
+
+
 reconnect = "reconnect" in sys.argv
 spawn = "spawn" in sys.argv  # host mode: send a squad, a hit, a death and a removal with host ids
 dropped = False
@@ -145,10 +159,14 @@ while time.time() - t0 < secs:
         center = center or (x, y, z)
         a = t * 0.3
         px, pz = center[0] + 4 * math.cos(a), center[2] + 4 * math.sin(a)
+        if "team" in sys.argv and mode == "host" and t > 85:
+            lvl = "jupiter"  # the fake host "leaves" (vertex ids stay Zaton's, so the follow reloads Zaton)
         st = f"s|p|{lvl}|{px:.2f}|{center[1]:.2f}|{pz:.2f}|{a:.2f}|{lv}|{gv}|s|1|wpn_ak74|||1.00|Bot"
         lines = [st]
         if mode == "host":
-            lines.append("s|w|0|||0")  # world state with game time 0: guest must not rewind
+            lines.append("s|w|0|||0")
+            if "team" in sys.argv:
+                lines.append("s|o|1|1|1")  # world state with game time 0: guest must not rewind
         s.sendall(frame(STATE, "\n".join(lines).encode(enc)))
     if spawn and mode == "host" and peer_pos and t > 60 and "sqm" not in sent:
         sent.add("sqm")
@@ -184,6 +202,8 @@ while time.time() - t0 < secs:
             if "stalker" in sec or "trader" in sec or "barmen" in sec or sec.startswith("zat"): send_event(f"treq|{nid}|{sec}")
     if "quest" in sys.argv:
         quest_steps(t)
+    if "team" in sys.argv:
+        team_steps(t)
     if t > 20 and "chat" not in sent:
         sent.add("chat"); send_event("chat|Привет от бота|Bot")
     if t > 24 and "drop" not in sent and center:
@@ -200,3 +220,4 @@ if reconnect and mode == "guest":
 print("events:", got["events"])
 print("state counts:", got["states"], "npcs listed:", len(npcs))
 print("push doors moved:", got.get("doors", []))
+print("dn states:", sorted(got.get("last_dn", [])), "o states:", sorted(got.get("last_o", [])))

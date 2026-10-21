@@ -1,0 +1,54 @@
+-- dev only: when appdata\coop_teamtest.txt exists, exercises v2.2 (knockdown, money, friendly fire, sleep).
+local active, t0, done = false, nil, {}
+-- own append-only file: coop_log.txt starts over when a level loads (the follow test changes level)
+local function log(s)
+	local f = io.open(getFS():update_path("$app_data_root$", "coop_teamtest_log.txt"), "a")
+	if f then f:write(string.format("[%d] TEAMTEST %s\n", time_global(), s)); f:close() end
+end
+local function minutes() return (level.get_time_days() * 24 + level.get_time_hours()) * 60 + level.get_time_minutes() end
+local function report(tag)
+	log(string.format("%s health=%.2f alive=%s downed=%s money=%d time=%d", tag, db.actor.health, tostring(db.actor:alive()),
+		tostring(coop_team.is_downed()), db.actor:money(), minutes()))
+end
+local function lethal()
+	local h = hit(); h.power = 50; h.type = hit.fire_wound; h.impulse = 0; h.draftsman = db.actor
+	h.direction = vector():set(0, 0, 1); db.actor:hit(h)
+end
+
+local function host_steps(t)
+	if t > 20 and not done.k1 then done.k1 = true; report("before lethal hit"); lethal() end
+	if t > 22 and not done.r1 then done.r1 = true; report("after lethal hit") end
+	if t > 34 and not done.r2 then done.r2 = true; report("after revive") end
+	if t > 40 and not done.m then done.m = true; db.actor:give_money(500); report("gave myself 500") end
+	if t > 49 and not done.r3 then done.r3 = true; report("before ff and sleep") end
+	if t > 60 and not done.r4 then done.r4 = true; report("after ff and sleep") end
+	if t > 62 and not done.k2 then done.k2 = true; lethal(); report("second knockdown, nobody comes") end
+	if t > 126 and not done.r5 then done.r5 = true; report("final") end
+end
+
+local function guest_steps(t)
+	if t > 30 and not done.s then done.s = true; report("before sleep"); SendScriptCallback("actor_on_sleep", 3) end
+	if t > 40 and not done.r then done.r = true; report("after mset") end
+	if t > 2 and not done.l then done.l = true; report("level " .. level.name()) end
+end
+
+local function update()
+	if not (active and coop_main.connected and db.actor) then return end
+	t0 = t0 or time_global()
+	local ok, err = pcall(function()
+		if coop_main.is_host() then host_steps((time_global() - t0) / 1000) else guest_steps((time_global() - t0) / 1000) end
+	end)
+	if not ok then log("error " .. tostring(err)) end
+end
+
+function on_game_start()
+	local f = io.open(getFS():update_path("$app_data_root$", "coop_teamtest.txt"), "r")
+	active = f ~= nil
+	if f then f:close() end
+	RegisterScriptCallback("actor_on_update", update)
+	RegisterScriptCallback("actor_on_before_death", function(who, flags)
+		bd_n = (bd_n or 0) + 1
+		if active and bd_n < 6 then log("before_death who=" .. tostring(who) .. " downed=" .. tostring(coop_team.is_downed())) end
+	end)
+	RegisterScriptCallback("actor_on_net_destroy", function() if active then log("net_destroy") end end)
+end

@@ -16,7 +16,7 @@ namespace CoopLauncher
     /// </summary>
     public sealed class Bridge : IDisposable
     {
-        public const string ProtocolVersion = "4";
+        public const string ProtocolVersion = "5";
         const byte MsgHello = 1, MsgState = 2, MsgEvent = 3, MsgFile = 4, MsgPing = 5, MsgStateZ = 6;
 
         public static readonly Encoding GameEnc = Encoding.GetEncoding(1251);

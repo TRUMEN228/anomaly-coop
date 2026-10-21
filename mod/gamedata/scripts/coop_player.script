@@ -85,6 +85,7 @@ coop_main.on_state("p", function(t)
 		health = tonumber(t[13]) or 1, name = t[14] or "Partner",
 		shots = tonumber(t[15]) or 0,
 	}
+	if coop_team.is_partner_down() then r.crouch, r.moving = true, 0 end -- knocked down: stays low
 	local ax, ay, az = (t[16] or ""):match("^([^:]+):([^:]+):([^:]+)$")
 	if ax then r.aim = vector():set(tonumber(ax), tonumber(ay), tonumber(az)) end
 	if last_remote_shots and r.shots > last_remote_shots then

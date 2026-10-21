@@ -277,7 +277,8 @@ local function hook_callback()
 		if not ok then coop_main.log("task end " .. tostring(id) .. " failed: " .. tostring(err)) end
 		if not t or not (state == task.completed or state == task.fail) then return end
 		if remote then
-			if state == task.completed and remote.share and remote.money > 0 then
+			-- with shared money the partner's payment arrives through the wallet itself
+			if state == task.completed and remote.share and remote.money > 0 and not coop_team.shared_money() then
 				dialogs.relocate_money(db.actor, remote.money, "in")
 			end
 			coop_main.msg(string.format("%s: задание «%s» %s", coop_main.peer_name, task_title(id),
@@ -317,14 +318,7 @@ end
 
 ------------------------------------------------------------------ options and update
 local function load_options()
-	share_rewards = true
-	local f = io.open(getFS():update_path("$app_data_root$", "coop_keys.txt"), "r")
-	if not f then return end
-	for line in f:lines() do
-		local v = line:match("^%s*rewards%s*=%s*(%d)")
-		if v then share_rewards = v ~= "0" end
-	end
-	f:close()
+	share_rewards = coop_main.option("rewards", true)
 end
 
 local next_tick = 0
@@ -345,6 +339,7 @@ end
 
 local function actor_on_first_update()
 	ready_at = time_global() + 8000
+	load_options()
 	hook_give()
 	hook_effects()
 	hook_callback()
@@ -352,7 +347,6 @@ end
 
 function on_game_start()
 	info_known, info_sent, remote_end, pending_done, suppress, ready_at, resync_at = {}, {}, {}, {}, nil, nil, nil
-	load_options()
 	RegisterScriptCallback("actor_on_first_update", actor_on_first_update)
 	RegisterScriptCallback("actor_on_update", actor_on_update)
 	RegisterScriptCallback("actor_on_info_callback", actor_on_info_callback)
