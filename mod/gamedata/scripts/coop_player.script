@@ -26,6 +26,11 @@ local last_remote_shots = nil
 local puppet_wpn_id, puppet_wpn_sec = nil, nil
 local firing = false
 local release_puppet_weapon  -- defined below
+local reloads = 0            -- local reload counter, sent in the state
+local heal_until = 0         -- the actor is healing until then (medkit, bandage)
+local last_remote_reloads = nil
+local reload_pending = false
+local puppet_torch_id, puppet_torch_on = nil, nil
 
 function get_remote() return remote end
 function get_puppet_id() return puppet_id end
@@ -46,6 +51,16 @@ end
 
 local function actor_on_weapon_fired(obj, wpn)
 	if obj and obj:id() == AC_ID then shots = shots + 1 end
+end
+
+local function actor_on_weapon_reload(wpn)
+	reloads = reloads + 1
+end
+
+local HEAL = { medkit = true, bandage = true, stimpack = true, survival_kit = true }
+local function actor_on_item_use(obj, sec)
+	sec = sec or (obj and obj:section()) or ""
+	for k in pairs(HEAL) do if sec:find(k) then heal_until = time_global() + 4000 return end end
 end
 
 coop_main.add_state_provider("p", function()
@@ -71,6 +86,9 @@ coop_main.add_state_provider("p", function()
 		coop_main.my_name ~= "" and coop_main.my_name or a:character_name(),
 		shots,
 		aim_point(),
+		reloads,
+		(a:object("device_torch") and a:object("device_torch"):torch_enabled()) and 1 or 0,
+		time_global() < heal_until and 1 or 0,
 	}
 end)
 
@@ -85,7 +103,12 @@ coop_main.on_state("p", function(t)
 		health = tonumber(t[13]) or 1, name = t[14] or "Partner",
 		shots = tonumber(t[15]) or 0,
 	}
-	if coop_team.is_partner_down() then r.crouch, r.moving = true, 0 end -- knocked down: stays low
+	if coop_team.is_partner_down() then r.moving = 0 end -- knocked down: does not walk
+	r.reloads = tonumber(t[17]) or 0
+	r.torch = t[18] == "1"
+	r.healing = t[19] == "1"
+	if last_remote_reloads and r.reloads > last_remote_reloads then reload_pending = true end
+	last_remote_reloads = r.reloads
 	local ax, ay, az = (t[16] or ""):match("^([^:]+):([^:]+):([^:]+)$")
 	if ax then r.aim = vector():set(tonumber(ax), tonumber(ay), tonumber(az)) end
 	if last_remote_shots and r.shots > last_remote_shots then
@@ -167,6 +190,18 @@ function action_coop_puppet:step()
 
 	local w = puppet_wpn_id and level.object_by_id(puppet_wpn_id)
 	if w and not (w:parent() and w:parent():id() == npc:id()) then w = nil end
+
+	-- knocked down or dead: lie wounded where the partner fell
+	if coop_team.is_partner_down() or (r.health or 1) <= 0 then
+		self.dest = nil
+		state_mgr.set_state(npc, "wounded_heavy", nil, nil, nil, { fast_set = true })
+		return
+	end
+	-- an empty magazine makes the stalker play its own reload
+	if reload_pending and w then
+		reload_pending = false
+		pcall(w.set_ammo_elapsed, w, 0)
+	end
 	local fire = w and r.aim and now < fire_until
 	local moving = dist > STOP_DIST or r.moving > 0
 	local running = r.moving == 2 or r.vel:magnitude() > 2.2 or dist > 3
@@ -247,6 +282,11 @@ local function release_puppet()
 		end
 	end
 	release_puppet_weapon()
+	if puppet_torch_id then
+		local se = alife_object(puppet_torch_id)
+		if se then alife_release(se) end
+		puppet_torch_id, puppet_torch_on = nil, nil
+	end
 	puppet_id = nil
 	puppet_visual = nil
 	spawn_pending = false
@@ -312,6 +352,19 @@ local function sync_puppet_weapon(npc)
 		for i = 1, 3 do alife_create_item(ammo, npc) end
 	end
 	coop_main.log("puppet weapon " .. want)
+end
+
+local function sync_puppet_torch(npc)
+	local t = puppet_torch_id and level.object_by_id(puppet_torch_id)
+	if not (t and t:parent() and t:parent():id() == npc:id()) then
+		if not puppet_torch_id or not alife_object(puppet_torch_id) then
+			local se = alife_create_item("device_torch", npc)
+			puppet_torch_id = se and se.id
+		end
+		return
+	end
+	local on = remote.torch == true
+	if puppet_torch_on ~= on and pcall(t.enable_attachable_item, t, on) then puppet_torch_on = on end
 end
 
 local function puppet_weapon()
@@ -388,7 +441,11 @@ local function update()
 		and remote.level == level.name()
 
 	if not active then
-		if puppet_id then release_puppet() end
+		if puppet_id then
+			coop_main.log(string.format("puppet: partner gone (connected=%s age=%s level=%s)", tostring(coop_main.connected),
+				tostring(remote and time_global() - remote_time), tostring(remote and remote.level)))
+			release_puppet()
+		end
 		return
 	end
 
@@ -408,13 +465,16 @@ local function update()
 		-- puppet offline: drag its server object along so it comes online near the actor
 		local se = alife_object(puppet_id)
 		if se and se.position:distance_to(remote.pos) > 50 then
+			coop_main.log("puppet: offline and far")
 			release_puppet()
 		end
 		return
 	end
 	if spawn_pending then setup_puppet(npc) end
 	sync_puppet_weapon(npc)
+	pcall(sync_puppet_torch, npc)
 	if not npc:alive() then
+		coop_main.log("puppet: died")
 		release_puppet()
 		return
 	end
@@ -499,12 +559,26 @@ local function on_game_load()
 	end
 end
 
+-- the game switches NPC torches by time of day (sr_light): the puppet's follows the partner instead
+local function hook_lights()
+	if rawget(_G, "coop_lights_hooked") or not (sr_light and sr_light.check_light) then return end
+	_G.coop_lights_hooked = true
+	local orig = sr_light.check_light
+	sr_light.check_light = function(stalker, ...)
+		if stalker and is_puppet(stalker) then return end
+		return orig(stalker, ...)
+	end
+end
+
 function on_game_start()
 	RegisterScriptCallback("actor_on_update", actor_on_update)
 	RegisterScriptCallback("npc_on_before_hit", npc_on_before_hit)
 	RegisterScriptCallback("monster_on_before_hit", monster_on_before_hit)
 	RegisterScriptCallback("actor_on_before_hit", actor_on_before_hit)
 	RegisterScriptCallback("actor_on_weapon_fired", actor_on_weapon_fired)
+	RegisterScriptCallback("actor_on_weapon_reload", actor_on_weapon_reload)
+	hook_lights()
+	RegisterScriptCallback("actor_on_item_use", actor_on_item_use)
 	-- debug: count the puppet's real shots (NPC magazines may not drain in Anomaly)
 	RegisterScriptCallback("npc_shot_dispersion", function(npc)
 		if coop_main.debug and is_puppet(npc) then

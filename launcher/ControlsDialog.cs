@@ -22,14 +22,14 @@ namespace CoopLauncher
         sealed class Note
         {
             public string Text; public List<Cap> Keys = new List<Cap>(); public bool Coop, Clash;
-            public PointF Anchor; public string Side; public RectangleF Box; public string Cat;
+            public PointF Anchor; public string Side; public RectangleF Box; public string Cat, CoopId, GameId;
             public List<PointF[]> Paths = new List<PointF[]>();
         }
         readonly List<Cap> caps = new List<Cap>();
         readonly List<Note> notes = new List<Note>();
         readonly Dictionary<string, List<string>> game = new Dictionary<string, List<string>>();  // key -> game actions
         readonly Dictionary<string, string> coop = new Dictionary<string, string>();               // key -> co-op action
-        readonly bool fromFile;
+        bool fromFile;
         RectangleF kb;               // keyboard + mouse bounds
         Cap hover;
         Note hoverNote;
@@ -95,16 +95,40 @@ namespace CoopLauncher
             new[] { "Выглянуть влево/вправо", "Движение", "llookout", "rlookout" },
         };
 
+        readonly Settings settings;
+        string userLtx;
+        Note editing;                // waiting for a new key for this callout
+        string status = "";          // last rebinding result for the info line
+
         public ControlsDialog(Settings s) : base("Управление", W, H)
         {
             SetStyle(ControlStyles.ResizeRedraw, true);
-            var file = string.IsNullOrEmpty(s.GameDir) ? null : Path.Combine(s.GameDir, "appdata", "user.ltx");
-            IEnumerable<string> binds;
-            if (file != null && File.Exists(file))
+            settings = s;
+            BuildLayout();
+            Load();
+            // one section at a time keeps the callouts readable
+            int tx = 24;
+            foreach (var c in Cats)
             {
-                fromFile = true;
-                binds = File.ReadAllLines(file).Where(l => l.StartsWith("bind ")).Select(l => l.Substring(5));
+                var b = Add(new ZoneButton(c) { Toggle = true }, tx, 52, 150, 30);
+                b.Click += (o, e) => Show(c);
+                tabs.Add(b);
+                tx += 156;
             }
+            Show(cat);
+
+            var close = Add(new ZoneButton("Закрыть"), W - 128, H - 50, 104, 34);
+            close.Click += (o, e) => Close();
+        }
+
+        // bindings of both: the game's from user.ltx (or Anomaly defaults), the co-op's from the launcher settings
+        void Load()
+        {
+            game.Clear(); coop.Clear(); notes.Clear();
+            userLtx = string.IsNullOrEmpty(settings.GameDir) ? null : Path.Combine(settings.GameDir, "appdata", "user.ltx");
+            IEnumerable<string> binds;
+            fromFile = userLtx != null && File.Exists(userLtx);
+            if (fromFile) binds = File.ReadAllLines(userLtx).Where(l => l.StartsWith("bind ")).Select(l => l.Substring(5));
             else binds = Defaults.Split('|');
             var names = GameActions.ToDictionary(a => a[1], a => a[2]);
             var keyOf = new Dictionary<string, string>();
@@ -117,14 +141,13 @@ namespace CoopLauncher
                 list.Add(p[0]);
                 keyOf[p[0]] = key;
             }
-            foreach (var a in KeysDialog.Actions) coop[s.Key(a[0]).ToUpperInvariant()] = a[1];
-            BuildLayout();
+            foreach (var a in KeysDialog.Actions) coop[settings.Key(a[0]).ToUpperInvariant()] = a[1];
 
             Cap C(string code) => caps.FirstOrDefault(c => c.Code == code);
             foreach (var a in KeysDialog.Actions)
             {
-                var cap = C(s.Key(a[0]).ToUpperInvariant());
-                if (cap != null) notes.Add(new Note { Text = a[1], Keys = { cap }, Coop = true, Clash = game.ContainsKey(cap.Code), Cat = "Кооператив" });
+                var cap = C(settings.Key(a[0]).ToUpperInvariant());
+                if (cap != null) notes.Add(new Note { Text = a[1], Keys = { cap }, Coop = true, Clash = game.ContainsKey(cap.Code), Cat = "Кооператив", CoopId = a[0] });
             }
             var done = new HashSet<string>();
             foreach (var g in Groups)
@@ -139,21 +162,148 @@ namespace CoopLauncher
                 if (done.Contains(a[1]) || !keyOf.ContainsKey(a[1])) continue;
                 var cap = C(keyOf[a[1]]);
                 if (cap == null) continue;
-                notes.Add(new Note { Text = a[2], Keys = { cap }, Clash = coop.ContainsKey(cap.Code), Cat = a[0] == "Компаньоны" ? "Прочее" : a[0] });
+                notes.Add(new Note { Text = a[2], Keys = { cap }, Clash = coop.ContainsKey(cap.Code), Cat = a[0] == "Компаньоны" ? "Прочее" : a[0], GameId = a[1] });
             }
-            // one section at a time keeps the callouts readable
-            int tx = 24;
-            foreach (var c in Cats)
-            {
-                var b = Add(new ZoneButton(c) { Toggle = true }, tx, 52, 150, 30);
-                b.Click += (o, e) => Show(c);
-                tabs.Add(b);
-                tx += 156;
-            }
-            Show(cat);
+        }
 
-            var close = Add(new ZoneButton("Закрыть"), W - 128, H - 50, 104, 34);
-            close.Click += (o, e) => Close();
+        // ------------------------------------------------------------------ rebinding
+        protected override void OnMouseClick(MouseEventArgs e)
+        {
+            base.OnMouseClick(e);
+            if (editing != null)
+            {
+                var code = e.Button == MouseButtons.Left ? "MOUSE1" : e.Button == MouseButtons.Right ? "MOUSE2" : e.Button == MouseButtons.Middle ? "MOUSE3" : null;
+                // a click on the same label again cancels instead of binding the left button
+                if (code == "MOUSE1" && hoverNote == editing) { editing = null; status = ""; Invalidate(); return; }
+                if (code != null) Assign(code);
+                return;
+            }
+            if (e.Button != MouseButtons.Left || hoverNote == null) return;
+            if (hoverNote.CoopId == null && hoverNote.GameId == null)
+            {
+                status = "Эта подпись объединяет несколько действий — их клавиши меняются в настройках игры по одной";
+                Invalidate();
+                return;
+            }
+            editing = hoverNote;
+            status = "";
+            Invalidate();
+        }
+
+        [System.Runtime.InteropServices.DllImport("user32.dll")] static extern short GetKeyState(int vk);
+        static bool Down(int vk) => (GetKeyState(vk) & 0x8000) != 0;
+
+        protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
+        {
+            if (editing == null) return base.ProcessCmdKey(ref msg, keyData);
+            var k = keyData & Keys.KeyCode;
+            if (k == Keys.Escape) { editing = null; status = ""; Invalidate(); return true; }
+            bool extended = ((long)msg.LParam & (1L << 24)) != 0;
+            var code = Dik(k, extended);
+            if (code != null) Assign(code);
+            return true;
+        }
+
+        // WinForms key -> the DIK name the game and the mod use ("W", "NUMPAD1", "LCONTROL")
+        static string Dik(Keys k, bool extended)
+        {
+            if (k >= Keys.A && k <= Keys.Z) return k.ToString();
+            if (k >= Keys.D0 && k <= Keys.D9) return ((int)(k - Keys.D0)).ToString();
+            if (k >= Keys.F1 && k <= Keys.F12) return k.ToString();
+            if (k >= Keys.NumPad0 && k <= Keys.NumPad9) return "NUMPAD" + (int)(k - Keys.NumPad0);
+            switch (k)
+            {
+                case Keys.ShiftKey: return Down(0xA1) ? "RSHIFT" : "LSHIFT";
+                case Keys.ControlKey: return Down(0xA3) ? "RCONTROL" : "LCONTROL";
+                case Keys.Menu: return Down(0xA5) ? "RMENU" : "LMENU";
+                case Keys.Space: return "SPACE";
+                case Keys.Tab: return "TAB";
+                case Keys.Return: return extended ? "NUMPADENTER" : "RETURN";
+                case Keys.Back: return "BACK";
+                case Keys.CapsLock: return "CAPITAL";
+                case Keys.Oemtilde: return "GRAVE";
+                case Keys.OemMinus: return "MINUS";
+                case Keys.Oemplus: return "EQUALS";
+                case Keys.OemOpenBrackets: return "LBRACKET";
+                case Keys.Oem6: return "RBRACKET";
+                case Keys.Oem5: return "BACKSLASH";
+                case Keys.Oem1: return "SEMICOLON";
+                case Keys.Oem7: return "APOSTROPHE";
+                case Keys.Oemcomma: return "COMMA";
+                case Keys.OemPeriod: return "PERIOD";
+                case Keys.OemQuestion: return "SLASH";
+                case Keys.Insert: return "INSERT";
+                case Keys.Delete: return "DELETE";
+                case Keys.Home: return "HOME";
+                case Keys.End: return "END";
+                case Keys.PageUp: return "PRIOR";
+                case Keys.PageDown: return "NEXT";
+                case Keys.Up: return "UP";
+                case Keys.Down: return "DOWN";
+                case Keys.Left: return "LEFT";
+                case Keys.Right: return "RIGHT";
+                case Keys.Multiply: return "MULTIPLY";
+                case Keys.Add: return "ADD";
+                case Keys.Subtract: return "SUBTRACT";
+                case Keys.Divide: return "DIVIDE";
+                case Keys.Decimal: return "DECIMAL";
+                case Keys.Pause: return "PAUSE";
+                case Keys.Scroll: return "SCROLL";
+                case Keys.NumLock: return "NUMLOCK";
+                case Keys.Apps: return "APPS";
+            }
+            return null;
+        }
+
+        static bool GameRunning() =>
+            System.Diagnostics.Process.GetProcesses().Any(p => { try { return p.ProcessName.StartsWith("AnomalyDX", StringComparison.OrdinalIgnoreCase); } catch { return false; } });
+
+        void Assign(string code)
+        {
+            var n = editing;
+            editing = null;
+            var label = KeyLabel(code);
+            if (n.CoopId != null)
+            {
+                settings.SetKey(n.CoopId, code);
+                settings.Save();
+                if (!string.IsNullOrEmpty(settings.GameDir) && Directory.Exists(settings.GameDir))
+                    try { settings.WriteGameKeys(settings.GameDir); } catch { }
+                status = $"«{n.Text}» теперь на {label}. Игра подхватит клавишу при следующей загрузке сейва";
+            }
+            else
+            {
+                if (userLtx == null || !Directory.Exists(Path.GetDirectoryName(userLtx)))
+                {
+                    status = "Не найдена папка игры: укажите её в главном окне";
+                    Invalidate();
+                    return;
+                }
+                if (GameRunning())
+                {
+                    status = "Закройте игру: при выходе она перезапишет настройки управления";
+                    Invalidate();
+                    return;
+                }
+                var value = code.StartsWith("MOUSE") ? code.ToLowerInvariant() : "k" + code;
+                var lines = File.Exists(userLtx) ? File.ReadAllLines(userLtx).ToList() : Defaults.Split('|').Select(b => "bind " + b).ToList();
+                int i = lines.FindIndex(l => l.StartsWith("bind " + n.GameId + " "));
+                if (i >= 0) lines[i] = "bind " + n.GameId + " " + value; else lines.Add("bind " + n.GameId + " " + value);
+                File.WriteAllLines(userLtx, lines);
+                status = $"«{n.Text}» теперь на {label} (настройки игры сохранены)";
+            }
+            Load();
+            Show(cat);
+        }
+
+        string KeyLabel(string code)
+        {
+            if (code.StartsWith("NUMPAD")) return "Num" + code.Substring(6);
+            if (code == "MOUSE1") return "ЛКМ";
+            if (code == "MOUSE2") return "ПКМ";
+            if (code == "MOUSE3") return "колесо";
+            var c = caps.FirstOrDefault(k => k.Code == code);
+            return c?.Label ?? code;
         }
 
         public void Show(string c)
@@ -355,7 +505,7 @@ namespace CoopLauncher
 
         static readonly Color GameColor = Color.FromArgb(150, 162, 120);
         Color NoteColor(Note n) => n.Clash ? Theme.Danger : n.Coop ? Theme.Amber : GameColor;
-        bool Lit(Note n) => hoverNote == n || (hover != null && n.Keys.Contains(hover));
+        bool Lit(Note n) => editing == n || hoverNote == n || (hover != null && n.Keys.Contains(hover));
         bool InView(Cap c) => shown.Any(n => n.Keys.Contains(c));
 
         // the label's edge facing the keyboard
@@ -426,10 +576,12 @@ namespace CoopLauncher
             var info = new Rectangle(X(24), X(H - 90), X(W - 48), X(26));
             using (var b = new SolidBrush(Theme.Screen)) g.FillRectangle(b, info);
             using (var p = new Pen(Theme.Bevel)) g.DrawRectangle(p, info);
-            string line = hover != null ? Describe(hover)
+            string line = editing != null ? $"Нажмите новую клавишу или кнопку мыши для «{editing.Text}»   ·   Esc — отмена"
+                : hover != null ? Describe(hover)
                 : hoverNote != null ? string.Join("   ", hoverNote.Keys.Select(Describe))
-                : "Наведите курсор на клавишу или подпись. Разделы — кнопками сверху";
-            TextRenderer.DrawText(g, "  " + line, Theme.Body(9.5f), info, hover != null || hoverNote != null ? Theme.Amber : Theme.TextDim,
+                : status != "" ? status
+                : "Наведите курсор на клавишу или подпись. Щёлкните подпись, чтобы назначить другую клавишу";
+            TextRenderer.DrawText(g, "  " + line, Theme.Body(9.5f), info, hover != null || hoverNote != null || editing != null || status != "" ? Theme.Amber : Theme.TextDim,
                 TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine | TextFormatFlags.EndEllipsis);
             int lx = X(24), ly = X(H - 52);
             var legend = new[] { Tuple.Create(Theme.Amber, "кооператив"), Tuple.Create(GameColor, "Anomaly"),

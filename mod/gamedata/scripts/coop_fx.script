@@ -1,0 +1,70 @@
+--[[
+	Anomaly Co-op: what the partner throws (v2.3).
+	A grenade lives only in the thrower's world, so the partner sees and hears its explosion as an effect:
+	  both ways:      "boom"   section, position of a grenade that exploded here
+	The damage needs no copy: hits on NPCs are synced on their own.
+--]]
+
+local SCAN_RADIUS = 60
+local flying = {}            -- grenade id -> { sec, pos } while it is in the air near the actor
+local next_scan = 0
+
+local function dbg(s) if coop_main.debug then coop_main.log("fx: " .. s) end end
+
+local function scan()
+	local seen = {}
+	level.iterate_nearest(db.actor:position(), SCAN_RADIUS, function(o)
+		if o and IsGrenade(o) and not o:parent() then
+			local id = o:id()
+			seen[id] = true
+			local f = flying[id]
+			-- ours if it first shows up in the actor's hand; NPCs' grenades exist in both worlds anyway
+			if f then f.pos = vector():set(o:position())
+			else flying[id] = { sec = o:section(), pos = vector():set(o:position()), start = vector():set(o:position()), mine = o:position():distance_to(db.actor:position()) < 3 } end
+		end
+	end)
+	-- a grenade that was in the air and is gone now has exploded
+	for id, f in pairs(flying) do
+		if not seen[id] and not level.object_by_id(id) then
+			flying[id] = nil
+			-- a grenade lying on the ground (dropped, then taken) never flew
+			if f.mine and f.pos:distance_to(f.start) > 2 then coop_main.send("boom", f.sec, string.format("%.2f", f.pos.x), string.format("%.2f", f.pos.y), string.format("%.2f", f.pos.z)) end
+			dbg("boom " .. f.sec .. " mine=" .. tostring(f.mine))
+		elseif not seen[id] then
+			flying[id] = nil -- picked up or out of range
+		end
+	end
+end
+
+local function explode_sound(sec)
+	local s = ini_sys:r_string_ex(sec, "snd_explode")
+	if not s then return nil end
+	s = s:match("^[^,]+"):gsub("%s", "")
+	if ini_sys:section_exist(s) then s = ini_sys:r_string_ex(s, "snd_1_layer") end
+	return s
+end
+
+coop_main.on_event("boom", function(a)
+	local sec = a[1]
+	if not (sec and ini_sys:section_exist(sec) and db.actor) then return end
+	local pos = vector():set(tonumber(a[2]) or 0, tonumber(a[3]) or 0, tonumber(a[4]) or 0)
+	if pos:distance_to(db.actor:position()) > 300 then return end
+	local particles = ini_sys:r_string_ex(sec, "explode_particles")
+	if particles then pcall(function() particles_object(particles):play_at_pos(pos) end) end
+	local snd = explode_sound(sec)
+	if snd then pcall(function() sound_object(snd):play_at_pos(db.actor, pos, 0) end) end
+	dbg("partner's " .. sec .. " exploded")
+end)
+
+local function actor_on_update()
+	local now = time_global()
+	if now < next_scan or not coop_main.connected then return end
+	next_scan = now + 100
+	local ok, err = pcall(scan)
+	if not ok then coop_main.log("fx scan failed: " .. tostring(err)) end
+end
+
+function on_game_start()
+	flying = {}
+	RegisterScriptCallback("actor_on_update", actor_on_update)
+end

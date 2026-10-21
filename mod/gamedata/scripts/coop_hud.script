@@ -1,0 +1,94 @@
+--[[
+	Anomaly Co-op: the partner's tag above the puppet's head (v2.3): name, distance, state and a health bar.
+	Built from the companion list's own HUD elements (ui_hud.xml) so it matches the game's look.
+--]]
+
+local MAX_DIST = 120
+local HUD = nil
+local last_text = nil
+
+class "UICoopTag" (CUIScriptWnd)
+
+function UICoopTag:__init() super()
+	local xml = utils_xml.get_hud_xml()
+	self.text = xml:InitTextWnd("companion_list:slot:distance", self)
+	-- a font with Cyrillic even when the game runs in English
+	local ok, font = pcall(function() return GetFontLetterica16Russian() end)
+	self.text:SetFont(ok and font or GetFontSmall())
+	self.text:SetWndSize(vector2():set(220, 18))
+	self.text:SetTextAlignment(2) -- centre
+	self.bar = xml:InitProgressBar("companion_list:slot:health", self)
+	self.bar:SetWndSize(vector2():set(70, 4))
+	self.shown = false
+	self:Hide()
+end
+
+function UICoopTag:__finalize() end
+
+function UICoopTag:Hide()
+	if self.shown == false then return end
+	self.text:Show(false)
+	self.bar:Show(false)
+	self.shown = false
+end
+
+function UICoopTag:Place(x, y, label, health, color)
+	self.text:SetWndPos(vector2():set(x - 110, y - 22))
+	self.text:SetText(label)
+	last_text = label
+	self.text:SetTextColor(color)
+	self.bar:SetWndPos(vector2():set(x - 35, y - 2))
+	self.bar:SetProgressPos(math.max(0, math.min(1, health)))
+	if not self.shown then
+		self.text:Show(true)
+		self.bar:Show(true)
+		self.shown = true
+	end
+end
+
+function UICoopTag:Update()
+	CUIScriptWnd.Update(self)
+	local ok, err = pcall(self.Refresh, self)
+	if not ok then self:Hide() end
+end
+
+function UICoopTag:Refresh()
+	local r = coop_player.get_remote()
+	local id = coop_player.get_puppet_id()
+	local npc = id and level.object_by_id(id)
+	if not (r and npc and coop_main.connected and main_hud_shown()) then self:Hide() return end
+	local head = npc:bone_position("bip01_head")
+	head.y = head.y + 0.45
+	local cam = device().cam_pos
+	local dist = cam:distance_to(head)
+	-- behind the camera or too far: no tag
+	if dist > MAX_DIST or vector():set(head):sub(cam):dotproduct(device().cam_dir) <= 0 then self:Hide() return end
+	local p = game.world2ui(head)
+	if not p or p.x < -100 or p.x > 1124 or p.y < -50 or p.y > 818 then self:Hide() return end
+	local state, color = "", GetARGB(255, 225, 225, 215)
+	if (r.health or 1) <= 0 then state, color = " · погиб", GetARGB(255, 210, 80, 60)
+	elseif coop_team.is_partner_down() then state, color = " · ранен, нужна аптечка", GetARGB(255, 230, 120, 70)
+	elseif r.healing then state = " · лечится" end
+	self:Place(p.x, p.y, string.format("%s  %d м%s", r.name or "Напарник", math.floor(dist + 0.5), state), r.health or 1, color)
+end
+
+-- for tests: what the tag shows right now
+function debug_text() return HUD and HUD.shown and last_text or "hidden" end
+
+local function show_hud()
+	if HUD or not get_hud() then return end
+	HUD = UICoopTag()
+	get_hud():AddDialogToRender(HUD)
+end
+
+local function hide_hud()
+	if HUD then
+		get_hud():RemoveDialogToRender(HUD)
+		HUD = nil
+	end
+end
+
+function on_game_start()
+	RegisterScriptCallback("actor_on_first_update", show_hud)
+	RegisterScriptCallback("actor_on_net_destroy", hide_hud)
+end

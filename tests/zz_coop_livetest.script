@@ -1,0 +1,34 @@
+-- dev only: when appdata\coop_livetest.txt exists, the HOST keeps looking at the partner's puppet and logs
+-- what it shows (v2.3: tag, reload, torch, wounded state). Screenshots are taken by qa_live_host.ps1.
+local active, t0, next_log = false, nil, 0
+local function log(s) coop_main.log("LIVETEST " .. s) end
+
+local function update()
+	if not (active and coop_main.connected and db.actor and coop_main.is_host()) then return end
+	local id = coop_player.get_puppet_id()
+	local npc = id and level.object_by_id(id)
+	if not npc then return end
+	t0 = t0 or time_global()
+	-- look at the puppet's chest
+	local d = vector():set(npc:position()):sub(db.actor:position())
+	pcall(function() db.actor:set_actor_direction(-d:getH()) end)
+	local now = time_global()
+	if now < next_log then return end
+	next_log = now + 3000
+	local ok, err = pcall(function()
+		local w = npc:active_item()
+		local torch = npc:object("device_torch")
+		log(string.format("t=%d state=%s weapon=%s mag=%s torch=%s down=%s hud=%s", (now - t0) / 1000,
+			tostring(state_mgr.get_state(npc)), tostring(w and w:section()), tostring(w and w.get_ammo_in_magazine and w:get_ammo_in_magazine()),
+			tostring(torch and torch:torch_enabled()), tostring(coop_team.is_partner_down()),
+			tostring(coop_hud and coop_hud.debug_text and coop_hud.debug_text())))
+	end)
+	if not ok then log("error " .. tostring(err)) end
+end
+
+function on_game_start()
+	local f = io.open(getFS():update_path("$app_data_root$", "coop_livetest.txt"), "r")
+	active = f ~= nil
+	if f then f:close() end
+	RegisterScriptCallback("actor_on_update", update)
+end

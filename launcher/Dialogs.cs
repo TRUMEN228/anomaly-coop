@@ -66,13 +66,11 @@ namespace CoopLauncher
                     g.TextRenderingHint = TextRenderingHint.ClearTypeGridFit;
                     var all = new Rectangle(Point.Empty, ClientSize);
                     Theme.Steel(g, all, Theme.BgHigh, Theme.Bg, Text.GetHashCode());
-                    using (var b = new SolidBrush(Color.FromArgb(160, 12, 12, 10))) g.FillRectangle(b, 0, 0, all.Width, X(36));
-                    Theme.Trefoil(g, new PointF(X(20), X(18)), X(8), Theme.Hazard);
-                    TextRenderer.DrawText(g, Theme.Spaced(Text), Theme.Label(9.5f), new Point(X(36), X(10)), Theme.Amber);
-                    Theme.HazardBand(g, new Rectangle(0, X(36), all.Width, X(6)), X(10));
+                    using (var b = new SolidBrush(Theme.Edge)) g.FillRectangle(b, 0, 0, all.Width, X(36));
+                    TextRenderer.DrawText(g, Theme.Spaced(Text), Theme.Label(9.5f), new Point(X(18), X(10)), Theme.Text);
+                    Theme.HazardBand(g, new Rectangle(0, X(36), all.Width, X(2)), X(10));
                     PaintExtra(g);
-                    using (var p = new Pen(Theme.Edge, 2)) g.DrawRectangle(p, 1, 1, all.Width - 2, all.Height - 2);
-                    using (var p = new Pen(Theme.Bevel)) g.DrawRectangle(p, 3, X(42), all.Width - 7, all.Height - X(42) - 4);
+                    using (var p = new Pen(Theme.Bevel)) g.DrawRectangle(p, 0, 0, all.Width - 1, all.Height - 1);
                 }
             }
             e.Graphics.DrawImageUnscaled(backdrop, 0, 0);
@@ -86,8 +84,8 @@ namespace CoopLauncher
             var f = Theme.Label(8.5f);
             var t = Theme.Spaced(text);
             var sz = TextRenderer.MeasureText(g, t, f);
-            TextRenderer.DrawText(g, t, f, new Point(X(x), X(y) - sz.Height / 2), Theme.Amber);
-            using (var p = new Pen(Color.FromArgb(70, Theme.Amber))) g.DrawLine(p, X(x) + sz.Width + X(6), X(y), X(x + w), X(y));
+            TextRenderer.DrawText(g, t, f, new Point(X(x), X(y) - sz.Height / 2), Theme.TextDim);
+            using (var p = new Pen(Theme.Bevel)) g.DrawLine(p, X(x) + sz.Width + X(6), X(y), X(x + w), X(y));
         }
 
         protected override void OnMouseDown(MouseEventArgs e)

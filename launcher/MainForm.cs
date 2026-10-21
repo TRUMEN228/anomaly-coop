@@ -182,20 +182,19 @@ namespace CoopLauncher
                 var all = new Rectangle(Point.Empty, size);
                 Theme.Steel(g, all, Theme.BgHigh, Theme.Bg, 1986);
 
-                // radiation sign watermark
-                Theme.Trefoil(g, new PointF(X(840), X(150)), X(150), Color.FromArgb(16, Theme.Amber));
 
                 // title bar
-                using (var b = new SolidBrush(Color.FromArgb(160, 12, 12, 10))) g.FillRectangle(b, 0, 0, size.Width, X(38));
-                Theme.Trefoil(g, new PointF(X(22), X(19)), X(9), Theme.Hazard);
-                TextRenderer.DrawText(g, Theme.Spaced("S.T.A.L.K.E.R. Anomaly") + "   ·   КООПЕРАТИВ", Theme.Label(9), new Point(X(40), X(11)), Theme.TextDim);
-                Theme.HazardBand(g, new Rectangle(0, X(38), size.Width, X(8)), X(12));
+                using (var b = new SolidBrush(Theme.Edge)) g.FillRectangle(b, 0, 0, size.Width, X(38));
+                Theme.Trefoil(g, new PointF(X(22), X(19)), X(7), Theme.AmberDim);
+                var brand = TextRenderer.MeasureText(g, "ANOMALY CO-OP", Theme.Label(9.5f));
+                TextRenderer.DrawText(g, "ANOMALY CO-OP", Theme.Label(9.5f), new Point(X(38), X(11)), Theme.Text);
+                TextRenderer.DrawText(g, "·   S.T.A.L.K.E.R. Anomaly 1.5.3", Theme.Label(9), new Point(X(38) + brand.Width + X(8), X(12)), Theme.TextDim);
+                Theme.HazardBand(g, new Rectangle(0, X(38), size.Width, X(2)), X(12));
 
                 // headline
-                TextRenderer.DrawText(g, "КООПЕРАТИВ", Theme.Display(38), new Point(X(24), X(54)), Color.FromArgb(60, 0, 0, 0));
-                TextRenderer.DrawText(g, "КООПЕРАТИВ", Theme.Display(38), new Point(X(22), X(52)), Theme.Text);
-                TextRenderer.DrawText(g, Theme.Spaced("двое в зоне") + "   ·   Anomaly 1.5.3   ·   v" + Updater.CurrentText,
-                    Theme.Label(9.5f), new Point(X(28), X(116)), Theme.Amber);
+                TextRenderer.DrawText(g, "Кооператив", Theme.Display(24), new Point(X(24), X(52)), Theme.Text);
+                TextRenderer.DrawText(g, "Совместная игра вдвоём  ·  версия " + Updater.CurrentText,
+                    Theme.Body(9.5f), new Point(X(28), X(104)), Theme.TextDim);
 
                 // section labels
                 Section(g, "Сталкер", 28, 144, 560);
@@ -207,14 +206,13 @@ namespace CoopLauncher
 
                 // status plate frame
                 var plate = new Rectangle(X(618), X(176), X(354), X(104));
-                Theme.Steel(g, plate, Color.FromArgb(36, 35, 29), Color.FromArgb(26, 25, 21), 7);
-                using (var p = new Pen(Theme.Edge)) g.DrawRectangle(p, plate.X, plate.Y, plate.Width - 1, plate.Height - 1);
+                using (var b = new SolidBrush(Theme.Screen)) g.FillRectangle(b, plate);
+                using (var p = new Pen(Theme.Bevel)) g.DrawRectangle(p, plate.X, plate.Y, plate.Width - 1, plate.Height - 1);
                 Theme.Rivet(g, plate.X + X(7), plate.Y + X(7)); Theme.Rivet(g, plate.Right - X(8), plate.Y + X(7));
                 Theme.Rivet(g, plate.X + X(7), plate.Bottom - X(8)); Theme.Rivet(g, plate.Right - X(8), plate.Bottom - X(8));
 
                 // bottom band
-                Theme.HazardBand(g, new Rectangle(0, size.Height - X(10), size.Width, X(10)), X(12));
-                using (var p = new Pen(Theme.Edge, 2)) g.DrawRectangle(p, 1, 1, size.Width - 2, size.Height - 2);
+                using (var p = new Pen(Theme.Bevel)) g.DrawRectangle(p, 0, 0, size.Width - 1, size.Height - 1);
             }
             return bmp;
         }
@@ -224,8 +222,8 @@ namespace CoopLauncher
             var f = Theme.Label(9);
             var t = Theme.Spaced(text);
             var sz = TextRenderer.MeasureText(g, t, f);
-            TextRenderer.DrawText(g, t, f, new Point(X(x), X(y) - sz.Height / 2), Theme.Amber);
-            using (var p = new Pen(Color.FromArgb(70, Theme.Amber))) g.DrawLine(p, X(x) + sz.Width + X(6), X(y), X(x + w), X(y));
+            TextRenderer.DrawText(g, t, f, new Point(X(x), X(y) - sz.Height / 2), Theme.TextDim);
+            using (var p = new Pen(Theme.Bevel)) g.DrawLine(p, X(x) + sz.Width + X(6), X(y), X(x + w), X(y));
         }
 
         void SmallLabel(Graphics g, string text, int x, int y) =>

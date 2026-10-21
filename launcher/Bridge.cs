@@ -16,7 +16,7 @@ namespace CoopLauncher
     /// </summary>
     public sealed class Bridge : IDisposable
     {
-        public const string ProtocolVersion = "5";
+        public const string ProtocolVersion = "6";
         const byte MsgHello = 1, MsgState = 2, MsgEvent = 3, MsgFile = 4, MsgPing = 5, MsgStateZ = 6;
 
         public static readonly Encoding GameEnc = Encoding.GetEncoding(1251);
@@ -392,7 +392,9 @@ namespace CoopLauncher
                     lock (sync)
                     {
                         toGame.RemoveAll(e => e.Key <= gameAck);
-                        sb.Append($"b|{bridgeSid}|{lastGameEvent}|{role}|{(Connected ? 1 : 0)}|{Clean(PeerName)}|{Clean(myName)}\n");
+                        // the last field changes on every write: the game takes an unchanged file for a closed launcher,
+                        // and with a partner standing still nothing else would change
+                        sb.Append($"b|{bridgeSid}|{lastGameEvent}|{role}|{(Connected ? 1 : 0)}|{Clean(PeerName)}|{Clean(myName)}|{++heartbeat}\n");
                         foreach (var line in peerState.Values) sb.Append(line).Append('\n');
                         foreach (var e in toGame) sb.Append("e|").Append(e.Key).Append('|').Append(e.Value).Append('\n');
                     }
@@ -406,6 +408,8 @@ namespace CoopLauncher
                 Thread.Sleep(50);
             }
         }
+
+        long heartbeat;
 
         static string Clean(string s) => (s ?? "").Replace('|', ' ').Replace('\n', ' ');
 

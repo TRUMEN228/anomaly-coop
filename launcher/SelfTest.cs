@@ -29,6 +29,7 @@ namespace CoopLauncher
                 if (mode == "--selftest-loopback") Loopback();
                 else if (mode == "--selftest-steam") Steam();
                 else if (mode == "--selftest-dialogs") Dialogs();
+                else if (mode == "--selftest-rebind") Rebind();
             }
             catch (Exception e) { Check("exception: " + e, false); }
             File.WriteAllText(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "selftest.txt"), report.ToString());
@@ -142,6 +143,39 @@ namespace CoopLauncher
             Snap(new FolderDialog(Path.GetDirectoryName((settings.GameDir ?? "C:\\").TrimEnd('\\')) ?? ""), "folder");
             var msg = typeof(ZoneMessage).GetConstructors(System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)[0];
             Snap((System.Windows.Forms.Form)msg.Invoke(new object[] { "Удалить мод", "Удалить файлы мода из папки игры? Сейвы и персонаж гостя останутся.", true }), "message");
+        }
+
+        // ControlsDialog: rebinding a game action writes user.ltx, a co-op action the launcher keys
+        static void Rebind()
+        {
+            var dir = Path.Combine(Path.GetTempPath(), "coop_rebind_" + Guid.NewGuid().ToString("N").Substring(0, 6));
+            Directory.CreateDirectory(Path.Combine(dir, "appdata"));
+            var ltx = Path.Combine(dir, "appdata", "user.ltx");
+            File.WriteAllLines(ltx, new[] { "bind jump kSPACE", "bind use kF", "g_always_run on" });
+            var s = new Settings { GameDir = dir };
+            var d = new ControlsDialog(s);
+            var t = typeof(ControlsDialog);
+            var notes = (System.Collections.IList)t.GetField("notes", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance).GetValue(d);
+            object Find(string field, string id)
+            {
+                foreach (var n in notes) if ((string)n.GetType().GetField(field).GetValue(n) == id) return n;
+                return null;
+            }
+            void Assign(object note, string code)
+            {
+                t.GetField("editing", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance).SetValue(d, note);
+                t.GetMethod("Assign", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance).Invoke(d, new object[] { code });
+            }
+            Assign(Find("GameId", "jump"), "J");
+            var lines = File.ReadAllLines(ltx);
+            Check("game action rebound in user.ltx", lines.Contains("bind jump kJ") && lines.Contains("bind use kF") && lines.Contains("g_always_run on"));
+            Assign(Find("GameId", "use"), "MOUSE3");
+            Check("mouse button written as mouse3", File.ReadAllLines(ltx).Contains("bind use mouse3"));
+            Assign(Find("CoopId", "give"), "NUMPAD7");
+            Check("co-op key saved", s.Key("give") == "NUMPAD7");
+            Check("co-op key written for the game", File.ReadAllText(Path.Combine(dir, "appdata", "coop_keys.txt")).Contains("give=DIK_NUMPAD7"));
+            Check("dialog reloaded the new binding", Find("GameId", "jump") != null && Find("CoopId", "give") != null);
+            Directory.Delete(dir, true);
         }
 
         static void Wait(Func<bool> cond, int ms)

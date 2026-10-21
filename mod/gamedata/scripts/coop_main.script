@@ -6,13 +6,13 @@
 	Both files end with an "end" line; a file without it is a partial write and is skipped.
 	Line kinds:
 	  g|<sid>|<ack>|<ver>|<role>   header written by the game (ack = last bridge event applied)
-	  b|<sid>|<ack>|<role>|<connected>|<peer name>|<my name>   header written by the bridge
+	  b|<sid>|<ack>|<role>|<connected>|<peer name>|<my name>|<beat>   header written by the bridge (beat changes every write)
 	  s|<tag>|...                  state, latest value wins
 	  e|<id>|<type>|...            reliable event, resent until acked
 	Event types starting with "@" are handled by the bridge itself.
 --]]
 
-VERSION = "2.2"
+VERSION = "2.3"
 debug = false
 local TICK_MS = 100
 

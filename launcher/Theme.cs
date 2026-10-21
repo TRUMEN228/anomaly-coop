@@ -14,23 +14,23 @@ namespace CoopLauncher
     /// </summary>
     public static class Theme
     {
-        // palette
-        public static readonly Color Bg = Color.FromArgb(21, 20, 16);
-        public static readonly Color BgHigh = Color.FromArgb(31, 30, 23);
-        public static readonly Color Plate = Color.FromArgb(46, 45, 38);
-        public static readonly Color PlateLow = Color.FromArgb(30, 30, 25);
-        public static readonly Color Edge = Color.FromArgb(10, 10, 8);
-        public static readonly Color Bevel = Color.FromArgb(78, 76, 64);
-        public static readonly Color Text = Color.FromArgb(214, 208, 188);
-        public static readonly Color TextDim = Color.FromArgb(132, 128, 110);
-        public static readonly Color Amber = Color.FromArgb(222, 164, 58);
-        public static readonly Color AmberDim = Color.FromArgb(120, 90, 36);
-        public static readonly Color Hazard = Color.FromArgb(201, 160, 38);
-        public static readonly Color Rust = Color.FromArgb(110, 56, 24);
-        public static readonly Color Danger = Color.FromArgb(196, 72, 48);
-        public static readonly Color Ok = Color.FromArgb(150, 186, 96);
-        public static readonly Color Screen = Color.FromArgb(14, 16, 11);
-        public static readonly Color FieldBack = Color.FromArgb(15, 15, 12);
+        // palette: graphite with a muted amber for accents only
+        public static readonly Color Bg = Color.FromArgb(19, 20, 21);
+        public static readonly Color BgHigh = Color.FromArgb(25, 26, 27);
+        public static readonly Color Plate = Color.FromArgb(36, 38, 39);
+        public static readonly Color PlateLow = Color.FromArgb(27, 28, 29);
+        public static readonly Color Edge = Color.FromArgb(9, 9, 10);
+        public static readonly Color Bevel = Color.FromArgb(56, 59, 61);
+        public static readonly Color Text = Color.FromArgb(214, 216, 210);
+        public static readonly Color TextDim = Color.FromArgb(126, 131, 129);
+        public static readonly Color Amber = Color.FromArgb(200, 156, 78);
+        public static readonly Color AmberDim = Color.FromArgb(108, 86, 48);
+        public static readonly Color Hazard = Color.FromArgb(200, 156, 78);
+        public static readonly Color Rust = Color.FromArgb(92, 60, 40);
+        public static readonly Color Danger = Color.FromArgb(186, 78, 62);
+        public static readonly Color Ok = Color.FromArgb(132, 170, 108);
+        public static readonly Color Screen = Color.FromArgb(14, 15, 15);
+        public static readonly Color FieldBack = Color.FromArgb(14, 15, 16);
 
         // type: Bahnschrift ships with Windows 10/11; Consolas for the PDA
         public static Font Display(float size) => Make("Bahnschrift SemiBold Condensed", size, FontStyle.Regular, "Bahnschrift", FontStyle.Bold);
@@ -42,28 +42,17 @@ namespace CoopLauncher
         static Font Make(string family, float size, FontStyle style, string fallback, FontStyle fallbackStyle) =>
             installed.Contains(family) ? new Font(family, size, style) : new Font(fallback, size, fallbackStyle);
 
-        /// <summary>Uppercase with wide tracking, the way stencilled labels read.</summary>
-        public static string Spaced(string s) => string.Join(" ", s.ToUpperInvariant().ToCharArray());
+        /// <summary>Section and heading labels: plain uppercase.</summary>
+        public static string Spaced(string s) => s.ToUpperInvariant();
 
-        public static void Rivet(Graphics g, float x, float y, float r = 2.6f)
-        {
-            using (var b = new SolidBrush(Color.FromArgb(18, 18, 14))) g.FillEllipse(b, x - r, y - r, r * 2, r * 2);
-            using (var b = new SolidBrush(Color.FromArgb(96, 94, 80))) g.FillEllipse(b, x - r + 0.6f, y - r + 0.6f, r * 1.3f, r * 1.3f);
-        }
+        public static void Rivet(Graphics g, float x, float y, float r = 2.6f) { } // the strict style has no rivets
 
+        /// <summary>A thin accent rule where the old hazard stripes were.</summary>
         public static void HazardBand(Graphics g, Rectangle r, int step = 14)
         {
-            var state = g.Save();
-            g.SetClip(r);
-            using (var y = new SolidBrush(Hazard)) g.FillRectangle(y, r);
-            using (var k = new SolidBrush(Color.FromArgb(24, 22, 16)))
-                for (int x = r.Left - r.Height * 2; x < r.Right + r.Height; x += step * 2)
-                    g.FillPolygon(k, new[] { new Point(x, r.Bottom), new Point(x + step, r.Bottom), new Point(x + step + r.Height, r.Top), new Point(x + r.Height, r.Top) });
-            // wear
-            var rnd = new Random(r.X * 31 + r.Y);
-            using (var w = new SolidBrush(Color.FromArgb(70, 20, 18, 14)))
-                for (int i = 0; i < r.Width / 6; i++) g.FillRectangle(w, r.Left + rnd.Next(r.Width), r.Top + rnd.Next(r.Height), 1 + rnd.Next(4), 1 + rnd.Next(2));
-            g.Restore(state);
+            using (var b = new SolidBrush(Bg)) g.FillRectangle(b, r);
+            using (var p = new Pen(Edge)) g.DrawLine(p, r.Left, r.Top, r.Right, r.Top);
+            using (var p = new Pen(Color.FromArgb(150, AmberDim))) g.DrawLine(p, r.Left, r.Bottom - 1, r.Right, r.Bottom - 1);
         }
 
         /// <summary>The radiation trefoil: three 60-degree blades around a hollow ring and a centre dot.</summary>
@@ -85,26 +74,10 @@ namespace CoopLauncher
             }
         }
 
-        /// <summary>Weathered steel: gradient, grain and a few rust stains.</summary>
+        /// <summary>Flat panel with a barely visible vertical gradient.</summary>
         public static void Steel(Graphics g, Rectangle r, Color top, Color bottom, int seed)
         {
             using (var lg = new LinearGradientBrush(r, top, bottom, 90f)) g.FillRectangle(lg, r);
-            var rnd = new Random(seed);
-            using (var grain = new SolidBrush(Color.FromArgb(14, 255, 255, 230)))
-            using (var dark = new SolidBrush(Color.FromArgb(22, 0, 0, 0)))
-                for (int i = 0; i < r.Width * r.Height / 90; i++)
-                    g.FillRectangle(i % 2 == 0 ? grain : dark, r.Left + rnd.Next(r.Width), r.Top + rnd.Next(r.Height), 1, 1);
-            for (int i = 0; i < 3; i++)
-            {
-                int w = 30 + rnd.Next(Math.Max(1, r.Width / 3)), h = 10 + rnd.Next(Math.Max(1, r.Height / 2));
-                var e = new Rectangle(r.Left + rnd.Next(Math.Max(1, r.Width - w)), r.Top + rnd.Next(Math.Max(1, r.Height - h)), w, h);
-                using (var path = new GraphicsPath())
-                {
-                    path.AddEllipse(e);
-                    using (var pg = new PathGradientBrush(path) { CenterColor = Color.FromArgb(34, Rust), SurroundColors = new[] { Color.FromArgb(0, Rust) } })
-                        g.FillEllipse(pg, e);
-                }
-            }
         }
     }
 
@@ -123,7 +96,7 @@ namespace CoopLauncher
             Primary = primary;
             SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.UserPaint | ControlStyles.ResizeRedraw | ControlStyles.Selectable, true);
             Cursor = Cursors.Hand;
-            Font = primary ? Theme.Display(17) : Theme.Label(9.5f);
+            Font = primary ? Theme.Label(13) : Theme.Label(9.5f);
             TabStop = true;
         }
 
@@ -146,30 +119,18 @@ namespace CoopLauncher
             using (var b = new SolidBrush(Parent?.BackColor ?? Theme.Bg)) g.FillRectangle(b, r);
 
             var body = r;
-            if (Primary)
-            {
-                Theme.HazardBand(g, r, 9);
-                body = Rectangle.Inflate(r, -5, -5);
-            }
             bool on = Enabled && (Checked || down);
-            Color top = !Enabled ? Theme.PlateLow : on ? Color.FromArgb(70, 56, 26) : hover ? Color.FromArgb(62, 60, 50) : Theme.Plate;
-            Color bottom = !Enabled ? Theme.PlateLow : on ? Color.FromArgb(48, 38, 18) : Color.FromArgb(32, 31, 26);
-            Theme.Steel(g, body, top, bottom, Text.GetHashCode());
-            using (var p = new Pen(Theme.Edge)) g.DrawRectangle(p, body.X, body.Y, body.Width - 1, body.Height - 1);
-            using (var p = new Pen(Enabled ? Theme.Bevel : Color.FromArgb(40, 40, 34))) g.DrawLine(p, body.X + 1, body.Y + 1, body.Right - 2, body.Y + 1);
-            if (body.Height >= 26)
-            {
-                Theme.Rivet(g, body.X + 6, body.Y + 6); Theme.Rivet(g, body.Right - 7, body.Y + 6);
-                Theme.Rivet(g, body.X + 6, body.Bottom - 7); Theme.Rivet(g, body.Right - 7, body.Bottom - 7);
-            }
+            Color fill = !Enabled ? Theme.PlateLow : on ? Color.FromArgb(46, 42, 33) : hover ? Color.FromArgb(44, 46, 47) : Theme.Plate;
+            if (Primary && Enabled) fill = down ? Color.FromArgb(52, 44, 30) : hover ? Color.FromArgb(44, 39, 30) : Color.FromArgb(34, 31, 26);
+            using (var b = new SolidBrush(fill)) g.FillRectangle(b, body);
+            Color frame = !Enabled ? Color.FromArgb(40, 42, 43) : Primary ? Theme.Amber : hover || Focused ? Theme.AmberDim : Theme.Bevel;
+            using (var p = new Pen(frame)) g.DrawRectangle(p, body.X, body.Y, body.Width - 1, body.Height - 1);
             if (Checked && Toggle)
-                using (var b = new SolidBrush(Theme.Amber)) g.FillRectangle(b, body.X + 1, body.Bottom - 4, body.Width - 2, 3);
+                using (var b = new SolidBrush(Theme.Amber)) g.FillRectangle(b, body.X + 1, body.Bottom - 3, body.Width - 2, 2);
 
-            Color fg = !Enabled ? Color.FromArgb(88, 86, 74) : (hover || Checked || Primary) ? Theme.Amber : Theme.Text;
+            Color fg = !Enabled ? Color.FromArgb(84, 88, 88) : (Checked || Primary) ? Theme.Amber : hover ? Color.White : Theme.Text;
             TextRenderer.DrawText(g, Primary ? Theme.Spaced(Text) : Text.ToUpperInvariant(), Font, body, fg,
                 TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine | TextFormatFlags.EndEllipsis);
-            if (Focused && ShowFocusCues)
-                using (var p = new Pen(Theme.AmberDim) { DashStyle = DashStyle.Dot }) g.DrawRectangle(p, body.X + 3, body.Y + 3, body.Width - 7, body.Height - 7);
         }
     }
 
@@ -201,7 +162,7 @@ namespace CoopLauncher
             var r = ClientRectangle;
             using (var b = new SolidBrush(Theme.FieldBack)) g.FillRectangle(b, r);
             using (var p = new Pen(Theme.Edge)) g.DrawLine(p, 0, 0, r.Width, 0);
-            using (var p = new Pen(Inner.Focused ? Theme.Amber : Color.FromArgb(62, 60, 50)))
+            using (var p = new Pen(Inner.Focused ? Theme.AmberDim : Theme.Bevel))
                 g.DrawRectangle(p, 0, 0, r.Width - 1, r.Height - 1);
             if (!Enabled || !Inner.Enabled)
                 using (var b = new SolidBrush(Color.FromArgb(110, Theme.Bg))) g.FillRectangle(b, r);
@@ -309,19 +270,12 @@ namespace CoopLauncher
             var g = e.Graphics;
             var r = ClientRectangle;
             using (var b = new SolidBrush(Theme.Screen)) g.FillRectangle(b, r);
-            // screen glow
-            using (var path = new GraphicsPath())
-            {
-                path.AddEllipse(-r.Width / 4, -r.Height / 2, r.Width * 3 / 2, r.Height * 2);
-                using (var pg = new PathGradientBrush(path) { CenterColor = Color.FromArgb(26, Theme.Amber), SurroundColors = new[] { Color.FromArgb(0, Theme.Amber) } })
-                    g.FillRectangle(pg, r);
-            }
 
             // header
             var head = new Rectangle(10, 6, r.Width - 20, 18);
-            TextRenderer.DrawText(g, Title, Theme.Label(8.5f), head, Theme.AmberDim, TextFormatFlags.Left | TextFormatFlags.VerticalCenter);
-            TextRenderer.DrawText(g, DateTime.Now.ToString("HH:mm"), Theme.Label(8.5f), head, Theme.AmberDim, TextFormatFlags.Right | TextFormatFlags.VerticalCenter);
-            using (var p = new Pen(Color.FromArgb(60, Theme.Amber))) g.DrawLine(p, 10, 26, r.Width - 10, 26);
+            TextRenderer.DrawText(g, Title, Theme.Label(8.5f), head, Theme.TextDim, TextFormatFlags.Left | TextFormatFlags.VerticalCenter);
+            TextRenderer.DrawText(g, DateTime.Now.ToString("HH:mm"), Theme.Label(8.5f), head, Theme.TextDim, TextFormatFlags.Right | TextFormatFlags.VerticalCenter);
+            using (var p = new Pen(Theme.Bevel)) g.DrawLine(p, 10, 26, r.Width - 10, 26);
 
             // wrapped lines, bottom up
             var area = new Rectangle(10, 30, r.Width - 20, r.Height - 38);
@@ -337,9 +291,7 @@ namespace CoopLauncher
                 TextRenderer.DrawText(g, wrapped[i].Key, Font, new Point(area.Left, y), wrapped[i].Value, TextFormatFlags.NoPrefix);
 
             // scanlines and frame
-            using (var p = new Pen(Color.FromArgb(28, 0, 0, 0))) for (int sy = 0; sy < r.Height; sy += 3) g.DrawLine(p, 0, sy, r.Width, sy);
-            using (var p = new Pen(Theme.Edge, 2)) g.DrawRectangle(p, 1, 1, r.Width - 2, r.Height - 2);
-            using (var p = new Pen(Color.FromArgb(70, 68, 56))) g.DrawRectangle(p, 3, 3, r.Width - 7, r.Height - 7);
+            using (var p = new Pen(Theme.Bevel)) g.DrawRectangle(p, 0, 0, r.Width - 1, r.Height - 1);
             if (scroll > 0) TextRenderer.DrawText(g, "▼ ещё " + scroll, Theme.Label(8), new Rectangle(0, r.Height - 20, r.Width - 12, 16), Theme.AmberDim, TextFormatFlags.Right);
         }
 

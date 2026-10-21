@@ -9,7 +9,7 @@ for the nearest creature from the host's creature list. Everything received is s
 import math, os, socket, struct, sys, time, zlib
 
 HELLO, STATE, EVENT, FILE, PING, STATEZ = 1, 2, 3, 4, 5, 6
-PROTO = b"5"
+PROTO = b"6"
 mode, port, secs = sys.argv[1], int(sys.argv[2]), float(sys.argv[3])
 enc = "cp1251"
 
@@ -162,7 +162,17 @@ while time.time() - t0 < secs:
         if "team" in sys.argv and mode == "host" and t > 85:
             lvl = "jupiter"  # the fake host "leaves" (vertex ids stay Zaton's, so the follow reloads Zaton)
         st = f"s|p|{lvl}|{px:.2f}|{center[1]:.2f}|{pz:.2f}|{a:.2f}|{lv}|{gv}|s|1|wpn_ak74|||1.00|Bot"
+        if "live" in sys.argv:
+            # v2.3: stand still in front of the real player; reload, torch, healing, then a knockdown
+            px, pz = center[0] + 3, center[2]
+            reloads = int(t // 10) if t > 30 else 0
+            torch = 1 if t > 40 else 0
+            heal = 1 if 55 < t < 62 else 0
+            hp = "0.35" if t < 70 else "0.10"
+            st = f"s|p|{lvl}|{px:.2f}|{center[1]:.2f}|{pz:.2f}|0.00|{lv}|{gv}|s|0|wpn_ak74|||{hp}|Bot|0||{reloads}|{torch}|{heal}"
         lines = [st]
+        if "live" in sys.argv and t > 70:
+            lines.append("s|dn|1|45")
         if mode == "host":
             lines.append("s|w|0|||0")
             if "team" in sys.argv:
@@ -204,6 +214,8 @@ while time.time() - t0 < secs:
         quest_steps(t)
     if "team" in sys.argv:
         team_steps(t)
+    if "live" in sys.argv and center and t > 35 and "boom" not in sent:
+        sent.add("boom"); send_event(f"boom|grenade_f1|{center[0] + 6:.2f}|{center[1]:.2f}|{center[2] + 2:.2f}")
     if "trade" in sys.argv and mode == "guest" and t > 40 and "gift" not in sent:
         sent.add("gift")
         send_event("gift|wpn_ak74:0.800:20:0:up_firsta_ak74+up_fiftha_ak74;ammo_5.45x39_fmj:1.000:15:0:;medkit:1.000:0:0:")
@@ -211,7 +223,7 @@ while time.time() - t0 < secs:
         sent.add("chat"); send_event("chat|Привет от бота|Bot")
     if t > 24 and "drop" not in sent and center:
         sent.add("drop"); send_event(f"drop|1|bandage|1.000|0|{center[0]:.2f}|{center[1]:.2f}|{center[2]:.2f}|{peer_pos[4]}|{peer_pos[5]}")
-    if t > 28 and "kill" not in sent and npcs and "quest" not in sys.argv and "trade" not in sys.argv:
+    if t > 28 and "kill" not in sent and npcs and "quest" not in sys.argv and "trade" not in sys.argv and "live" not in sys.argv:
         sent.add("kill")
         nid, sec = npcs[0].split(":")[0], npcs[0].split(":")[1]
         send_event(f"hit|{nid}|{sec}|0.300")
