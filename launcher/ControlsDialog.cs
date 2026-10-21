@@ -97,6 +97,12 @@ namespace CoopLauncher
 
         readonly Settings settings;
         string userLtx;
+        sealed class ListRow { public string Text, CoopId, GameId, Code; public bool Clash; public RectangleF Box, KeyBox; }
+        bool listMode;               // "Изменить клавиши": a plain list of actions and their keys
+        List<ListRow> rows = new List<ListRow>();
+        ListRow hoverRow, editingRow;
+        ZoneButton mapBtn, listBtn;
+        Dictionary<string, string> gameKeyOf = new Dictionary<string, string>();   // game action -> key
         Note editing;                // waiting for a new key for this callout
         string status = "";          // last rebinding result for the info line
 
@@ -115,7 +121,11 @@ namespace CoopLauncher
                 tabs.Add(b);
                 tx += 156;
             }
-            Show(cat);
+            mapBtn = Add(new ZoneButton("Схема") { Toggle = true }, W - 24 - 200 - 206, 52, 200, 30);
+            listBtn = Add(new ZoneButton("Изменить клавиши") { Toggle = true }, W - 24 - 200, 52, 200, 30);
+            mapBtn.Click += (o, e) => SetMode(false);
+            listBtn.Click += (o, e) => SetMode(true);
+            SetMode(false);
 
             var close = Add(new ZoneButton("Закрыть"), W - 128, H - 50, 104, 34);
             close.Click += (o, e) => Close();
@@ -141,6 +151,7 @@ namespace CoopLauncher
                 list.Add(p[0]);
                 keyOf[p[0]] = key;
             }
+            gameKeyOf = keyOf;
             foreach (var a in KeysDialog.Actions) coop[settings.Key(a[0]).ToUpperInvariant()] = a[1];
 
             Cap C(string code) => caps.FirstOrDefault(c => c.Code == code);
@@ -174,14 +185,24 @@ namespace CoopLauncher
             {
                 var code = e.Button == MouseButtons.Left ? "MOUSE1" : e.Button == MouseButtons.Right ? "MOUSE2" : e.Button == MouseButtons.Middle ? "MOUSE3" : null;
                 // a click on the same label again cancels instead of binding the left button
-                if (code == "MOUSE1" && hoverNote == editing) { editing = null; status = ""; Invalidate(); return; }
+                if (code == "MOUSE1" && ((listMode && hoverRow == editingRow) || (!listMode && hoverNote == editing))) { editing = null; editingRow = null; status = ""; Invalidate(); return; }
                 if (code != null) Assign(code);
                 return;
             }
-            if (e.Button != MouseButtons.Left || hoverNote == null) return;
+            if (e.Button != MouseButtons.Left) return;
+            if (listMode)
+            {
+                if (hoverRow == null) return;
+                editingRow = hoverRow;
+                editing = new Note { Text = hoverRow.Text, CoopId = hoverRow.CoopId, GameId = hoverRow.GameId };
+                status = "";
+                Invalidate();
+                return;
+            }
+            if (hoverNote == null) return;
             if (hoverNote.CoopId == null && hoverNote.GameId == null)
             {
-                status = "Эта подпись объединяет несколько действий — их клавиши меняются в настройках игры по одной";
+                status = "Эта подпись объединяет несколько действий — нажмите «Изменить клавиши», там они по отдельности";
                 Invalidate();
                 return;
             }
@@ -197,7 +218,7 @@ namespace CoopLauncher
         {
             if (editing == null) return base.ProcessCmdKey(ref msg, keyData);
             var k = keyData & Keys.KeyCode;
-            if (k == Keys.Escape) { editing = null; status = ""; Invalidate(); return true; }
+            if (k == Keys.Escape) { editing = null; editingRow = null; status = ""; Invalidate(); return true; }
             bool extended = ((long)msg.LParam & (1L << 24)) != 0;
             var code = Dik(k, extended);
             if (code != null) Assign(code);
@@ -262,6 +283,7 @@ namespace CoopLauncher
         {
             var n = editing;
             editing = null;
+            editingRow = null;
             var label = KeyLabel(code);
             if (n.CoopId != null)
             {
@@ -312,7 +334,38 @@ namespace CoopLauncher
             foreach (var t in tabs) t.Checked = t.Text == c;
             shown = Shown;
             PlaceNotes();
+            BuildRows();
             Invalidate();
+        }
+
+        public void SetMode(bool list)
+        {
+            listMode = list;
+            mapBtn.Checked = !list;
+            listBtn.Checked = list;
+            editing = null; editingRow = null; hover = null; hoverNote = null; hoverRow = null;
+            Show(cat);
+        }
+
+        // every action of the section, bound or not, one row each (groups are split back into their actions)
+        void BuildRows()
+        {
+            rows = new List<ListRow>();
+            if (cat == "Кооператив")
+                foreach (var a in KeysDialog.Actions)
+                    rows.Add(new ListRow { Text = a[1], CoopId = a[0], Code = settings.Key(a[0]).ToUpperInvariant() });
+            else
+                foreach (var a in GameActions.Where(a => (a[0] == "Компаньоны" ? "Прочее" : a[0]) == cat))
+                    rows.Add(new ListRow { Text = a[2], GameId = a[1], Code = gameKeyOf.TryGetValue(a[1], out var k) ? k : null });
+            foreach (var r in rows) r.Clash = r.Code != null && coop.ContainsKey(r.Code) && game.ContainsKey(r.Code);
+            int perCol = (rows.Count + 1) / 2;
+            float colW = (W - 48 - 40) / 2f, top = 136;
+            for (int i = 0; i < rows.Count; i++)
+            {
+                float x = 24 + (i < perCol ? 0 : colW + 40), y = top + (i % perCol) * 32;
+                rows[i].Box = new RectangleF(x, y, colW, 28);
+                rows[i].KeyBox = new RectangleF(x + colW - 180, y, 180, 28);
+            }
         }
 
         // user.ltx "kNUMPAD1" / "mouse1" and launcher "NUMPAD1" -> one key code
@@ -481,9 +534,15 @@ namespace CoopLauncher
         {
             base.OnMouseMove(e);
             var pt = new PointF(e.X / S, e.Y / S);
+            if (listMode)
+            {
+                var hr = rows.FirstOrDefault(r => r.Box.Contains(pt));
+                if (hr != hoverRow) { hoverRow = hr; Cursor = hr != null ? Cursors.Hand : Cursors.Default; Invalidate(); }
+                return;
+            }
             var h = caps.FirstOrDefault(c => c.R.Contains(pt));
             var hn = h == null ? shown.FirstOrDefault(n => n.Box.Contains(pt)) : null;
-            if (h != hover || hn != hoverNote) { hover = h; hoverNote = hn; Invalidate(); }
+            if (h != hover || hn != hoverNote) { hover = h; hoverNote = hn; Cursor = hn != null ? Cursors.Hand : Cursors.Default; Invalidate(); }
         }
 
         protected override void OnMouseLeave(EventArgs e) { base.OnMouseLeave(e); hover = null; hoverNote = null; Invalidate(); }
@@ -526,6 +585,11 @@ namespace CoopLauncher
             var g = e.Graphics;
             g.SmoothingMode = SmoothingMode.AntiAlias;
             g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.ClearTypeGridFit;
+
+            var how = listMode ? "Щёлкните клавишу напротив действия и нажмите новую клавишу или кнопку мыши.  Esc — отмена."
+                               : "Чтобы поменять клавишу, щёлкните её подпись на схеме или откройте «Изменить клавиши» — там все действия списком.";
+            TextRenderer.DrawText(g, how, Theme.Body(9.5f), new Point(X(24), X(94)), Theme.Text);
+            if (listMode) { PaintList(g); PaintFooter(g); return; }
 
             var m1 = caps.First(c => c.Code == "MOUSE1").R;
             using (var body = Round(Sc(new RectangleF(m1.X - 4, m1.Y - 4, 92, 120)), 30 * S))
@@ -572,14 +636,43 @@ namespace CoopLauncher
                     TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine);
             }
 
+            PaintFooter(g);
+        }
+
+        void PaintList(Graphics g)
+        {
+            var f = Theme.Body(10f);
+            foreach (var r in rows)
+            {
+                bool hot = r == hoverRow, edit = r == editingRow;
+                var box = Sc(r.Box);
+                using (var b = new SolidBrush(hot || edit ? Color.FromArgb(34, 36, 37) : Color.FromArgb(24, 25, 26))) g.FillRectangle(b, box);
+                using (var p = new Pen(Color.FromArgb(44, 46, 48))) g.DrawLine(p, box.Left, box.Bottom, box.Right, box.Bottom);
+                TextRenderer.DrawText(g, r.Text, f, new Rectangle((int)box.X + X(10), (int)box.Y, (int)box.Width - X(200), (int)box.Height), Theme.Text,
+                    TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine | TextFormatFlags.EndEllipsis);
+                var kb = Rectangle.Round(Sc(new RectangleF(r.KeyBox.X + 4, r.KeyBox.Y + 3, r.KeyBox.Width - 8, r.KeyBox.Height - 6)));
+                Color fill = edit ? Color.FromArgb(70, 54, 28) : r.Clash ? Color.FromArgb(90, 40, 32) : r.CoopId != null ? Color.FromArgb(72, 58, 34) : Color.FromArgb(44, 48, 40);
+                using (var b = new SolidBrush(fill)) g.FillRectangle(b, kb);
+                using (var p = new Pen(edit || hot ? Theme.Amber : r.Clash ? Theme.Danger : Theme.Bevel)) g.DrawRectangle(p, kb);
+                var text = edit ? "нажмите клавишу…" : r.Code == null ? "не назначена" : KeyLabel(r.Code) + (r.Clash ? "  ⚠" : "");
+                TextRenderer.DrawText(g, text, Theme.Label(9.5f), kb, edit ? Theme.Amber : r.Code == null ? Theme.TextDim : Theme.Text,
+                    TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine);
+            }
+        }
+
+        void PaintFooter(Graphics g)
+        {
+            var f = Theme.Body(8.5f);
             // what the hovered key does, the colours, where the bindings come from
             var info = new Rectangle(X(24), X(H - 90), X(W - 48), X(26));
             using (var b = new SolidBrush(Theme.Screen)) g.FillRectangle(b, info);
             using (var p = new Pen(Theme.Bevel)) g.DrawRectangle(p, info);
             string line = editing != null ? $"Нажмите новую клавишу или кнопку мыши для «{editing.Text}»   ·   Esc — отмена"
+                : listMode && hoverRow != null && hoverRow.Code != null ? caps.Where(c => c.Code == hoverRow.Code).Select(Describe).FirstOrDefault() ?? ""
                 : hover != null ? Describe(hover)
                 : hoverNote != null ? string.Join("   ", hoverNote.Keys.Select(Describe))
                 : status != "" ? status
+                : listMode ? "Наведите курсор на действие, чтобы увидеть, что ещё висит на его клавише"
                 : "Наведите курсор на клавишу или подпись. Щёлкните подпись, чтобы назначить другую клавишу";
             TextRenderer.DrawText(g, "  " + line, Theme.Body(9.5f), info, hover != null || hoverNote != null || editing != null || status != "" ? Theme.Amber : Theme.TextDim,
                 TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine | TextFormatFlags.EndEllipsis);

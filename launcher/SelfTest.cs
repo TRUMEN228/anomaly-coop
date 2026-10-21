@@ -134,6 +134,8 @@ namespace CoopLauncher
             Snap(new MainForm(), "main");
             Snap(new OptionsDialog(settings), "options");
             Snap(new ControlsDialog(settings), "controls");
+            { var d = new ControlsDialog(settings); d.SetMode(true); Snap(d, "controls_list"); }
+            { var d = new ControlsDialog(settings); d.SetMode(true); d.Show("Оружие"); Snap(d, "controls_list_weapons"); }
             foreach (var c in new[] { "Движение", "Оружие", "Снаряжение", "Прочее" })
             {
                 var d = new ControlsDialog(settings);
@@ -152,6 +154,9 @@ namespace CoopLauncher
             Directory.CreateDirectory(Path.Combine(dir, "appdata"));
             var ltx = Path.Combine(dir, "appdata", "user.ltx");
             File.WriteAllLines(ltx, new[] { "bind jump kSPACE", "bind use kF", "g_always_run on" });
+            // Assign saves the launcher settings: keep the real ones
+            var ini = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "coop_launcher.ini");
+            var saved = File.Exists(ini) ? File.ReadAllBytes(ini) : null;
             var s = new Settings { GameDir = dir };
             var d = new ControlsDialog(s);
             var t = typeof(ControlsDialog);
@@ -176,6 +181,7 @@ namespace CoopLauncher
             Check("co-op key written for the game", File.ReadAllText(Path.Combine(dir, "appdata", "coop_keys.txt")).Contains("give=DIK_NUMPAD7"));
             Check("dialog reloaded the new binding", Find("GameId", "jump") != null && Find("CoopId", "give") != null);
             Directory.Delete(dir, true);
+            if (saved != null) File.WriteAllBytes(ini, saved); else File.Delete(ini);
         }
 
         static void Wait(Func<bool> cond, int ms)
