@@ -13,7 +13,7 @@ namespace CoopLauncher
     {
         const string Repo = "TRUMEN228/anomaly-coop";
         public static Version Current => Assembly.GetExecutingAssembly().GetName().Version;
-        public static string CurrentText => $"{Current.Major}.{Current.Minor}";
+        public static string CurrentText => Current.Build > 0 ? $"{Current.Major}.{Current.Minor}.{Current.Build}" : $"{Current.Major}.{Current.Minor}";
 
         public sealed class Release { public Version Version; public string Tag, ExeUrl; }
 
