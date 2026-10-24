@@ -10,6 +10,10 @@ local PUPPET_SECTION = "stalker_azazel"
 local SNAP_DIST = 20       -- teleport puppet only when hopelessly behind (or after a teleport of the partner)
 local LEAD_SEC = 0.6       -- aim ahead of the partner by this much of his velocity
 local STOP_DIST = 0.6
+-- co-op engine (TRUMEN228/xray-monolith): the engine places the puppet every frame from the partner's
+-- positions, played back this far behind; with stock exes the script pulls and teleports it as before
+local ENGINE = rawget(_G, "coop_engine_version") and coop_engine_version() or 0
+local NET_DELAY = 200
 
 local remote = nil         -- last partner state
 local remote_time = 0
@@ -147,6 +151,10 @@ coop_main.on_state("p", function(t)
 	if remote and remote.pos:distance_to(r.pos) < 0.01 and r.moving == 0 then r.vel = VEC_ZERO end
 	remote = r
 	remote_time = now
+	if ENGINE >= 1 and r.stamp and puppet_id and r.level == level.name() then
+		local npc = level.object_by_id(puppet_id)
+		if npc and npc:net_puppet_active() then npc:net_puppet_push(r.pos, r.stamp) end
+	end
 end)
 
 ------------------------------------------------------------------ puppet driven by the AI planner
@@ -188,17 +196,21 @@ function action_coop_puppet:step()
 	local now = time_global()
 	local pos = npc:position()
 	local dist = pos:distance_to(r.pos)
+	local engine_driven = ENGINE >= 1 and npc:net_puppet_active()
 
-	-- far behind (partner teleported) or stuck (no path): put the puppet next to the partner
-	if not self.stuck_pos or self.stuck_pos:distance_to(pos) > 0.3 or dist < 3 then
-		self.stuck_pos, self.stuck_since = vector():set(pos), now
-	end
-	-- stuck means no progress for 3 s: on a laggy link the partner's position comes in bursts
-	if dist > SNAP_DIST or now - self.stuck_since > 3000 then
-		if coop_main.debug then coop_main.log(string.format("puppet snapped dist=%.1f stuck=%d", dist, now - self.stuck_since)) end
-		npc:set_npc_position(r.pos)
-		self.stuck_pos = nil
-		return
+	-- far behind (partner teleported) or stuck (no path): put the puppet next to the partner.
+	-- With the co-op engine it places the puppet itself, a teleport of the partner included.
+	if not engine_driven then
+		if not self.stuck_pos or self.stuck_pos:distance_to(pos) > 0.3 or dist < 3 then
+			self.stuck_pos, self.stuck_since = vector():set(pos), now
+		end
+		-- stuck means no progress for 3 s: on a laggy link the partner's position comes in bursts
+		if dist > SNAP_DIST or now - self.stuck_since > 3000 then
+			if coop_main.debug then coop_main.log(string.format("puppet snapped dist=%.1f stuck=%d", dist, now - self.stuck_since)) end
+			npc:set_npc_position(r.pos)
+			self.stuck_pos = nil
+			return
+		end
 	end
 
 	local w = puppet_wpn_id and level.object_by_id(puppet_wpn_id)
@@ -252,7 +264,7 @@ function action_coop_puppet:step()
 	-- so it never gets far enough to be teleported; the jump is kept for real teleports of the partner
 	local step_dt = math.min(0.25, (now - (self.last_step or now)) / 1000)
 	self.last_step = now
-	if dist > 5 and step_dt > 0 then
+	if not engine_driven and dist > 5 and step_dt > 0 then
 		local pull = math.min(dist - 4, 4 * step_dt)
 		local to = vector():set(r.pos):sub(pos):normalize():mul(pull):add(pos)
 		local lvid = level.vertex_id(to)
@@ -344,6 +356,10 @@ local function setup_puppet(npc)
 	npc:set_relation(game_object.friend, db.actor)
 	npc:disable_talk()
 	npc:set_invisible(false)
+	if ENGINE >= 1 then
+		npc:net_puppet(true, NET_DELAY)
+		coop_main.log("puppet driven by the co-op engine v" .. ENGINE)
+	end
 	local ok, err = pcall(add_puppet_planner, npc)
 	if not ok then
 		coop_main.log("puppet planner failed, falling back to script mode: " .. tostring(err))
@@ -415,7 +431,8 @@ local function drive_puppet(npc)
 	local r = remote
 	local pos = npc:position()
 	local dist = pos:distance_to(r.pos)
-	if dist > SNAP_DIST then
+	local engine_driven = ENGINE >= 1 and npc:net_puppet_active()
+	if dist > SNAP_DIST and not engine_driven then
 		npc:set_npc_position(r.pos)
 		restart_script(npc)
 		last_target = nil
@@ -423,7 +440,9 @@ local function drive_puppet(npc)
 	end
 	local now = time_global()
 	-- stuck detection: no path to the target (ladders, jumps, holes in the AI mesh)
-	if not stuck_pos or stuck_pos:distance_to(pos) > 0.3 or dist < 3 then
+	if engine_driven then
+		-- the engine places the puppet
+	elseif not stuck_pos or stuck_pos:distance_to(pos) > 0.3 or dist < 3 then
 		stuck_pos, stuck_since = vector():set(pos), now
 	elseif now - stuck_since > 3000 then
 		npc:set_npc_position(r.pos)
