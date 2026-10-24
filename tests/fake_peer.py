@@ -157,7 +157,7 @@ while time.time() - t0 < secs:
         last_state = time.time()
         lvl, x, y, z, lv, gv = peer_pos
         center = center or (x, y, z)
-        a = t * 0.3
+        a = t * (1.6 if "stamp" in sys.argv else 0.3)  # stamp mode: ~6.4 m/s, a sprinting player
         px, pz = center[0] + 4 * math.cos(a), center[2] + 4 * math.sin(a)
         if "team" in sys.argv and mode == "host" and t > 85:
             lvl = "jupiter"  # the fake host "leaves" (vertex ids stay Zaton's, so the follow reloads Zaton)

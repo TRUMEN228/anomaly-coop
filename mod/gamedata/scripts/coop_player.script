@@ -218,6 +218,8 @@ function action_coop_puppet:step()
 	local fire = w and r.aim and now < fire_until
 	local moving = dist > STOP_DIST or r.moving > 0
 	local running = r.moving == 2 or r.vel:magnitude() > 2.2 or dist > 3
+	-- a stalker runs slower than a sprinting player: past 4 m behind it sprints (panic run is the fastest gait)
+	local sprinting = moving and not r.crouch and (r.moving == 2 or dist > 4)
 
 	if moving then
 		local target = vector():set(r.vel):mul(LEAD_SEC):add(r.pos)
@@ -240,10 +242,24 @@ function action_coop_puppet:step()
 		else state = moving and (running and "assault_fire" or "raid_fire") or "threat_fire" end
 	elseif w then
 		if r.crouch then state = moving and "sneak_run" or "hide"
-		else state = moving and (running and "assault" or "raid") or "threat" end
+		else state = moving and (sprinting and "panic" or running and "assault" or "raid") or "threat" end
 	else
 		if r.crouch then state = moving and "sneak" or "hide"
-		else state = moving and (running and "run" or "walk") or "idle" end
+		else state = moving and (sprinting and "sprint" or running and "run" or "walk") or "idle" end
+	end
+
+	-- still falling behind: pull the puppet along a little each step (up to 4 m/s on top of its own run)
+	-- so it never gets far enough to be teleported; the jump is kept for real teleports of the partner
+	local step_dt = math.min(0.25, (now - (self.last_step or now)) / 1000)
+	self.last_step = now
+	if dist > 5 and step_dt > 0 then
+		local pull = math.min(dist - 4, 4 * step_dt)
+		local to = vector():set(r.pos):sub(pos):normalize():mul(pull):add(pos)
+		local lvid = level.vertex_id(to)
+		if lvid < 4294967295 then
+			npc:set_npc_position(level.vertex_position(lvid))
+			self.stuck_pos = nil -- progress: not stuck
+		end
 	end
 
 	-- look where the partner looks
