@@ -17,7 +17,7 @@ namespace CoopLauncher
     public sealed class Bridge : IDisposable
     {
         public const string ProtocolVersion = "6";
-        const byte MsgHello = 1, MsgState = 2, MsgEvent = 3, MsgFile = 4, MsgPing = 5, MsgStateZ = 6;
+        const byte MsgHello = 1, MsgState = 2, MsgEvent = 3, MsgFile = 4, MsgPing = 5, MsgStateZ = 6, MsgPong = 7;
 
         public static readonly Encoding GameEnc = Encoding.GetEncoding(1251);
 
@@ -38,13 +38,19 @@ namespace CoopLauncher
         volatile bool running = true;
 
         public bool Connected { get; private set; }
+        /// <summary>Round trip to the partner in ms (0 until measured; older launchers do not answer pings).</summary>
+        public int RttMs { get; private set; }
+
+        // Outgoing frames go through a sender thread: the game's file exchange must never wait for the network.
+        // States are coalesced (only the newest line per tag is sent); events and files keep their order.
+        System.Collections.Concurrent.BlockingCollection<byte[]> outbox;
+        readonly Dictionary<string, string> pendingState = new Dictionary<string, string>();
         public string PeerName { get; private set; } = "";
 
         // game -> partner
         string gameSid;
         long lastGameEvent;              // highest event id read from coop_out.txt
         readonly Dictionary<string, string> lastSentState = new Dictionary<string, string>();
-        DateTime lastStateSend = DateTime.MinValue;
 
         // partner/bridge -> game
         readonly string bridgeSid = new Random().Next(100000, 999999).ToString();
@@ -152,10 +158,12 @@ namespace CoopLauncher
                         SteamNet.LobbyEntered -= onEnter;
                         if (!ok) throw new IOException("не удалось войти в лобби (друг закрыл лаунчер или лобби полное)");
                         var owner = SteamNet.LobbyOwner(lobby);
+                        Log?.Invoke($"В лобби. Связываюсь с хостом через Steam (сеть Steam: {SteamNet.RelayStatus()})...");
                         Run(SteamNet.Connect(owner));
                     }
                     catch (Exception e) when (running) { Log?.Invoke("Steam: " + e.Message); }
                     catch { return; }
+                    SteamNet.LeaveLobby(lobby);
                     for (int i = 0; i < 30 && running; i++) Thread.Sleep(100);
                 }
             }) { IsBackground = true, Name = "net" };
@@ -171,19 +179,24 @@ namespace CoopLauncher
         /// <summary>Serve one partner over a link until it drops.</summary>
         void Run(ILink l)
         {
+            var q = new System.Collections.Concurrent.BlockingCollection<byte[]>();
+            lock (pendingState) pendingState.Clear();
+            outbox = q;
             link = l;
             resumeSent = false;
+            RttMs = 0;
             try
             {
-                Send(MsgHello, Encoding.UTF8.GetBytes(ProtocolVersion + "|" + myName));
+                l.Send(Frame(MsgHello, Encoding.UTF8.GetBytes(ProtocolVersion + "|" + myName)));
+                new Thread(() => SendLoop(l, q)) { IsBackground = true, Name = "send" }.Start();
                 var pinger = new Thread(() =>
                 {
                     while (running && link == l)
                     {
-                        try { Send(MsgPing, new byte[0]); } catch { return; }
+                        Send(MsgPing, BitConverter.GetBytes(DateTime.UtcNow.Ticks));
                         Thread.Sleep(3000);
                     }
-                }) { IsBackground = true };
+                }) { IsBackground = true, Name = "ping" };
                 pinger.Start();
                 while (running)
                 {
@@ -195,9 +208,55 @@ namespace CoopLauncher
             finally
             {
                 if (link == l) link = null;
+                q.CompleteAdding();
                 l.Dispose();
                 Detach();
             }
+        }
+
+        static byte[] Frame(byte type, byte[] payload)
+        {
+            var frame = new byte[1 + payload.Length];
+            frame[0] = type;
+            payload.CopyTo(frame, 1);
+            return frame;
+        }
+
+        // the only thread that writes to the link: a slow network delays it, not the game
+        void SendLoop(ILink l, System.Collections.Concurrent.BlockingCollection<byte[]> q)
+        {
+            var lastState = DateTime.MinValue;
+            try
+            {
+                while (running && link == l && !q.IsCompleted)
+                {
+                    if (q.TryTake(out var f, 15))
+                    {
+                        l.Send(f);
+                        Interlocked.Add(ref BytesSent, f.Length);
+                        continue;
+                    }
+                    if ((DateTime.Now - lastState).TotalMilliseconds < 90) continue;
+                    string text = null;
+                    lock (pendingState)
+                        if (pendingState.Count > 0)
+                        {
+                            text = string.Join("\n", pendingState.Values) + "\n";
+                            pendingState.Clear();
+                        }
+                    if (text == null) continue;
+                    lastState = DateTime.Now;
+                    var frame = StateFrame(text);
+                    l.Send(frame);
+                    Interlocked.Add(ref BytesSent, frame.Length);
+                }
+            }
+            catch (Exception e) when (running)
+            {
+                Log?.Invoke("Сеть: " + e.Message);
+                l.Dispose(); // wakes the receive loop, which then cleans up
+            }
+            catch { }
         }
 
         void Detach()
@@ -205,6 +264,8 @@ namespace CoopLauncher
             bool was = Connected;
             Connected = false;
             lock (sync) { peerState.Clear(); lastSentState.Clear(); }
+            lock (pendingState) pendingState.Clear();
+            RttMs = 0;
             if (was)
             {
                 Log?.Invoke($"{PeerName} отключился");
@@ -214,24 +275,20 @@ namespace CoopLauncher
 
         void Send(byte type, byte[] payload)
         {
-            var l = link;
-            if (l == null) return;
-            var frame = new byte[1 + payload.Length];
-            frame[0] = type;
-            payload.CopyTo(frame, 1);
-            l.Send(frame);
-            Interlocked.Add(ref BytesSent, frame.Length);
+            var q = outbox;
+            if (link == null || q == null) return;
+            try { q.Add(Frame(type, payload)); } catch (InvalidOperationException) { } // link just closed
         }
 
-        void SendState(string text)
+        static byte[] StateFrame(string text)
         {
             var raw = GameEnc.GetBytes(text);
-            if (raw.Length < 512) { Send(MsgState, raw); return; }
+            if (raw.Length < 512) return Frame(MsgState, raw);
             using (var ms = new MemoryStream())
             {
                 using (var z = new System.IO.Compression.DeflateStream(ms, System.IO.Compression.CompressionLevel.Fastest, true))
                     z.Write(raw, 0, raw.Length);
-                Send(MsgStateZ, ms.ToArray());
+                return Frame(MsgStateZ, ms.ToArray());
             }
         }
 
@@ -296,6 +353,16 @@ namespace CoopLauncher
                     ToGame(text);
                     break;
                 }
+                case MsgPing:
+                    if (len == 8) Send(MsgPong, Slice(buf, off, len));
+                    break;
+                case MsgPong:
+                    if (len == 8)
+                    {
+                        var ms = (DateTime.UtcNow.Ticks - BitConverter.ToInt64(buf, off)) / TimeSpan.TicksPerMillisecond;
+                        if (ms >= 0 && ms < 60000) RttMs = (int)ms;
+                    }
+                    break;
                 case MsgFile:
                 {
                     int nameLen = BitConverter.ToInt32(buf, off);
@@ -411,6 +478,8 @@ namespace CoopLauncher
 
         long heartbeat;
 
+        static byte[] Slice(byte[] b, int off, int len) { var r = new byte[len]; Buffer.BlockCopy(b, off, r, 0, len); return r; }
+
         static string Clean(string s) => (s ?? "").Replace('|', ' ').Replace('\n', ' ');
 
         long ParseGameOut(string raw)
@@ -462,23 +531,14 @@ namespace CoopLauncher
 
             if (Connected)
             {
-                // send states that changed, at most 10 times per second
-                if ((DateTime.Now - lastStateSend).TotalMilliseconds >= 90)
+                // states that changed go to the sender, which sends the newest of each at most 10 times per second
+                foreach (var line in states)
                 {
-                    var changed = new StringBuilder();
-                    foreach (var line in states)
+                    var tag = line.Split('|')[1];
+                    if (!lastSentState.TryGetValue(tag, out var prev) || prev != line)
                     {
-                        var tag = line.Split('|')[1];
-                        if (!lastSentState.TryGetValue(tag, out var prev) || prev != line)
-                        {
-                            lastSentState[tag] = line;
-                            changed.Append(line).Append('\n');
-                        }
-                    }
-                    if (changed.Length > 0)
-                    {
-                        SendState(changed.ToString());
-                        lastStateSend = DateTime.Now;
+                        lastSentState[tag] = line;
+                        lock (pendingState) pendingState[tag] = line;
                     }
                 }
             }

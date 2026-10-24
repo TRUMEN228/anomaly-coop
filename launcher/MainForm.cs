@@ -362,8 +362,7 @@ namespace CoopLauncher
                 var f = friendsBox.Items.Cast<SteamNet.FriendLobby>().FirstOrDefault(x => x.Lobby == lobby);
                 if (f == null) { f = new SteamNet.FriendLobby { Name = "Друг (приглашение)", Lobby = lobby }; friendsBox.Items.Add(f); }
                 friendsBox.SelectedItem = f;
-                Print("Приглашение из Steam принято", Theme.Amber);
-                Start();
+                Print("Приглашение из Steam: хост выбран. Нажмите «В Зону», чтобы подключиться.", Theme.Amber);
             });
             SteamNet.Log += s => Ui(() => Print(s, Theme.Danger));
 
@@ -524,7 +523,11 @@ namespace CoopLauncher
                     if (ext != null)
                     {
                         upnpMapped = true;
-                        Print($"Порт {port} открыт на роутере через UPnP. IP для друга через интернет: {ext}", Theme.Amber);
+                        if (NetInfo.IsCarrierNat(ext))
+                            Print($"Порт {port} открыт на роутере, но роутер получил от провайдера внутренний адрес {ext} (CGNAT): " +
+                                  "извне к вам так не подключиться. Играйте через Steam или Radmin VPN.", Theme.Danger);
+                        else
+                            Print($"Порт {port} открыт на роутере через UPnP. IP для друга через интернет: {ext}", Theme.Amber);
                         ipText = ipText.Length > 0 ? ipText + ", " + ext : ext;
                     }
                     else Print($"Автопроброс порта не удался ({why}). Для игры через интернет используйте Steam или Radmin VPN.", Theme.TextDim);
@@ -635,7 +638,7 @@ namespace CoopLauncher
                 lampGame = seen ? Lamp.On : running ? Lamp.Wait : Lamp.Off;
                 textGame = seen ? "в игре" : running ? "загрузка / меню" : "не запущена";
                 lampNet = bridge.Connected ? Lamp.On : Lamp.Wait;
-                textNet = (steam ? "Steam" : "IP") + (bridge.Connected ? " · связь есть" : host ? " · ждём друга" : " · подключаемся");
+                textNet = (steam ? "Steam" : "IP") + (bridge.Connected ? (bridge.RttMs > 0 ? $" · пинг {bridge.RttMs} мс" : " · связь есть") : host ? " · ждём друга" : " · подключаемся");
                 lampPeer = bridge.Connected ? Lamp.On : Lamp.Off;
                 textPeer = bridge.Connected ? bridge.PeerName : "нет";
                 textAddr = host && !steam && ipText.Length > 0 ? "АДРЕС: " + ipText

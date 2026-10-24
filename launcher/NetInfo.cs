@@ -43,6 +43,15 @@ namespace CoopLauncher
             return list.OrderBy(a => a.Kind == "LAN" ? 1 : 0).ToList();
         }
 
+        /// <summary>Addresses a router can get from the provider that are not reachable from the internet:
+        /// carrier-grade NAT (100.64.0.0/10) and private ranges (a router behind another router).</summary>
+        public static bool IsCarrierNat(string ip)
+        {
+            if (!System.Net.IPAddress.TryParse(ip ?? "", out var a) || a.AddressFamily != System.Net.Sockets.AddressFamily.InterNetwork) return false;
+            var b = a.GetAddressBytes();
+            return (b[0] == 100 && b[1] >= 64 && b[1] <= 127) || b[0] == 10 || (b[0] == 172 && b[1] >= 16 && b[1] <= 31) || (b[0] == 192 && b[1] == 168);
+        }
+
         const string UpnpDescription = "Anomaly Co-op";
 
         /// <summary>Ask the router to forward TCP port to this PC. Returns the external IP or null.</summary>

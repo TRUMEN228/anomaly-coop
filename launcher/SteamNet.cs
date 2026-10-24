@@ -21,7 +21,7 @@ namespace CoopLauncher
         const string Dll = "steam_api64.dll";
         const int CbLobbyJoinRequested = 333, CbRichPresenceJoinRequested = 337, CbLobbyEnter = 504,
             CbLobbyChatUpdate = 506, CbLobbyCreated = 513, CbCallCompleted = 703, CbSessionRequest = 1251, CbSessionFailed = 1252;
-        const int SendReliableNoNagle = 8 | 1;
+        const int SendReliableNoNagle = 8 | 1 | 32; // reliable, no Nagle, restart a broken session instead of failing
         const int Channel = 0;
 
         [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)] static extern bool SteamAPI_IsSteamRunning();
@@ -58,9 +58,10 @@ namespace CoopLauncher
         [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)] static extern ulong SteamAPI_SteamNetworkingIdentity_GetSteamID64(IntPtr self);
         [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)] static extern void SteamAPI_SteamNetworkingMessage_t_Release(IntPtr msg);
         [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)] static extern IntPtr SteamAPI_SteamNetworkingUtils_SteamAPI_v004();
+        [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)] static extern int SteamAPI_ISteamNetworkingUtils_GetRelayNetworkStatus(IntPtr self, IntPtr details);
         [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)] static extern void SteamAPI_ISteamNetworkingUtils_InitRelayNetworkAccess(IntPtr self);
 
-        static IntPtr user, mm, friends, msgs;
+        static IntPtr user, mm, friends, msgs, utils;
         static int pipe;
         static Thread pump;
         public static bool Ready { get; private set; }
@@ -98,26 +99,41 @@ namespace CoopLauncher
                 Environment.SetEnvironmentVariable("SteamAppId", "480");
                 Environment.SetEnvironmentVariable("SteamGameId", "480");
                 if (!SteamAPI_IsSteamRunning()) { error = "Steam не запущен. Запустите Steam и войдите в аккаунт."; return false; }
-                var err = new byte[1024];
-                int r = SteamAPI_InitFlat(err);
-                if (r != 0)
+                // Steam binds its callback queue to the thread that initialises it: init on the pump thread itself,
+                // or callbacks (incoming P2P sessions among them) get lost
+                string fail = null;
+                var done = new ManualResetEventSlim();
+                pump = new Thread(() =>
                 {
-                    error = r == 2 ? "Steam не запущен" : r == 3 ? "версия Steam не подходит, обновите Steam" : "Steam не инициализировался: " + Utf8(err);
-                    return false;
-                }
-                SteamAPI_ManualDispatch_Init();
-                pipe = SteamAPI_GetHSteamPipe();
-                user = SteamAPI_SteamUser_v023();
-                mm = SteamAPI_SteamMatchmaking_v009();
-                friends = SteamAPI_SteamFriends_v018();
-                msgs = SteamAPI_SteamNetworkingMessages_SteamAPI_v002();
-                SteamAPI_ISteamNetworkingUtils_InitRelayNetworkAccess(SteamAPI_SteamNetworkingUtils_SteamAPI_v004());
-                MySteamId = SteamAPI_ISteamUser_GetSteamID(user);
-                MyName = Utf8(SteamAPI_ISteamFriends_GetPersonaName(friends));
-                Ready = true;
-                pump = new Thread(Pump) { IsBackground = true, Name = "steam" };
+                    try
+                    {
+                        var err = new byte[1024];
+                        int r = SteamAPI_InitFlat(err);
+                        if (r != 0)
+                        {
+                            fail = r == 2 ? "Steam не запущен" : r == 3 ? "версия Steam не подходит, обновите Steam" : "Steam не инициализировался: " + Utf8(err);
+                            return;
+                        }
+                        SteamAPI_ManualDispatch_Init();
+                        pipe = SteamAPI_GetHSteamPipe();
+                        user = SteamAPI_SteamUser_v023();
+                        mm = SteamAPI_SteamMatchmaking_v009();
+                        friends = SteamAPI_SteamFriends_v018();
+                        msgs = SteamAPI_SteamNetworkingMessages_SteamAPI_v002();
+                        utils = SteamAPI_SteamNetworkingUtils_SteamAPI_v004();
+                        SteamAPI_ISteamNetworkingUtils_InitRelayNetworkAccess(utils);
+                        MySteamId = SteamAPI_ISteamUser_GetSteamID(user);
+                        MyName = Utf8(SteamAPI_ISteamFriends_GetPersonaName(friends));
+                        Ready = true;
+                    }
+                    catch (Exception e) { fail = e is DllNotFoundException ? "не найден steam_api64.dll" : e.Message; return; }
+                    finally { done.Set(); }
+                    Pump();
+                }) { IsBackground = true, Name = "steam" };
                 pump.Start();
-                return true;
+                if (!done.Wait(20000)) { error = "Steam не ответил за 20 с"; return false; }
+                error = fail;
+                return fail == null;
             }
             catch (DllNotFoundException) { error = "не найден steam_api64.dll"; return false; }
             catch (Exception e) { error = e.Message; return false; }
@@ -127,24 +143,63 @@ namespace CoopLauncher
         static ulong currentLobby;
         public static ulong CurrentLobby => currentLobby;
 
+        // matchmaking and friends calls run on the pump thread too (Steam checks which thread uses its queue)
+        static readonly System.Collections.Concurrent.ConcurrentQueue<Action> calls = new System.Collections.Concurrent.ConcurrentQueue<Action>();
+
+        static T OnPump<T>(Func<T> f)
+        {
+            if (Thread.CurrentThread == pump) return f();
+            T result = default(T);
+            Exception error = null;
+            var done = new ManualResetEventSlim();
+            calls.Enqueue(() => { try { result = f(); } catch (Exception e) { error = e; } finally { done.Set(); } });
+            if (!done.Wait(10000)) throw new TimeoutException("Steam не ответил");
+            if (error != null) throw error;
+            return result;
+        }
+
+        static void OnPump(Action a) => OnPump(() => { a(); return 0; });
+
         public static void HostLobby()
         {
-            SteamAPI_ISteamMatchmaking_CreateLobby(mm, 1 /* friends only */, 2);
+            // room for stale members: a guest that dropped stays listed for a while (the bridge takes one partner)
+            OnPump(() => { SteamAPI_ISteamMatchmaking_CreateLobby(mm, 1 /* friends only */, 4); });
+        }
+
+        /// <summary>Steam Datagram Relay status: 100 = ready; lower values are still starting or failing.</summary>
+        public static int RelayStatus()
+        {
+            if (!Ready) return -1;
+            try { return OnPump(() => SteamAPI_ISteamNetworkingUtils_GetRelayNetworkStatus(utils, IntPtr.Zero)); } catch { return -1; }
+        }
+
+        /// <summary>Guest: leave the friend's lobby before trying again, or the old membership fills it.</summary>
+        public static void LeaveLobby(ulong lobby)
+        {
+            if (!Ready || lobby == 0) return;
+            OnPump(() => SteamAPI_ISteamMatchmaking_LeaveLobby(mm, lobby));
+            if (currentLobby == lobby) currentLobby = 0;
         }
 
         public static void JoinLobby(ulong lobby)
         {
-            SteamAPI_ISteamMatchmaking_JoinLobby(mm, lobby);
+            OnPump(() => { SteamAPI_ISteamMatchmaking_JoinLobby(mm, lobby); });
         }
 
         public static void Leave()
         {
             if (!Ready) return;
             
+            try
             {
-                if (currentLobby != 0) SteamAPI_ISteamMatchmaking_LeaveLobby(mm, currentLobby);
-                SteamAPI_ISteamFriends_ClearRichPresence(friends);
+                var lobby = currentLobby;
+                OnPump(() =>
+                {
+                    if (lobby != 0) SteamAPI_ISteamMatchmaking_LeaveLobby(mm, lobby);
+                    SteamAPI_ISteamFriends_ClearRichPresence(friends);
+                });
             }
+            catch { }
             currentLobby = 0;
             foreach (var l in links.Values) l.Close();
             links.Clear();
@@ -153,16 +208,17 @@ namespace CoopLauncher
 
         public static ulong LobbyOwner(ulong lobby)
         {
-            return SteamAPI_ISteamMatchmaking_GetLobbyOwner(mm, lobby);
+            return OnPump(() => SteamAPI_ISteamMatchmaking_GetLobbyOwner(mm, lobby));
         }
 
         public static void SetPresence(string status)
         {
             
+            OnPump(() =>
             {
                 SteamAPI_ISteamFriends_SetRichPresence(friends, Z("status"), Z(status));
                 if (currentLobby != 0) SteamAPI_ISteamFriends_SetRichPresence(friends, Z("connect"), Z("+connect_lobby " + currentLobby));
-            }
+            });
         }
 
         public sealed class FriendLobby
@@ -176,7 +232,7 @@ namespace CoopLauncher
         {
             var list = new List<FriendLobby>();
             if (!Ready) return list;
-            
+            OnPump(() =>
             {
                 int n = SteamAPI_ISteamFriends_GetFriendCount(friends, 4 /* immediate */);
                 for (int i = 0; i < n; i++)
@@ -187,7 +243,7 @@ namespace CoopLauncher
                     if (!ulong.TryParse(connect.Substring(15).Trim(), out var lobby)) continue;
                     list.Add(new FriendLobby { Name = Utf8(SteamAPI_ISteamFriends_GetFriendPersonaName(friends, id)), Lobby = lobby });
                 }
-            }
+            });
             return list;
         }
 
@@ -220,8 +276,10 @@ namespace CoopLauncher
             finally { Marshal.FreeHGlobal(id); }
         }
 
-        internal static void CloseSession(ulong peer)
+        internal static void CloseSession(ulong peer, SteamLink who = null)
         {
+            // an old link closing must not drop a newer one to the same peer
+            if (who != null && links.TryGetValue(peer, out var current) && current != who) return;
             var id = Marshal.AllocHGlobal(160);
             try
             {
@@ -242,8 +300,9 @@ namespace CoopLauncher
             {
                 try
                 {
-                    
+            
                     {
+                        while (calls.TryDequeue(out var call)) call();
                         SteamAPI_ManualDispatch_RunFrame(pipe);
                         while (SteamAPI_ManualDispatch_GetNextCallback(pipe, cb))
                         {
@@ -353,17 +412,27 @@ namespace CoopLauncher
                     ulong from = SteamAPI_SteamNetworkingIdentity_GetSteamID64(p);
                     // host accepts anyone (the protocol hello decides); a guest accepts only its host
                     if (acceptOnlyFrom == 0 || from == acceptOnlyFrom)
-                        SteamAPI_ISteamNetworkingMessages_AcceptSessionWithUser(msgs, p);
+                    {
+                        bool ok = SteamAPI_ISteamNetworkingMessages_AcceptSessionWithUser(msgs, p);
+                        Log?.Invoke($"Steam: входящее соединение от {FriendName(from)}{(ok ? "" : " — не принято")}");
+                    }
                     break;
                 }
                 case CbSessionFailed:
                 {
+                    // SteamNetConnectionInfo_t: identity (136), user data, listen socket, address, POPs, state @176, end reason @180, debug @184
                     ulong from = SteamAPI_SteamNetworkingIdentity_GetSteamID64(p);
+                    int reason = Marshal.ReadInt32(p, 180);
+                    var dbg = new byte[128];
+                    Marshal.Copy(IntPtr.Add(p, 184), dbg, 0, 128);
+                    Log?.Invoke($"Steam: связь с {FriendName(from)} не установлена (код {reason}: {Utf8(dbg)}). Сеть Steam: {RelayStatus()}");
                     if (links.TryGetValue(from, out var l)) l.Close();
                     break;
                 }
             }
         }
+
+        static string FriendName(ulong id) { try { var n = Utf8(SteamAPI_ISteamFriends_GetFriendPersonaName(friends, id)); return n == "" ? "друга" : n; } catch { return "друга"; } }
 
         static byte[] Z(string s) { var b = Encoding.UTF8.GetBytes(s); Array.Resize(ref b, b.Length + 1); return b; }
         static string Utf8(byte[] z) { int n = Array.IndexOf(z, (byte)0); return Encoding.UTF8.GetString(z, 0, n < 0 ? z.Length : n); }
@@ -387,17 +456,21 @@ namespace CoopLauncher
         DateTime lastHeard = DateTime.Now;
 
         readonly Func<ulong, byte[], bool> sender;
-        readonly Action<ulong> closer;
+        readonly Action<ulong, SteamLink> closer;
+        bool heard;                  // first contact through the relays can take a while
 
-        public SteamLink(ulong peer) : this(peer, SteamNet.Send, SteamNet.CloseSession) { }
+        public SteamLink(ulong peer) : this(peer, SteamNet.Send, (p, l) => SteamNet.CloseSession(p, l)) { }
 
         /// <summary>For tests: route messages somewhere other than Steam.</summary>
-        public SteamLink(ulong peer, Func<ulong, byte[], bool> send, Action<ulong> close) { Peer = peer; sender = send; closer = close; }
+        public SteamLink(ulong peer, Func<ulong, byte[], bool> send, Action<ulong> close) : this(peer, send, (p, l) => close(p)) { }
+
+        SteamLink(ulong peer, Func<ulong, byte[], bool> send, Action<ulong, SteamLink> close) { Peer = peer; sender = send; closer = close; }
 
         internal void Feed(byte[] msg)
         {
             if (msg.Length < 1) return;
             lastHeard = DateTime.Now;
+            heard = true;
             if (msg[0] == 0) { frames.Add(Slice(msg)); return; }
             for (int i = 1; i < msg.Length; i++) partial.Add(msg[i]);
             if (msg[0] == 2) { frames.Add(partial.ToArray()); partial.Clear(); }
@@ -432,7 +505,9 @@ namespace CoopLauncher
                 if (closed) throw new IOException("соединение закрыто");
                 if (frames.TryTake(out var f, 500)) return f;
                 // no disconnect event in SteamNetworkingMessages: silence means gone (pings come every 3 s)
-                if ((DateTime.Now - lastHeard).TotalSeconds > 20) throw new IOException("напарник не отвечает 20 с");
+                int limit = heard ? 20 : 45;
+                if ((DateTime.Now - lastHeard).TotalSeconds > limit)
+                    throw new IOException(heard ? "напарник не отвечает 20 с" : $"нет ответа от хоста за {limit} с (сеть Steam: {SteamNet.RelayStatus()})");
             }
         }
 
@@ -440,7 +515,7 @@ namespace CoopLauncher
         {
             if (closed) return;
             closed = true;
-            try { closer(Peer); } catch { }
+            try { closer(Peer, this); } catch { }
         }
 
         public void Dispose() => Close();
