@@ -368,6 +368,8 @@ namespace CoopLauncher
 
             Shown += async (s, e) =>
             {
+                // the relay network needs time to come up: start it now, not when the player presses "В Зону"
+                if (settings.Transport != "ip") new System.Threading.Thread(() => { try { SteamNet.Init(out _); } catch { } }) { IsBackground = true }.Start();
                 if (Environment.GetCommandLineArgs().Contains("--auto")) Start();
                 pendingUpdate = await Updater.CheckAsync();
                 if (pendingUpdate == null) return;
@@ -610,8 +612,17 @@ namespace CoopLauncher
             catch (Exception e) { Print("Не удалось запустить игру: " + e.Message, Theme.Danger); }
         }
 
+        DateTime nextLinkReport = DateTime.MinValue;
+
         void Tick()
         {
+            if (bridge != null && bridge.Connected && DateTime.Now > nextLinkReport)
+            {
+                if (nextLinkReport != DateTime.MinValue && bridge.RttMs > 0)
+                    Print($"Связь: пинг {bridge.RttMs} мс", bridge.RttMs > 300 ? Theme.Danger : Theme.TextDim);
+                nextLinkReport = DateTime.Now.AddMinutes(2);
+            }
+            if (bridge == null || !bridge.Connected) nextLinkReport = DateTime.MinValue;
             var before = (lampGame, lampNet, lampPeer, textGame, textNet, textPeer, textAddr);
             bool running = GameRunning();
             WatchForCrash(running);

@@ -153,7 +153,7 @@ namespace CoopLauncher
             Exception error = null;
             var done = new ManualResetEventSlim();
             calls.Enqueue(() => { try { result = f(); } catch (Exception e) { error = e; } finally { done.Set(); } });
-            if (!done.Wait(10000)) throw new TimeoutException("Steam не ответил");
+            if (!done.Wait(20000)) throw new TimeoutException("Steam не ответил за 20 с");
             if (error != null) throw error;
             return result;
         }

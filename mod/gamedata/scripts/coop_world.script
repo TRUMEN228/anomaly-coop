@@ -9,7 +9,10 @@
 --]]
 
 local NPC_SYNC_RADIUS = 70
-local NPC_SNAP_DIST = 3
+local NPC_SNAP_DIST = 3      -- standing and out of sight
+local NPC_SNAP_MOVING = 10   -- running: the host's position is already behind
+local NPC_SNAP_SEEN = 15     -- in the guest's view: a jump is worse than a small difference
+local npc_last_pos = {}      -- host id -> position from the previous update
 
 local applying = false         -- true while we apply a remote event, to avoid echoing it back
 function is_applying() return applying end
@@ -116,7 +119,15 @@ coop_main.on_state("n", function(t)
 		local obj = id and level.object_by_id(id)
 		if same(obj, sec) and obj:alive() then
 			local pos = vec(x, y, z)
-			if obj:position():distance_to(pos) > NPC_SNAP_DIST then
+			-- the host's positions are a second old plus the ping: a running NPC is always a few metres off.
+			-- Put it back only where it does not show, or when it went really far.
+			local off = obj:position():distance_to(pos)
+			local last = npc_last_pos[id]
+			local running = last and last:distance_to(pos) > 1.5
+			npc_last_pos[id] = pos
+			local seen = db.actor and db.actor:see(obj) and obj:position():distance_to(db.actor:position()) < 60
+			local limit = seen and NPC_SNAP_SEEN or (running and NPC_SNAP_MOVING or NPC_SNAP_DIST)
+			if off > limit then
 				obj:set_npc_position(pos)
 			end
 			h = tonumber(h)

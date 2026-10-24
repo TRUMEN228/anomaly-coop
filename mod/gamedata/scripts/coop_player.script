@@ -7,7 +7,7 @@
 --]]
 
 local PUPPET_SECTION = "stalker_azazel"
-local SNAP_DIST = 15       -- teleport puppet only when hopelessly behind (or after a teleport of the partner)
+local SNAP_DIST = 20       -- teleport puppet only when hopelessly behind (or after a teleport of the partner)
 local LEAD_SEC = 0.6       -- aim ahead of the partner by this much of his velocity
 local STOP_DIST = 0.6
 
@@ -89,6 +89,7 @@ coop_main.add_state_provider("p", function()
 		reloads,
 		(a:object("device_torch") and a:object("device_torch"):torch_enabled()) and 1 or 0,
 		time_global() < heal_until and 1 or 0,
+		time_global(), -- sender's clock: the partner measures speed by it, not by when the state arrived
 	}
 end)
 
@@ -107,6 +108,12 @@ coop_main.on_state("p", function(t)
 	r.reloads = tonumber(t[17]) or 0
 	r.torch = t[18] == "1"
 	r.healing = t[19] == "1"
+	r.stamp = tonumber(t[20])
+	-- the same state is read again every tick until a new one arrives: it only proves the partner is there
+	if remote and r.stamp and remote.stamp == r.stamp then
+		remote_time = time_global()
+		return
+	end
 	if last_remote_reloads and r.reloads > last_remote_reloads then reload_pending = true end
 	last_remote_reloads = r.reloads
 	local ax, ay, az = (t[16] or ""):match("^([^:]+):([^:]+):([^:]+)$")
@@ -127,6 +134,10 @@ coop_main.on_state("p", function(t)
 	r.vel = VEC_ZERO
 	if remote and remote.level == r.level and now > remote_time then
 		local dt = (now - remote_time) / 1000
+		-- by the sender's clock when both states carry it: arrival times jump around on a laggy link
+		if r.stamp and remote.stamp and r.stamp > remote.stamp and r.stamp - remote.stamp < 2000 then
+			dt = (r.stamp - remote.stamp) / 1000
+		end
 		local v = vector():set(r.pos):sub(remote.pos):div(dt)
 		-- ignore jumps (teleports, level changes)
 		if v:magnitude() < 12 then
@@ -179,10 +190,11 @@ function action_coop_puppet:step()
 	local dist = pos:distance_to(r.pos)
 
 	-- far behind (partner teleported) or stuck (no path): put the puppet next to the partner
-	if not self.stuck_pos or self.stuck_pos:distance_to(pos) > 0.3 or dist < 1.5 then
+	if not self.stuck_pos or self.stuck_pos:distance_to(pos) > 0.3 or dist < 3 then
 		self.stuck_pos, self.stuck_since = vector():set(pos), now
 	end
-	if dist > SNAP_DIST or now - self.stuck_since > 1500 then
+	-- stuck means no progress for 3 s: on a laggy link the partner's position comes in bursts
+	if dist > SNAP_DIST or now - self.stuck_since > 3000 then
 		npc:set_npc_position(r.pos)
 		self.stuck_pos = nil
 		return
@@ -394,9 +406,9 @@ local function drive_puppet(npc)
 	end
 	local now = time_global()
 	-- stuck detection: no path to the target (ladders, jumps, holes in the AI mesh)
-	if not stuck_pos or stuck_pos:distance_to(pos) > 0.3 or dist < 1.5 then
+	if not stuck_pos or stuck_pos:distance_to(pos) > 0.3 or dist < 3 then
 		stuck_pos, stuck_since = vector():set(pos), now
-	elseif now - stuck_since > 1500 then
+	elseif now - stuck_since > 3000 then
 		npc:set_npc_position(r.pos)
 		restart_script(npc)
 		last_target, stuck_pos = nil, nil

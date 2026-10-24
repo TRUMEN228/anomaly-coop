@@ -83,8 +83,12 @@ namespace CoopLauncher
                     try
                     {
                         var c = listener.AcceptTcpClient();
-                        if (Connected) { c.Close(); continue; }
-                        Run(new TcpLink(c));
+                        // the old link may not have timed out yet: the newest connection wins
+                        var old = link;
+                        if (old != null) { Log?.Invoke("Напарник подключился заново, старое соединение закрыто"); old.Dispose(); }
+                        var l = new TcpLink(c);
+                        new Thread(() => { try { Run(l); } catch (Exception e) when (running) { Log?.Invoke("Сеть: " + e.Message); } catch { } })
+                            { IsBackground = true, Name = "peer" }.Start();
                     }
                     catch (Exception e) when (running) { Log?.Invoke("Сеть: " + e.Message); }
                     catch { return; }
@@ -148,6 +152,14 @@ namespace CoopLauncher
                 {
                     try
                     {
+                        // a connection through Steam's relays times out until the relay network is ready (status 100)
+                        int relay = SteamNet.RelayStatus();
+                        if (relay != 100)
+                        {
+                            Log?.Invoke($"Сеть Steam готовится (статус {relay}), подождите...");
+                            for (int i = 0; i < 600 && running && (relay = SteamNet.RelayStatus()) != 100 && relay > -100; i++) Thread.Sleep(100);
+                            Log?.Invoke(relay == 100 ? "Сеть Steam готова" : $"Сеть Steam не готова (статус {relay}), пробую всё равно");
+                        }
                         Log?.Invoke("Вход в Steam-лобби друга...");
                         var entered = new ManualResetEventSlim();
                         bool ok = false;
@@ -163,7 +175,7 @@ namespace CoopLauncher
                     }
                     catch (Exception e) when (running) { Log?.Invoke("Steam: " + e.Message); }
                     catch { return; }
-                    SteamNet.LeaveLobby(lobby);
+                    try { SteamNet.LeaveLobby(lobby); } catch (Exception e) { Log?.Invoke("Steam: " + e.Message); }
                     for (int i = 0; i < 30 && running; i++) Thread.Sleep(100);
                 }
             }) { IsBackground = true, Name = "net" };
