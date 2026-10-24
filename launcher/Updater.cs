@@ -37,6 +37,15 @@ namespace CoopLauncher
             catch { return null; } // offline or rate limited: just skip
         });
 
+        /// <summary>A downloaded update that could not replace the exe last time, or null.</summary>
+        public static string LeftOver()
+        {
+            var fresh = Path.Combine(Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location), "CoopLauncher.new.exe");
+            if (!File.Exists(fresh)) return null;
+            try { File.Delete(fresh); } catch { }
+            return fresh;
+        }
+
         /// <summary>Download the new exe, then swap it in after this process exits and restart.</summary>
         public static void Apply(Release r)
         {
@@ -61,8 +70,14 @@ namespace CoopLauncher
                 "@echo off\r\n" +
                 $"set PID={Process.GetCurrentProcess().Id}\r\n" +
                 ":wait\r\n" +
-                "tasklist /FI \"PID eq %PID%\" | find \"%PID%\" >nul && (timeout /t 1 >nul & goto wait)\r\n" +
-                $"move /y \"{fresh}\" \"{exe}\" >nul\r\n" +
+                "tasklist /FI \"PID eq %PID%\" | find \"%PID%\" >nul && (ping -n 2 127.0.0.1 >nul & goto wait)\r\n" +
+                // an antivirus often holds a freshly downloaded exe for a while: keep trying for a minute
+                "set N=0\r\n" +
+                ":swap\r\n" +
+                $"move /y \"{fresh}\" \"{exe}\" >nul 2>&1 && goto run\r\n" +
+                "set /a N+=1\r\n" +
+                "if %N% lss 60 (ping -n 2 127.0.0.1 >nul & goto swap)\r\n" +
+                ":run\r\n" +
                 $"start \"\" \"{exe}\"\r\n");
             Process.Start(new ProcessStartInfo("cmd.exe", $"/c \"{script}\"") { WindowStyle = ProcessWindowStyle.Hidden, CreateNoWindow = true, UseShellExecute = false });
         }

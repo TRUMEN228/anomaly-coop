@@ -199,7 +199,7 @@ namespace CoopLauncher
             RttMs = 0;
             try
             {
-                l.Send(Frame(MsgHello, Encoding.UTF8.GetBytes(ProtocolVersion + "|" + myName)));
+                l.Send(Frame(MsgHello, Encoding.UTF8.GetBytes(ProtocolVersion + "|" + myName + "|" + Updater.CurrentText)));
                 new Thread(() => SendLoop(l, q)) { IsBackground = true, Name = "send" }.Start();
                 var pinger = new Thread(() =>
                 {
@@ -319,6 +319,10 @@ namespace CoopLauncher
                     PeerName = parts.Length > 1 ? parts[1] : "Напарник";
                     Connected = true;
                     Log?.Invoke($"Подключён: {PeerName}");
+                    // same protocol but different builds still play, yet fixes only work when both have them
+                    var peerVer = parts.Length > 2 ? parts[2] : "старее 2.3.5";
+                    if (peerVer != Updater.CurrentText)
+                        Log?.Invoke($"У {PeerName} лаунчер {peerVer}, у вас {Updater.CurrentText}. Обновитесь оба до последней версии, иначе часть исправлений не работает.");
                     ConnectionChanged?.Invoke(true, PeerName);
                     break;
                 }
