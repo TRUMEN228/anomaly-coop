@@ -2,7 +2,8 @@
 $r = 'D:\Projects\stalker_coop'; $t = "$r\local\testA"
 Copy-Item "$r\tests\zz_coop_tradetest.script", "$r\tests\zz_coop_syntax.script" "$t\gamedata\scripts\" -Force
 "1" | Set-Content "$t\appdata\coop_tradetest.txt"; "1" | Set-Content "$t\appdata\coop_debug.txt"
-Stop-Process -Name AnomalyDX11AVX, CoopLauncher -Force -ErrorAction SilentlyContinue; Start-Sleep 2
+Stop-Process -Name AnomalyDX11AVX, CoopLauncher -Force -ErrorAction SilentlyContinue
+Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" | ? { $_.CommandLine -match "wake_game" } | % { Stop-Process -Id $_.ProcessId -Force }; Start-Sleep 2
 Copy-Item "$r\launcher\bin\Release\net48\CoopLauncher.exe" "$r\local\launcherA\" -Force
 foreach ($x in 'coop_out.txt', 'coop_in.txt', 'coop_log.txt', 'coop_syntax.txt') { Remove-Item "$t\appdata\$x" -ErrorAction SilentlyContinue }
 Start-Process powershell -ArgumentList "-NoProfile", "-File", "$r\tests\wake_game.ps1", "-Dir", "$r\local\testA" -WindowStyle Hidden | Out-Null

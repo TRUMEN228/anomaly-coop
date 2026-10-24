@@ -6,7 +6,7 @@ Add-Type 'using System; using System.Runtime.InteropServices; public class Fg { 
 if ($Dir) {
     for ($i = 0; $i -lt 240; $i++) {
         $p = Get-Process AnomalyDX11AVX -ErrorAction SilentlyContinue | Where-Object { $_.Path -like "$Dir\*" } | Select -First 1
-        if ($p -and (Test-Path "$Dirppdata\coop_out.txt") -and (Get-Item "$Dirppdata\coop_out.txt").LastWriteTime -gt $p.StartTime) { break }
+        if ($p -and (Test-Path "$Dir\appdata\coop_out.txt") -and (Get-Item "$Dir\appdata\coop_out.txt").LastWriteTime -gt $p.StartTime) { break }
         Start-Sleep 1
     }
     if (-not $p) { "no game in $Dir"; exit 1 }

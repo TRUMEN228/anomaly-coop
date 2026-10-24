@@ -195,6 +195,7 @@ function action_coop_puppet:step()
 	end
 	-- stuck means no progress for 3 s: on a laggy link the partner's position comes in bursts
 	if dist > SNAP_DIST or now - self.stuck_since > 3000 then
+		if coop_main.debug then coop_main.log(string.format("puppet snapped dist=%.1f stuck=%d", dist, now - self.stuck_since)) end
 		npc:set_npc_position(r.pos)
 		self.stuck_pos = nil
 		return

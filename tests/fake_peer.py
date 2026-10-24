@@ -6,7 +6,7 @@
 The fake player circles around the real player's position, then sends chat, a drop, a hit and a kill
 for the nearest creature from the host's creature list. Everything received is summarised at the end.
 """
-import math, os, socket, struct, sys, time, zlib
+import math, os, random, socket, struct, sys, time, zlib
 
 HELLO, STATE, EVENT, FILE, PING, STATEZ = 1, 2, 3, 4, 5, 6
 PROTO = b"6"
@@ -153,7 +153,7 @@ while time.time() - t0 < secs:
     if time.time() - last_ping > 2:
         last_ping = time.time(); s.sendall(frame(PING, b""))
     t = time.time() - t0
-    if peer_pos and time.time() - last_state > 0.1:
+    if peer_pos and time.time() - last_state > (0.1 if "stamp" not in sys.argv else random.choice((0.05, 0.1, 0.1, 0.4))):
         last_state = time.time()
         lvl, x, y, z, lv, gv = peer_pos
         center = center or (x, y, z)
@@ -162,6 +162,9 @@ while time.time() - t0 < secs:
         if "team" in sys.argv and mode == "host" and t > 85:
             lvl = "jupiter"  # the fake host "leaves" (vertex ids stay Zaton's, so the follow reloads Zaton)
         st = f"s|p|{lvl}|{px:.2f}|{center[1]:.2f}|{pz:.2f}|{a:.2f}|{lv}|{gv}|s|1|wpn_ak74|||1.00|Bot"
+        if "stamp" in sys.argv:
+            # v2.3.3: sender clock in field 20; states sent in uneven bursts like a laggy link
+            st += f"|0||0|0|0|{int(t * 1000)}"
         if "live" in sys.argv:
             # v2.3: stand still in front of the real player; reload, torch, healing, then a knockdown
             px, pz = center[0] + 3, center[2]
