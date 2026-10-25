@@ -33,6 +33,10 @@ Start-Process "$r\local\launcherA\CoopLauncher.exe" -ArgumentList "--auto", "--n
 $t0 = Get-Date
 while (-not (Test-Path "$r\local\testA\appdata\coop_out.txt") -and ((Get-Date) - $t0).TotalSeconds -lt 300) { Start-Sleep 2 }
 "host game up after {0:n0} s" -f ((Get-Date) - $t0).TotalSeconds
+# the first wake can come while the level is still loading: a paused host never sends its world to the guest
+Start-Sleep 15
+$h = Get-Process AnomalyDX11AVX* -ErrorAction SilentlyContinue | ? { $_.Path -like "$r\local\testA\*" } | Select -First 1
+if ($h) { & "$r\tests\wake_game.ps1" -ProcId $h.Id }
 Start-Process powershell -ArgumentList "-NoProfile", "-File", "$r\tests\wake_game.ps1", "-Dir", "$r\local\testB" -WindowStyle Hidden | Out-Null
 Start-Process "$r\local\launcherB\CoopLauncher.exe" -ArgumentList "--auto", "--no-upnp" -WorkingDirectory "$r\local\launcherB" | Out-Null
 while (-not (Test-Path "$r\local\testB\appdata\coop_out.txt") -and ((Get-Date) - $t0).TotalSeconds -lt 600) { Start-Sleep 2 }
