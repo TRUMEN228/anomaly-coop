@@ -12,7 +12,7 @@
 	Event types starting with "@" are handled by the bridge itself.
 --]]
 
-VERSION = "2.4"
+VERSION = "2.5"
 debug = false
 local TICK_MS = 100
 local FAST_MS = 50       -- states marked fast (the partner's position) go both ways twice as often
