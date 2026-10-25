@@ -370,8 +370,9 @@ namespace CoopLauncher
             {
                 // the relay network needs time to come up: start it now, not when the player presses "В Зону"
                 if (settings.Transport != "ip") new System.Threading.Thread(() => { try { SteamNet.Init(out _); } catch { } }) { IsBackground = true }.Start();
-                if (Environment.GetCommandLineArgs().Contains("--auto")) Start();
+                // the engine first: an auto-started session must already run on it
                 await SyncEngine();
+                if (Environment.GetCommandLineArgs().Contains("--auto")) Start();
                 if (Updater.LeftOver() != null)
                     Print("Прошлое обновление не установилось: файл лаунчера был занят (часто его держит антивирус). Нажмите «Обновить» ещё раз.", Theme.Amber);
                 pendingUpdate = await Updater.CheckAsync();
