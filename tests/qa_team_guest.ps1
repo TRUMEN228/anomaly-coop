@@ -2,7 +2,7 @@
 $r = 'D:\Projects\stalker_coop'; $t = "$r\local\testB"
 Copy-Item "$r\tests\zz_coop_teamtest.script", "$r\tests\zz_coop_syntax.script" "$t\gamedata\scripts\" -Force
 "1" | Set-Content "$t\appdata\coop_teamtest.txt"; "1" | Set-Content "$t\appdata\coop_debug.txt"
-Stop-Process -Name AnomalyDX11AVX, CoopLauncher -Force -ErrorAction SilentlyContinue
+Stop-Process -Name AnomalyDX11AVX*, CoopLauncher -Force -ErrorAction SilentlyContinue
 Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" | ? { $_.CommandLine -match "wake_game" } | % { Stop-Process -Id $_.ProcessId -Force }; Start-Sleep 2
 Copy-Item "$r\launcher\bin\Release\net48\CoopLauncher.exe" "$r\local\launcherB\" -Force
 (Get-Content "$r\local\launcherB\coop_launcher.ini") -replace "^mode=.*", "mode=client" -replace "^transport=.*", "transport=ip" | Set-Content "$r\local\launcherB\coop_launcher.ini"

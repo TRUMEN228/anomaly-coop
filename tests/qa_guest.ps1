@@ -1,6 +1,6 @@
 # QA phase 2: protocol-level fake host (serves testA's coop_session) against the real guest launcher + game (testB).
 $r = 'D:\Projects\stalker_coop'
-Stop-Process -Name AnomalyDX11AVX, CoopLauncher -Force -ErrorAction SilentlyContinue
+Stop-Process -Name AnomalyDX11AVX*, CoopLauncher -Force -ErrorAction SilentlyContinue
 Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" | ? { $_.CommandLine -match "wake_game" } | % { Stop-Process -Id $_.ProcessId -Force }; Start-Sleep 2
 Copy-Item "$r\launcher\bin\Release\net48\CoopLauncher.exe" "$r\local\launcherB\" -Force
 foreach ($x in 'coop_out.txt', 'coop_in.txt', 'coop_log.txt') { Remove-Item "$r\local\testB\appdata\$x" -ErrorAction SilentlyContinue }
