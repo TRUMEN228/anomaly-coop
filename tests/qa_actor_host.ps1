@@ -10,7 +10,9 @@ Start-Process powershell -ArgumentList "-NoProfile", "-File", "$r\tests\wake_gam
 Start-Process "$r\local\launcherA\CoopLauncher.exe" -ArgumentList "--auto", "--no-upnp" -WorkingDirectory "$r\local\launcherA" | Out-Null
 for ($i = 0; $i -lt 60 -and -not (Test-Path "$t\appdata\coop_out.txt"); $i++) { Start-Sleep 2 }
 Start-Sleep 5
+$shots = Start-Job { param($r) Start-Sleep 25; for ($k = 1; $k -le 4; $k++) { $g = Get-Process AnomalyDX11AVX* | select -First 1; if ($g) { & "$r\tests\shot.ps1" -ProcId $g.Id -Out "$r\local\shots\actor_$k.png" }; Start-Sleep 10 } } -ArgumentList $r
 python "$r\tests\fake_peer.py" guest 27015 70 stamp fast actor trade | Select-String "events:" | % { $_.Line -replace "'(chat|die|session_ready|unreg|sqm|art)[^']*',? ?", "" }
 Get-Content "$t\appdata\coop_syntax.txt" | ? { $_ -notmatch ': ok$' }
-"--- host log"; Get-Content "$t\appdata\coop_log.txt" | Select-String "TRADETEST|trade:|failed" | % Line
+Wait-Job $shots | Out-Null; if (-not (Get-Process AnomalyDX11AVX* -ErrorAction SilentlyContinue)) { "!!! game process is gone" }
+"--- host log"; Get-Content "$t\appdata\coop_log.txt" | Select-String "TRADETEST|trade:|failed|puppet|actor|error" | % Line
 Remove-Item "$t\appdata\coop_tradetest.txt", "$t\appdata\coop_debug.txt"; Remove-Item "$t\gamedata\scripts\zz_coop_tradetest.script"

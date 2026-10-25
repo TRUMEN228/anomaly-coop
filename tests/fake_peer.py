@@ -172,9 +172,12 @@ while time.time() - t0 < secs:
         st = f"s|p|{lvl}|{px:.2f}|{center[1]:.2f}|{pz:.2f}|{a:.2f}|{lv}|{gv}|s|1|wpn_ak74|||1.00|Bot"
         if "stamp" in sys.argv:
             # v2.3.3: sender clock in field 20; states sent in uneven bursts like a laggy link
-            st += f"|0||0|0|0|{int(t * 1000)}"
+            # actor mode (engine r5): a 2 s burst every 10 s (~10 shots/s), a reload 3 s after each burst
+            shots = int(t // 10) * 20 + min(int((t % 10) * 10), 20) if "actor" in sys.argv else 0
+            reloads = int((t + 5) // 10) if "actor" in sys.argv else 0
+            st += f"|{shots}||{reloads}|0|0|{int(t * 1000)}"
             if "actor" in sys.argv:
-                # v2.6+ (engine r4): movement flags and angles of the sender's actor; it runs the circle
+                # v2.7 (engine r5): movement flags and angles of the sender's actor; it runs the circle
                 # facing its centre, which makes it strafe (mcLStrafe | mcFwd = 5) like a player circling a target
                 st += f"|5|{-a:.4f}:{-a:.4f}:0.0000"
         if "live" in sys.argv:

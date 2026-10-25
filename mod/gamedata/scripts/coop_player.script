@@ -7,7 +7,7 @@
 --]]
 
 local PUPPET_SECTION = "stalker_azazel"
--- co-op engine r4 on both sides: the partner is shown as a second actor (mod_system_coop.ltx) moving with the
+-- co-op engine r5 on both sides: the partner is shown as a second actor (mod_system_coop.ltx) moving with the
 -- partner's own movement flags and angles, so it walks, sprints, strafes, jumps and climbs like a player
 local ACTOR_SECTION = "coop_partner"
 local SNAP_DIST = 20       -- teleport puppet only when hopelessly behind (or after a teleport of the partner)
@@ -354,7 +354,7 @@ local function spawn_puppet()
 	if lvid >= 4294967295 or level.vertex_position(lvid):distance_to(remote.pos) > 30 then
 		lvid = level.vertex_id(remote.pos)
 	end
-	local as_actor = ENGINE >= 4 and remote.mstate ~= nil and ini_sys:section_exist(ACTOR_SECTION)
+	local as_actor = ENGINE >= 5 and remote.mstate ~= nil and ini_sys:section_exist(ACTOR_SECTION)
 	local se = alife_create(as_actor and ACTOR_SECTION or PUPPET_SECTION, remote.pos, lvid, remote.gvid)
 	if not se then return end
 	se:set_character_name(remote.name)
@@ -435,6 +435,41 @@ local function sync_puppet_torch(npc)
 	end
 	local on = remote.torch == true
 	if puppet_torch_on ~= on and pcall(t.enable_attachable_item, t, on) then puppet_torch_on = on end
+end
+
+-- the actor puppet holds the partner's weapon and shows its shots and reloads (the engine draws them)
+local weapon_slot_note = nil
+local dbg_next
+local function hold_actor_weapon(obj)
+	local w = puppet_wpn_id and level.object_by_id(puppet_wpn_id)
+	if not (w and w:parent() and w:parent():id() == obj:id()) then w = nil end
+	local active = obj:active_item()
+	if w and not (active and active:id() == w:id()) then
+		local slot
+		for i = 1, 5 do
+			local it = obj:item_in_slot(i)
+			if it and it:id() == w:id() then slot = i break end
+		end
+		if slot then
+			obj:activate_slot(slot)
+		elseif weapon_slot_note ~= w:id() then
+			weapon_slot_note = w:id()
+			coop_main.log("puppet weapon is not in a slot: " .. w:section())
+		end
+	end
+	if coop_main.debug and time_global() > (dbg_next or 0) then
+		dbg_next = time_global() + 1000
+		local slots = {}
+		for i = 0, 13 do local it = obj:item_in_slot(i); if it then slots[#slots + 1] = i .. "=" .. it:section() end end
+		coop_main.log(string.format("actor puppet wpn=%s parent=%s active=%s slot=%s slots=%s", tostring(puppet_wpn_id),
+			tostring(w and w:parent() and w:parent():id()), tostring(active and active:section()), tostring(obj:active_slot()), table.concat(slots, ","))
+			.. (w and string.format(" state=%s dist=%.2f", tostring(w:get_state()), w:position():distance_to(obj:position())) or ""))
+	end
+	obj:net_actor_fire(w ~= nil and time_global() < fire_until)
+	if reload_pending then
+		reload_pending = false
+		if w then obj:net_actor_reload() end
+	end
 end
 
 local function puppet_weapon()
@@ -546,6 +581,8 @@ local function update()
 	if puppet_is_actor then
 		-- an actor puppet: the engine places and animates it from the partner's state
 		if spawn_pending then setup_actor_puppet(npc) end
+		sync_puppet_weapon(npc)
+		hold_actor_weapon(npc)
 		return
 	end
 	if spawn_pending then setup_puppet(npc) end
