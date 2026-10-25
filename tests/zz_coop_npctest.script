@@ -1,0 +1,64 @@
+-- dev only: when appdata\coop_npctest.txt exists (QA v2.4, E2) the guest picks the nearest stalker and writes it to
+-- appdata\coop_npctest_pick.txt; the fake host then runs it in circles through its "n" state. Every frame the
+-- stalker's step is measured: a smooth engine puppet never jumps, an AI-only one is put back in jumps.
+local active, picked, t0 = false, nil, nil
+local last_pos, frames, jumps, max_step, moved, last_report = nil, 0, 0, 0, 0, 0
+
+local function log(s)
+	local f = io.open(getFS():update_path("$app_data_root$", "coop_npctest_log.txt"), "a")
+	if f then f:write(string.format("[%d] NPCTEST %s\n", time_global(), s)); f:close() end
+end
+
+local function pick()
+	local apos, best, best_d = db.actor:position(), nil, 40
+	for id, st in pairs(db.storage) do
+		local o = st.object
+		if o and id ~= AC_ID and IsStalker(o) and o:alive() and not coop_player.is_puppet(id) then
+			local d = o:position():distance_to(apos)
+			if d < best_d then best, best_d = o, d end
+		end
+	end
+	if not best then return end
+	picked = best:id()
+	local p = best:position()
+	local f = io.open(getFS():update_path("$app_data_root$", "coop_npctest_pick.txt"), "w")
+	f:write(string.format("%d|%s|%.2f|%.2f|%.2f\n", picked, best:section(), p.x, p.y, p.z)); f:close()
+	log(string.format("picked %d %s at %.1f m, engine %d", picked, best:section(), best_d,
+		rawget(_G, "coop_engine_version") and coop_engine_version() or 0))
+end
+
+local function update()
+	if not (active and coop_main.connected and db.actor) then return end
+	local now = time_global()
+	t0 = t0 or now
+	if not picked then
+		if now - t0 > 5000 then pick() end
+		return
+	end
+	local o = level.object_by_id(picked)
+	if not o then return end
+	local p = o:position()
+	if last_pos then
+		local d = p:distance_to(last_pos)
+		frames = frames + 1
+		moved = moved + d
+		if d > max_step then max_step = d end
+		if d > 1 then jumps = jumps + 1 end
+	end
+	last_pos = vector():set(p)
+	if now - last_report > 5000 then
+		if last_report > 0 then
+			log(string.format("frames=%d jumps(>1m)=%d max_step=%.2f speed=%.2f puppet=%s delay=%d", frames, jumps, max_step,
+				moved / ((now - last_report) / 1000), tostring(o.net_puppet_active and o:net_puppet_active()),
+				o.net_puppet_delay and o:net_puppet_delay() or 0))
+		end
+		last_report, frames, jumps, max_step, moved = now, 0, 0, 0, 0
+	end
+end
+
+function on_game_start()
+	local f = io.open(getFS():update_path("$app_data_root$", "coop_npctest.txt"), "r")
+	active = f ~= nil
+	if f then f:close() end
+	RegisterScriptCallback("actor_on_update", update)
+end

@@ -2,6 +2,7 @@
 
   python fake_peer.py guest <port> <secs>            connect to a real host launcher on 127.0.0.1
   python fake_peer.py host  <port> <secs> <save dir> serve <save dir>/coop_session.* to a real guest launcher
+  ... host ... npc <pick file>   run the stalker the guest wrote to <pick file> in circles (QA v2.4, E2)
 
 The fake player circles around the real player's position, then sends chat, a drop, a hit and a kill
 for the nearest creature from the host's creature list. Everything received is summarised at the end.
@@ -129,6 +130,9 @@ reconnect = "reconnect" in sys.argv
 spawn = "spawn" in sys.argv  # host mode: send a squad, a hit, a death and a removal with host ids
 dropped = False
 center = None; last_state = 0; last_ping = 0
+delayed = []; last_release = 0  # fast mode: (release time, frame), delivered in order
+npc, last_npc = None, 0  # npc mode: (id, section, x, y, z) picked by the guest
+npc_path = sys.argv[sys.argv.index("npc") + 1] if "npc" in sys.argv else None
 while time.time() - t0 < secs:
     if reconnect and mode == "guest" and not dropped and time.time() - t0 > secs / 2:
         # guest side: drop, reconnect and claim we are still in the host's world
@@ -153,7 +157,11 @@ while time.time() - t0 < secs:
     if time.time() - last_ping > 2:
         last_ping = time.time(); s.sendall(frame(PING, b""))
     t = time.time() - t0
-    if peer_pos and time.time() - last_state > (0.1 if "stamp" not in sys.argv else random.choice((0.05, 0.1, 0.1, 0.4))):
+    # fast mode (v2.4): a state every 50 ms by the sender clock, each delivered 0-150 ms late, in order
+    while delayed and delayed[0][0] <= time.time():
+        s.sendall(delayed.pop(0)[1])
+    interval = 0.05 if "fast" in sys.argv else 0.1 if "stamp" not in sys.argv else random.choice((0.05, 0.1, 0.1, 0.4))
+    if peer_pos and time.time() - last_state > interval:
         last_state = time.time()
         lvl, x, y, z, lv, gv = peer_pos
         center = center or (x, y, z)
@@ -178,9 +186,25 @@ while time.time() - t0 < secs:
             lines.append("s|dn|1|45")
         if mode == "host":
             lines.append("s|w|0|||0")
+            if npc_path and npc is None and os.path.exists(npc_path):
+                f = open(npc_path).read().strip().split("|")
+                if len(f) == 5:
+                    npc = (f[0], f[1], float(f[2]), float(f[3]), float(f[4]))
+                    print("npc picked", npc)
+            if npc and time.time() - last_npc >= 0.2:
+                # 5 times per second, like the host mod; running in a 3 m circle at ~2.4 m/s
+                last_npc = time.time()
+                na = (time.time() - t0) * 0.8
+                nx, nz = npc[2] + 3 * math.cos(na), npc[4] + 3 * math.sin(na)
+                lines.append(f"s|n|{int((time.time() - t0) * 1000)}|{npc[0]}:{npc[1]}:{nx:.2f}:{npc[3]:.2f}:{nz:.2f}:1.00:0")
             if "team" in sys.argv:
                 lines.append("s|o|1|1|1")  # world state with game time 0: guest must not rewind
-        s.sendall(frame(STATE, "\n".join(lines).encode(enc)))
+        f = frame(STATE, "\n".join(lines).encode(enc))
+        if "fast" in sys.argv:
+            last_release = max(last_release, time.time() + random.uniform(0, 0.15))
+            delayed.append((last_release, f))
+        else:
+            s.sendall(f)
     if spawn and mode == "host" and peer_pos and t > 60 and "sqm" not in sent:
         sent.add("sqm")
         lvl, x, y, z, lv, gv = peer_pos

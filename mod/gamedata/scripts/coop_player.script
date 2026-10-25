@@ -13,7 +13,7 @@ local STOP_DIST = 0.6
 -- co-op engine (TRUMEN228/xray-monolith): the engine places the puppet every frame from the partner's
 -- positions, played back this far behind; with stock exes the script pulls and teleports it as before
 local ENGINE = rawget(_G, "coop_engine_version") and coop_engine_version() or 0
-local NET_DELAY = 200
+local NET_DELAY = ENGINE >= 2 and 0 or 200 -- since engine r2, 0 = the delay follows the link
 
 local remote = nil         -- last partner state
 local remote_time = 0
@@ -95,7 +95,7 @@ coop_main.add_state_provider("p", function()
 		time_global() < heal_until and 1 or 0,
 		time_global(), -- sender's clock: the partner measures speed by it, not by when the state arrived
 	}
-end)
+end, true) -- fast: the engine puppet interpolates between these positions
 
 coop_main.on_state("p", function(t)
 	local r = {
@@ -155,7 +155,7 @@ coop_main.on_state("p", function(t)
 		local npc = level.object_by_id(puppet_id)
 		if npc and npc:net_puppet_active() then npc:net_puppet_push(r.pos, r.stamp) end
 	end
-end)
+end, true)
 
 ------------------------------------------------------------------ puppet driven by the AI planner
 -- Script-mode object actions do not make a stalker shoot, so the puppet runs inside its own AI planner:
@@ -286,7 +286,8 @@ function action_coop_puppet:step()
 
 	if coop_main.debug and now > (self.dbg or 0) then
 		self.dbg = now + 1000
-		coop_main.log(string.format("puppet %s dist=%.2f dist_to_actor=%.2f", state, dist, pos:distance_to(db.actor:position())))
+		coop_main.log(string.format("puppet %s dist=%.2f dist_to_actor=%.2f delay=%d", state, dist, pos:distance_to(db.actor:position()),
+			ENGINE >= 2 and npc:net_puppet_delay() or 0))
 	end
 end
 

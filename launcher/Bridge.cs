@@ -250,7 +250,8 @@ namespace CoopLauncher
                         Interlocked.Add(ref BytesSent, f.Length);
                         continue;
                     }
-                    if ((DateTime.Now - lastState).TotalMilliseconds < 90) continue;
+                    // the game writes the partner's position every 50 ms, everything else every 100 ms
+                    if ((DateTime.Now - lastState).TotalMilliseconds < 45) continue;
                     string text = null;
                     lock (pendingState)
                         if (pendingState.Count > 0)
@@ -490,17 +491,29 @@ namespace CoopLauncher
                         foreach (var e in toGame) sb.Append("e|").Append(e.Key).Append('|').Append(e.Value).Append('\n');
                     }
                     sb.Append("end\n");
-                    File.WriteAllText(inTmp, sb.ToString(), GameEnc);
-                    if (File.Exists(inPath)) File.Replace(inTmp, inPath, null);
-                    else File.Move(inTmp, inPath);
+                    // polled every 25 ms for the partner's position, but written only when something came in
+                    // (or every 100 ms, to show the game the launcher is alive)
+                    var body = sb.ToString();
+                    var content = body.Substring(body.IndexOf('\n'));
+                    if (content != lastInContent || (DateTime.Now - lastInWrite).TotalMilliseconds >= 100)
+                    {
+                        lastInContent = content;
+                        lastInWrite = DateTime.Now;
+                        File.WriteAllText(inTmp, body, GameEnc);
+                        if (File.Exists(inPath)) File.Replace(inTmp, inPath, null);
+                        else File.Move(inTmp, inPath);
+                    }
+                    else --heartbeat;
                 }
                 catch (Exception e) when (e is IOException || e is UnauthorizedAccessException) { }
                 catch (Exception e) { Log?.Invoke("IPC: " + e.Message); }
-                Thread.Sleep(50);
+                Thread.Sleep(25);
             }
         }
 
         long heartbeat;
+        string lastInContent;
+        DateTime lastInWrite;
 
         static byte[] Slice(byte[] b, int off, int len) { var r = new byte[len]; Buffer.BlockCopy(b, off, r, 0, len); return r; }
 
@@ -555,7 +568,7 @@ namespace CoopLauncher
 
             if (Connected)
             {
-                // states that changed go to the sender, which sends the newest of each at most 10 times per second
+                // states that changed go to the sender, which sends the newest of each at most 20 times per second
                 foreach (var line in states)
                 {
                     var tag = line.Split('|')[1];

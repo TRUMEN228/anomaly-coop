@@ -13,6 +13,12 @@ local NPC_SNAP_DIST = 3      -- standing and out of sight
 local NPC_SNAP_MOVING = 10   -- running: the host's position is already behind
 local NPC_SNAP_SEEN = 15     -- in the guest's view: a jump is worse than a small difference
 local npc_last_pos = {}      -- host id -> position from the previous update
+local NPC_SEND_MS = 200      -- host: creature positions 5 times per second
+-- co-op engine r2+: on the guest the engine places the host's creatures every frame between these updates
+-- (their own AI still aims, shoots and talks); with stock exes they are put back only when far off
+local ENGINE = rawget(_G, "coop_engine_version") and coop_engine_version() or 0
+local NPC_PUPPET_HOLD = 6500 -- ms without an update before a creature goes back to the guest's own AI
+local npc_puppets = {}       -- local id -> time of the last update
 
 local applying = false         -- true while we apply a remote event, to avoid echoing it back
 function is_applying() return applying end
@@ -80,7 +86,7 @@ coop_main.add_state_provider("n", function()
 	if not coop_main.is_host() then return end
 	local now = time_global()
 	if now < next_npc_send then return end -- nil = keep the last value on the bridge
-	next_npc_send = now + 1000
+	next_npc_send = now + NPC_SEND_MS
 	local remote = coop_player.get_remote()
 	local apos = db.actor:position()
 	local rpos = remote and remote.level == level.name() and remote.pos
@@ -97,10 +103,10 @@ coop_main.add_state_provider("n", function()
 			if p:distance_to(apos) < NPC_SYNC_RADIUS or (rpos and p:distance_to(rpos) < NPC_SYNC_RADIUS) then
 				local last = npc_sent[id]
 				local rel_now = IsStalker(obj) and obj:relation(db.actor) or 2
-				if not last or last.pos:distance_to(p) > 0.5 or math.abs(last.h - obj.health) > 0.02 or last.rel ~= rel_now then
+				if not last or last.pos:distance_to(p) > 0.1 or math.abs(last.h - obj.health) > 0.02 or last.rel ~= rel_now then
 					npc_sent[id] = { pos = vector():set(p), h = obj.health, rel = rel_now }
 					local rel = IsStalker(obj) and obj:relation(db.actor) or 2
-					list[#list+1] = string.format("%d:%s:%.1f:%.1f:%.1f:%.2f:%d", id, obj:section(), p.x, p.y, p.z, obj.health, rel)
+					list[#list+1] = string.format("%d:%s:%.2f:%.2f:%.2f:%.2f:%d", id, obj:section(), p.x, p.y, p.z, obj.health, rel)
 				end
 			end
 		end
@@ -112,6 +118,8 @@ local last_npc_stamp = nil
 coop_main.on_state("n", function(t)
 	if not coop_main.is_client() or t[1] == last_npc_stamp then return end
 	last_npc_stamp = t[1]
+	local stamp = tonumber(t[1])
+	local now = time_global()
 	applying = true
 	for i = 2, #t do
 		local id, sec, x, y, z, h, rel = t[i]:match("^(%d+):([^:]+):([^:]+):([^:]+):([^:]+):([^:]+):?(%d?)$")
@@ -119,16 +127,22 @@ coop_main.on_state("n", function(t)
 		local obj = id and level.object_by_id(id)
 		if same(obj, sec) and obj:alive() then
 			local pos = vec(x, y, z)
-			-- the host's positions are a second old plus the ping: a running NPC is always a few metres off.
-			-- Put it back only where it does not show, or when it went really far.
-			local off = obj:position():distance_to(pos)
-			local last = npc_last_pos[id]
-			local running = last and last:distance_to(pos) > 1.5
-			npc_last_pos[id] = pos
-			local seen = db.actor and db.actor:see(obj) and obj:position():distance_to(db.actor:position()) < 60
-			local limit = seen and NPC_SNAP_SEEN or (running and NPC_SNAP_MOVING or NPC_SNAP_DIST)
-			if off > limit then
-				obj:set_npc_position(pos)
+			if ENGINE >= 2 and stamp then
+				if not npc_puppets[id] then obj:net_puppet(true, 0) end
+				npc_puppets[id] = now
+				obj:net_puppet_push(pos, stamp)
+			else
+				-- the host's positions are a moment old plus the ping: a running NPC is always a few metres off.
+				-- Put it back only where it does not show, or when it went really far.
+				local off = obj:position():distance_to(pos)
+				local last = npc_last_pos[id]
+				local running = last and last:distance_to(pos) > 1.5
+				npc_last_pos[id] = pos
+				local seen = db.actor and db.actor:see(obj) and obj:position():distance_to(db.actor:position()) < 60
+				local limit = seen and NPC_SNAP_SEEN or (running and NPC_SNAP_MOVING or NPC_SNAP_DIST)
+				if off > limit then
+					obj:set_npc_position(pos)
+				end
 			end
 			h = tonumber(h)
 			if h and h < obj.health - 0.05 then obj:set_health_ex(h) end
@@ -139,6 +153,23 @@ coop_main.on_state("n", function(t)
 		end
 	end
 	applying = false
+	-- out of the host's reach for a while (far away, gone): back to the guest's own AI
+	for id, at in pairs(npc_puppets) do
+		if now - at > NPC_PUPPET_HOLD then release_npc_puppet(id) end
+	end
+end)
+
+function release_npc_puppet(id)
+	local obj = level.object_by_id(id)
+	if obj and obj.net_puppet then obj:net_puppet(false, 0) end
+	npc_puppets[id] = nil
+end
+
+-- the partner left: every creature goes back to the guest's own AI
+coop_main.on_event("_connection", function(a)
+	if a[1] ~= "1" then
+		for id in pairs(npc_puppets) do release_npc_puppet(id) end
+	end
 end)
 
 ------------------------------------------------------------------ damage

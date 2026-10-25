@@ -15,12 +15,13 @@
 VERSION = "2.4"
 debug = false
 local TICK_MS = 100
+local FAST_MS = 50       -- states marked fast (the partner's position) go both ways twice as often
 
 local path_out, path_in
 local sid = nil
 local out_seq, out_queue = 0, {}
 local in_sid, in_last = nil, 0
-local next_tick = 0
+local next_tick, next_fast = 0, 0
 
 -- shared session info, read by other coop_* modules
 role = "none"          -- "host" | "client" | "none" (from bridge)
@@ -33,6 +34,8 @@ local last_in_change, last_in_raw = 0, nil
 local event_handlers = {}
 local state_handlers = {}
 local state_providers = {}
+local fast_tags = {}          -- tag -> true for states read and written every FAST_MS
+local state_lines = {}        -- tag -> the line written last; slow states are kept between full ticks
 
 function esc(s)
 	s = tostring(s or "")
@@ -50,13 +53,15 @@ function on_event(typ, fn)
 	table.insert(event_handlers[typ], fn)
 end
 
-function on_state(tag, fn)
+function on_state(tag, fn, fast)
 	state_handlers[tag] = fn
+	if fast then fast_tags[tag] = true end
 end
 
--- fn() returns a list of fields (without "s|tag") or nil
-function add_state_provider(tag, fn)
+-- fn() returns a list of fields (without "s|tag") or nil; fast = called every FAST_MS, not every TICK_MS
+function add_state_provider(tag, fn, fast)
 	state_providers[tag] = fn
+	if fast then fast_tags[tag] = true end
 end
 
 -- queue a reliable event for the partner (or the bridge when typ starts with "@")
@@ -85,16 +90,20 @@ function log(s)
 	end
 end
 
-local function write_out()
+local function write_out(full)
 	local lines = { "g|" .. sid .. "|" .. in_last .. "|" .. VERSION }
 	for tag, fn in pairs(state_providers) do
-		local ok, fields = pcall(fn)
-		if ok and fields then
-			for i = 1, #fields do fields[i] = esc(fields[i]) end
-			lines[#lines+1] = "s|" .. tag .. "|" .. table.concat(fields, "|")
-		elseif not ok then
-			log("state provider " .. tag .. " failed: " .. tostring(fields))
+		if full or fast_tags[tag] then
+			local ok, fields = pcall(fn)
+			if ok and fields then
+				for i = 1, #fields do fields[i] = esc(fields[i]) end
+				state_lines[tag] = "s|" .. tag .. "|" .. table.concat(fields, "|")
+			else
+				state_lines[tag] = nil
+				if not ok then log("state provider " .. tag .. " failed: " .. tostring(fields)) end
+			end
 		end
+		if state_lines[tag] then lines[#lines+1] = state_lines[tag] end
 	end
 	for i = 1, #out_queue do lines[#lines+1] = out_queue[i][2] end
 	lines[#lines+1] = "end\n"
@@ -114,7 +123,7 @@ local function dispatch_event(typ, args)
 	end
 end
 
-local function read_in()
+local function read_in(full)
 	local f = io.open(path_in, "r")
 	if not f then
 		bridge_alive = false
@@ -153,7 +162,7 @@ local function read_in()
 			if t[7] and t[7] ~= "" then my_name = t[7] end
 		elseif k == "s" then
 			local fn = state_handlers[t[2]]
-			if fn then
+			if fn and (full or fast_tags[t[2]]) then
 				local args = {}
 				for i = 3, #t do args[#args+1] = t[i] end
 				local ok, err = pcall(fn, args)
@@ -182,10 +191,12 @@ end
 
 local function actor_on_update()
 	local now = time_global()
-	if now < next_tick then return end
-	next_tick = now + TICK_MS
-	read_in()
-	write_out()
+	if now < next_fast then return end
+	next_fast = now + FAST_MS
+	local full = now >= next_tick
+	if full then next_tick = now + TICK_MS end
+	read_in(full)
+	write_out(full)
 end
 
 function is_host() return connected and role == "host" end
