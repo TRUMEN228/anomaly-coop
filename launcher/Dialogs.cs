@@ -180,12 +180,13 @@ namespace CoopLauncher
         readonly ZoneCheck ff = new ZoneCheck("Хост: огонь по своим");
         readonly ZoneCheck money = new ZoneCheck("Хост: общие деньги");
         readonly ZoneCheck follow = new ZoneCheck("Переходить на локацию вслед за напарником");
+        readonly ZoneCheck engine = new ZoneCheck("Улучшенный движок (бета): плавный напарник");
         readonly TextBox port = new TextBox();
         readonly Settings settings;
 
         sealed class Key { public string Dik; public override string ToString() => KeysDialog.Pretty(Dik); }
 
-        public OptionsDialog(Settings s) : base("Опции", 440, 642)
+        public OptionsDialog(Settings s) : base("Опции", 440, 712)
         {
             settings = s;
             for (int i = 0; i < Actions.Length; i++)
@@ -210,9 +211,10 @@ namespace CoopLauncher
             ff.Checked = s.FriendlyFire; Add(ff, 24, 470, 392, 26);
             money.Checked = s.SharedMoney; Add(money, 24, 500, 392, 26);
             follow.Checked = s.Follow; Add(follow, 24, 530, 392, 26);
+            engine.Checked = s.CoopEngine; Add(engine, 24, 600, 392, 26);
 
-            var save = Add(new ZoneButton("Сохранить"), 196, 582, 120, 38);
-            var cancel = Add(new ZoneButton("Отмена"), 324, 582, 92, 38);
+            var save = Add(new ZoneButton("Сохранить"), 196, 652, 120, 38);
+            var cancel = Add(new ZoneButton("Отмена"), 324, 652, 92, 38);
             save.Click += (o, e) => Save();
             cancel.Click += (o, e) => { DialogResult = DialogResult.Cancel; Close(); };
         }
@@ -222,6 +224,7 @@ namespace CoopLauncher
             Section(g, "Клавиши в игре", 24, 64, 392);
             Section(g, "Сеть", 24, 284, 392);
             Section(g, "Игра вдвоём", 24, 390, 392);
+            Section(g, "Движок", 24, 580, 392);
         }
 
         void Save()
@@ -245,6 +248,7 @@ namespace CoopLauncher
             settings.FriendlyFire = ff.Checked;
             settings.SharedMoney = money.Checked;
             settings.Follow = follow.Checked;
+            settings.CoopEngine = engine.Checked;
             DialogResult = DialogResult.OK;
             Close();
         }

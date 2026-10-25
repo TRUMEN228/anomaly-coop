@@ -46,6 +46,8 @@ namespace CoopLauncher
         System.Collections.Concurrent.BlockingCollection<byte[]> outbox;
         readonly Dictionary<string, string> pendingState = new Dictionary<string, string>();
         public string PeerName { get; private set; } = "";
+        /// <summary>Co-op engine revision this player runs, 0 for stock exes (see Engine.cs).</summary>
+        public int EngineVersion { get; set; }
 
         // game -> partner
         string gameSid;
@@ -199,7 +201,7 @@ namespace CoopLauncher
             RttMs = 0;
             try
             {
-                l.Send(Frame(MsgHello, Encoding.UTF8.GetBytes(ProtocolVersion + "|" + myName + "|" + Updater.CurrentText)));
+                l.Send(Frame(MsgHello, Encoding.UTF8.GetBytes(ProtocolVersion + "|" + myName + "|" + Updater.CurrentText + "|" + EngineVersion)));
                 new Thread(() => SendLoop(l, q)) { IsBackground = true, Name = "send" }.Start();
                 var pinger = new Thread(() =>
                 {
@@ -323,6 +325,12 @@ namespace CoopLauncher
                     var peerVer = parts.Length > 2 ? parts[2] : "старее 2.3.5";
                     if (peerVer != Updater.CurrentText)
                         Log?.Invoke($"У {PeerName} лаунчер {peerVer}, у вас {Updater.CurrentText}. Обновитесь оба до последней версии, иначе часть исправлений не работает.");
+                    // the engine smooths the partner only on the side that runs it: both should match
+                    int peerEngine = parts.Length > 3 && int.TryParse(parts[3], out var pe) ? pe : 0;
+                    if (peerEngine != EngineVersion)
+                        Log?.Invoke(peerEngine == 0 ? $"У {PeerName} обычный движок, у вас улучшенный: у него ваш персонаж будет двигаться по-старому. Пусть включит «Улучшенный движок» в опциях."
+                            : EngineVersion == 0 ? $"У {PeerName} улучшенный движок, у вас обычный. Включите «Улучшенный движок» в опциях, чтобы напарник двигался плавно."
+                            : $"У {PeerName} улучшенный движок r{peerEngine}, у вас r{EngineVersion}. Перезапустите лаунчер, чтобы обновиться.");
                     ConnectionChanged?.Invoke(true, PeerName);
                     break;
                 }

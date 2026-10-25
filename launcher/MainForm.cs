@@ -371,6 +371,7 @@ namespace CoopLauncher
                 // the relay network needs time to come up: start it now, not when the player presses "В Зону"
                 if (settings.Transport != "ip") new System.Threading.Thread(() => { try { SteamNet.Init(out _); } catch { } }) { IsBackground = true }.Start();
                 if (Environment.GetCommandLineArgs().Contains("--auto")) Start();
+                await SyncEngine();
                 if (Updater.LeftOver() != null)
                     Print("Прошлое обновление не установилось: файл лаунчера был занят (часто его держит антивирус). Нажмите «Обновить» ещё раз.", Theme.Amber);
                 pendingUpdate = await Updater.CheckAsync();
@@ -471,7 +472,7 @@ namespace CoopLauncher
             try { InstallMod(); settings.WriteGameKeys(gameDir.Text); }
             catch (Exception e) { Print("Не удалось установить мод: " + e.Message, Theme.Danger); return; }
 
-            bridge = new Bridge(gameDir.Text, host ? "host" : "client", settings.Nick);
+            bridge = new Bridge(gameDir.Text, host ? "host" : "client", settings.Nick) { EngineVersion = EngineInUse };
             bridge.Log += s => Ui(() => Print(s, Theme.Amber));
             bridge.Chat += (name, text) => Ui(() => Print($"[{name}] {text}", Theme.Text));
             bridge.ConnectionChanged += (up, name) => Ui(() =>
@@ -606,6 +607,17 @@ namespace CoopLauncher
             if (!File.Exists(exe)) exe = Path.Combine(dir, "bin", "AnomalyDX11.exe");
             // the engine appends commandline.txt by itself
             var args = $"-start server({save}/single/alife/load) client(localhost)";
+            int engine = EngineInUse;
+            if (engine > 0)
+            {
+                try
+                {
+                    var (coopExe, fs) = Engine.Prepare(dir, avx == "AVX");
+                    exe = coopExe; args = fs + " " + args;
+                    Print($"Улучшенный движок r{engine}" + (renderer != "DX11" ? $" (работает только на DX11, у вас выбран {renderer})" : ""), Theme.TextDim);
+                }
+                catch (Exception e) { Print("Улучшенный движок не запустился, играем на обычном: " + e.Message, Theme.Danger); }
+            }
             try
             {
                 game = Process.Start(new ProcessStartInfo(exe, args) { WorkingDirectory = dir, UseShellExecute = false });
@@ -688,12 +700,53 @@ namespace CoopLauncher
 
         void EditOptions()
         {
+            bool engineWas = settings.CoopEngine;
             using (var d = new OptionsDialog(settings))
                 if (d.ShowDialog(this) != DialogResult.OK) return;
             settings.Save();
+            if (settings.CoopEngine != engineWas) _ = SyncEngine();
             UpdateHint();
             if (IsGameDir(gameDir.Text)) { try { settings.WriteGameKeys(gameDir.Text); } catch { } }
             Print("Настройки сохранены. Новые клавиши заработают после следующей загрузки сейва.", Theme.TextDim);
+        }
+
+        // ------------------------------------------------------------------ co-op engine
+
+        int EngineInUse => settings.CoopEngine && IsGameDir(gameDir.Text) ? Engine.Installed(gameDir.Text) : 0;
+        bool engineBusy;
+
+        /// <summary>Install, update or remove the co-op engine to match the option.</summary>
+        async System.Threading.Tasks.Task SyncEngine()
+        {
+            var dir = gameDir.Text;
+            if (engineBusy || !IsGameDir(dir)) return;
+            engineBusy = true;
+            try
+            {
+                int have = Engine.Installed(dir);
+                if (!settings.CoopEngine)
+                {
+                    if (have > 0 || Directory.Exists(Path.Combine(dir, "coop_engine")))
+                    {
+                        await System.Threading.Tasks.Task.Run(() => Engine.Uninstall(dir));
+                        Print("Улучшенный движок удалён, игра запускается на обычном.", Theme.TextDim);
+                    }
+                    return;
+                }
+                var r = await Engine.CheckAsync();
+                if (r == null)
+                {
+                    if (have == 0) Print("Не удалось скачать улучшенный движок: нет связи с GitHub. Игра запустится на обычном.", Theme.Danger);
+                    return;
+                }
+                if (r.Version <= have) return;
+                if (GameRunning()) { Print("Улучшенный движок обновится, когда вы закроете игру и перезапустите лаунчер.", Theme.Amber); return; }
+                Print($"Скачиваю улучшенный движок r{r.Version} (около 55 МБ)...", Theme.Amber);
+                await System.Threading.Tasks.Task.Run(() => Engine.Install(dir, r));
+                Print($"Улучшенный движок r{r.Version} установлен. Файлы игры не тронуты: выключить его можно в опциях.", Theme.Amber);
+            }
+            catch (Exception e) { Print("Не удалось установить улучшенный движок: " + e.Message, Theme.Danger); }
+            finally { engineBusy = false; }
         }
 
         void Report(bool crashed)

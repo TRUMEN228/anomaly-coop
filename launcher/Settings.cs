@@ -11,6 +11,7 @@ namespace CoopLauncher
         public int Port = 27015;
         public bool Upnp = true;
         public bool ShareRewards = true, Revive = true, FriendlyFire = false, SharedMoney = false, Follow = true;
+        public bool CoopEngine; // co-op engine exes from TRUMEN228/xray-monolith, see Engine.cs
         public string Transport = "steam"; // "steam" | "ip"
         readonly Dictionary<string, string> keys = new Dictionary<string, string>
         {
@@ -63,6 +64,7 @@ namespace CoopLauncher
                         case "friendly_fire": s.FriendlyFire = v == "1"; break;
                         case "shared_money": s.SharedMoney = v == "1"; break;
                         case "follow": s.Follow = v != "0"; break;
+                        case "coop_engine": s.CoopEngine = v == "1"; break;
                         case "transport": s.Transport = v == "ip" ? "ip" : "steam"; break;
                         default:
                             if (k.StartsWith("key_") && v.Length > 0) s.keys[k.Substring(4)] = v;
@@ -83,7 +85,7 @@ namespace CoopLauncher
                     "game_dir=" + GameDir, "nick=" + Nick, "host_ip=" + HostIp,
                     "mode=" + Mode, "last_save=" + LastSave, "port=" + Port, "upnp=" + (Upnp ? 1 : 0), "share_rewards=" + (ShareRewards ? 1 : 0),
                     "revive=" + (Revive ? 1 : 0), "friendly_fire=" + (FriendlyFire ? 1 : 0), "shared_money=" + (SharedMoney ? 1 : 0),
-                    "follow=" + (Follow ? 1 : 0), "transport=" + Transport };
+                    "follow=" + (Follow ? 1 : 0), "transport=" + Transport, "coop_engine=" + (CoopEngine ? 1 : 0) };
                 foreach (var kv in keys) lines.Add("key_" + kv.Key + "=" + kv.Value);
                 File.WriteAllLines(FilePath, lines);
             }

@@ -32,6 +32,7 @@ namespace CoopLauncher
                 else if (mode == "--selftest-rebind") Rebind();
                 else if (mode == "--selftest-report") Report();
                 else if (mode == "--selftest-slowlink") SlowLink();
+                else if (mode == "--selftest-engine") EngineSetup();
             }
             catch (Exception e) { Check("exception: " + e, false); }
             File.WriteAllText(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "selftest.txt"), report.ToString());
