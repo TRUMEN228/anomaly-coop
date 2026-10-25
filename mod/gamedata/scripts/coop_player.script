@@ -7,6 +7,9 @@
 --]]
 
 local PUPPET_SECTION = "stalker_azazel"
+-- co-op engine r4 on both sides: the partner is shown as a second actor (mod_system_coop.ltx) moving with the
+-- partner's own movement flags and angles, so it walks, sprints, strafes, jumps and climbs like a player
+local ACTOR_SECTION = "coop_partner"
 local SNAP_DIST = 20       -- teleport puppet only when hopelessly behind (or after a teleport of the partner)
 local LEAD_SEC = 0.6       -- aim ahead of the partner by this much of his velocity
 local STOP_DIST = 0.6
@@ -35,6 +38,7 @@ local heal_until = 0         -- the actor is healing until then (medkit, bandage
 local last_remote_reloads = nil
 local reload_pending = false
 local puppet_torch_id, puppet_torch_on = nil, nil
+local puppet_is_actor = false
 
 function get_remote() return remote end
 function get_puppet_id() return puppet_id end
@@ -94,6 +98,8 @@ coop_main.add_state_provider("p", function()
 		(a:object("device_torch") and a:object("device_torch"):torch_enabled()) and 1 or 0,
 		time_global() < heal_until and 1 or 0,
 		time_global(), -- sender's clock: the partner measures speed by it, not by when the state arrived
+		ENGINE >= 4 and a:net_actor_mstate() or "",
+		ENGINE >= 4 and string.format("%.4f:%.4f:%.4f", a:net_actor_angles().x, a:net_actor_angles().y, a:net_actor_angles().z) or "",
 	}
 end, true) -- fast: the engine puppet interpolates between these positions
 
@@ -113,6 +119,9 @@ coop_main.on_state("p", function(t)
 	r.torch = t[18] == "1"
 	r.healing = t[19] == "1"
 	r.stamp = tonumber(t[20])
+	r.mstate = tonumber(t[21])
+	local mx, my, mz = (t[22] or ""):match("^([^:]+):([^:]+):([^:]+)$")
+	if mx then r.angles = vector():set(tonumber(mx), tonumber(my), tonumber(mz)) end
 	-- the same state is read again every tick until a new one arrives: it only proves the partner is there
 	if remote and r.stamp and remote.stamp == r.stamp then
 		remote_time = time_global()
@@ -153,7 +162,10 @@ coop_main.on_state("p", function(t)
 	remote_time = now
 	if ENGINE >= 1 and r.stamp and puppet_id and r.level == level.name() then
 		local npc = level.object_by_id(puppet_id)
-		if npc and npc:net_puppet_active() then npc:net_puppet_push(r.pos, r.stamp) end
+		if npc and npc:net_puppet_active() then
+			npc:net_puppet_push(r.pos, r.stamp)
+			if puppet_is_actor and r.mstate and r.angles then npc:net_actor_state(r.mstate, r.angles) end
+		end
 	end
 end, true)
 
@@ -331,6 +343,7 @@ local function release_puppet()
 	end
 	puppet_id = nil
 	puppet_visual = nil
+	puppet_is_actor = false
 	spawn_pending = false
 	firing = false
 end
@@ -341,15 +354,26 @@ local function spawn_puppet()
 	if lvid >= 4294967295 or level.vertex_position(lvid):distance_to(remote.pos) > 30 then
 		lvid = level.vertex_id(remote.pos)
 	end
-	local se = alife_create(PUPPET_SECTION, remote.pos, lvid, remote.gvid)
+	local as_actor = ENGINE >= 4 and remote.mstate ~= nil and ini_sys:section_exist(ACTOR_SECTION)
+	local se = alife_create(as_actor and ACTOR_SECTION or PUPPET_SECTION, remote.pos, lvid, remote.gvid)
 	if not se then return end
 	se:set_character_name(remote.name)
-	local data = alife_storage_manager.get_se_obj_state(se, true)
-	if data and remote.visual ~= "" then data.visual = remote.visual end
+	if not as_actor then
+		local data = alife_storage_manager.get_se_obj_state(se, true)
+		if data and remote.visual ~= "" then data.visual = remote.visual end
+	end
 	puppet_id = se.id
 	puppet_visual = remote.visual
+	puppet_is_actor = as_actor
 	spawn_pending = true
-	coop_main.log("puppet spawned id=" .. se.id)
+	coop_main.log("puppet spawned id=" .. se.id .. (as_actor and " (actor)" or ""))
+end
+
+local function setup_actor_puppet(obj)
+	spawn_pending = false
+	if remote and remote.visual ~= "" then obj:set_visual_name(remote.visual) end
+	level.map_add_object_spot_ser(obj:id(), "ui_pda2_companion_location", remote and remote.name or "Partner")
+	coop_main.log("puppet is a second actor, driven by the co-op engine v" .. ENGINE)
 end
 
 local function setup_puppet(npc)
@@ -519,6 +543,11 @@ local function update()
 		end
 		return
 	end
+	if puppet_is_actor then
+		-- an actor puppet: the engine places and animates it from the partner's state
+		if spawn_pending then setup_actor_puppet(npc) end
+		return
+	end
 	if spawn_pending then setup_puppet(npc) end
 	sync_puppet_weapon(npc)
 	pcall(sync_puppet_torch, npc)
@@ -602,7 +631,8 @@ local function on_game_load()
 	-- a puppet saved by mistake keeps our character name: release every stalker_azazel that is alive
 	for id = 1, 65534 do
 		local se = alife_object(id)
-		if se and se:section_name() == PUPPET_SECTION and se:alive() and IsStalker(nil, se:clsid()) then
+		if se and ((se:section_name() == PUPPET_SECTION and se:alive() and IsStalker(nil, se:clsid()))
+			or se:section_name() == ACTOR_SECTION) then
 			release_npc(se)
 		end
 	end

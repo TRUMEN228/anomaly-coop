@@ -173,6 +173,10 @@ while time.time() - t0 < secs:
         if "stamp" in sys.argv:
             # v2.3.3: sender clock in field 20; states sent in uneven bursts like a laggy link
             st += f"|0||0|0|0|{int(t * 1000)}"
+            if "actor" in sys.argv:
+                # v2.6+ (engine r4): movement flags and angles of the sender's actor; it runs the circle
+                # facing its centre, which makes it strafe (mcLStrafe | mcFwd = 5) like a player circling a target
+                st += f"|5|{-a:.4f}:{-a:.4f}:0.0000"
         if "live" in sys.argv:
             # v2.3: stand still in front of the real player; reload, torch, healing, then a knockdown
             px, pz = center[0] + 3, center[2]

@@ -22,5 +22,7 @@
     <EmbeddedResource Include="steam\steam_api64.dll" LogicalName="steam\steam_api64.dll" />
     <!-- mod scripts, converted to cp1251 by build.py -->
     <EmbeddedResource Include="..\build\gamedata\scripts\coop_*.script" LogicalName="mod\%(Filename)%(Extension)" />
+    <!-- the partner's actor section for the co-op engine, installed to gamedata\configs -->
+    <EmbeddedResource Include="..\mod\gamedata\configs\mod_system_coop*.ltx" LogicalName="mod\configs\%(Filename)%(Extension)" />
   </ItemGroup>
 </Project>

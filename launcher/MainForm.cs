@@ -426,7 +426,10 @@ namespace CoopLauncher
             int n = 0;
             foreach (var res in asm.GetManifestResourceNames().Where(r => r.StartsWith("mod\\")))
             {
-                var path = Path.Combine(dir, res.Substring(4));
+                // scripts go to gamedata\scripts, "mod\configs\..." (the partner's actor section) to gamedata\configs
+                var rel = res.Substring(4);
+                var path = rel.StartsWith("configs\\") ? Path.Combine(gameDir.Text, "gamedata", rel) : Path.Combine(dir, rel);
+                Directory.CreateDirectory(Path.GetDirectoryName(path));
                 using (var src = asm.GetManifestResourceStream(res))
                 using (var ms = new MemoryStream())
                 {
@@ -450,6 +453,9 @@ namespace CoopLauncher
             int n = 0;
             if (Directory.Exists(dir))
                 foreach (var f in Directory.GetFiles(dir, "coop_*.script")) { File.Delete(f); n++; }
+            var configs = Path.Combine(gameDir.Text, "gamedata", "configs");
+            if (Directory.Exists(configs))
+                foreach (var f in Directory.GetFiles(configs, "mod_system_coop*.ltx")) { File.Delete(f); n++; }
             Print(n > 0 ? $"Мод удалён ({n} файлов). Ваши сейвы не тронуты." : "Мод не установлен.", Theme.TextDim);
         }
 
