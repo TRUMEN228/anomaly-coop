@@ -371,6 +371,10 @@ end
 
 local function setup_actor_puppet(obj)
 	spawn_pending = false
+	-- the engine sends hits on the actor puppet here, without damage
+	obj:set_callback(callback.hit, function(_, amount, dir, who)
+		if who and who:id() == AC_ID then coop_team.partner_hit(amount) end
+	end)
 	if remote and remote.visual ~= "" then obj:set_visual_name(remote.visual) end
 	level.map_add_object_spot_ser(obj:id(), "ui_pda2_companion_location", remote and remote.name or "Partner")
 	coop_main.log("puppet is a second actor, driven by the co-op engine v" .. ENGINE)
