@@ -696,6 +696,26 @@ local function on_game_load()
 	end
 end
 
+-- se_actor registers every actor as a simulation target and fills the world with its start squads once per
+-- game (SIMBOARD keeps no "filled" flag in saves): the partner's actor must do neither, or the loaded world gets
+-- a second population (and the guest crashes on the IDs of the host's world)
+local function hook_se_actor()
+	if rawget(_G, "coop_se_actor_hooked") or not (se_actor and se_actor.se_actor) then return end
+	_G.coop_se_actor_hooked = true
+	local cls = se_actor.se_actor
+	local on_register, on_unregister = cls.on_register, cls.on_unregister
+	cls.on_register = function(self)
+		if self:section_name() ~= ACTOR_SECTION then return on_register(self) end
+		cse_alife_creature_actor.on_register(self)
+		self.m_registred = true
+		self.start_position_filled = true
+	end
+	cls.on_unregister = function(self)
+		if self:section_name() ~= ACTOR_SECTION then return on_unregister(self) end
+		cse_alife_creature_actor.on_unregister(self)
+	end
+end
+
 -- the game switches NPC torches by time of day (sr_light): the puppet's follows the partner instead
 local function hook_lights()
 	if rawget(_G, "coop_lights_hooked") or not (sr_light and sr_light.check_light) then return end
@@ -715,6 +735,7 @@ function on_game_start()
 	RegisterScriptCallback("actor_on_weapon_fired", actor_on_weapon_fired)
 	RegisterScriptCallback("actor_on_weapon_reload", actor_on_weapon_reload)
 	hook_lights()
+	hook_se_actor()
 	RegisterScriptCallback("actor_on_item_use", actor_on_item_use)
 	-- debug: count the puppet's real shots (NPC magazines may not drain in Anomaly)
 	RegisterScriptCallback("npc_shot_dispersion", function(npc)
