@@ -168,6 +168,11 @@ coop_main.on_state("p", function(t)
 		if npc and npc:net_puppet_active() then
 			npc:net_puppet_push(r.pos, r.stamp)
 			if puppet_is_actor and r.mstate and r.angles then npc:net_actor_state(r.mstate, r.angles) end
+			if ENGINE >= 5 and not puppet_is_actor then
+				-- the head and body turn with the partner's look right away (the partner's aim point, else their heading)
+				local look = r.aim and vector():set(r.aim):sub(vector():set(r.pos):add(vector():set(0, 1.6, 0)))
+				npc:net_puppet_look(look and look:magnitude() > 0.5 and look or vector():setHP(r.yaw, 0))
+			end
 		end
 	end
 end, true)
