@@ -259,7 +259,21 @@ on_event("cmd", function(a) dispatch_event("_cmd_" .. (a[1] or ""), { a[2], a[3]
 on_event("chat", function(a) msg(a[1] or "", a[2] or peer_name, "ui_inGame2_PD_Lider") end)
 on_event("info", function(a) msg(a[1] or "") end)
 
+-- Anomaly answers a script error inside an engine call with a "tempsave", then reloads it: in a co-op session that
+-- breaks the session, and a save made while an object is half spawned crashes the game. Log it and play on instead.
+local function hook_fatal_window()
+	local orig = rawget(_G, "COnLuaBindFatalError")
+	if not orig or rawget(_G, "coop_fatal_hooked") then return end
+	_G.coop_fatal_hooked = true
+	_G.COnLuaBindFatalError = function(offender)
+		if not connected then return orig(offender) end
+		log("script error inside an engine call (no tempsave in co-op): " .. tostring(offender))
+		msg("Ошибка скрипта, подробности в coop_log.txt")
+	end
+end
+
 function on_game_start()
+	hook_fatal_window()
 	path_out = getFS():update_path("$app_data_root$", "coop_out.txt")
 	path_in = getFS():update_path("$app_data_root$", "coop_in.txt")
 	local dbgf = io.open(getFS():update_path("$app_data_root$", "coop_debug.txt"), "r")
