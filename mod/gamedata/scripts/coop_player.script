@@ -112,7 +112,8 @@ coop_main.on_state("p", function(t)
 		yaw = tonumber(t[5]) or 0,
 		lvid = tonumber(t[6]) or 0, gvid = tonumber(t[7]) or 0,
 		crouch = t[8] == "c", moving = tonumber(t[9]) or 0,
-		weapon = t[10], outfit = t[11], visual = t[12],
+		-- outfits name the actor model with ".ogf": a stalker's set_visual_name fails on that
+		weapon = t[10], outfit = t[11], visual = (t[12] or ""):gsub("%.[oO][gG][fF]$", ""),
 		health = tonumber(t[13]) or 1, name = t[14] or "Partner",
 		shots = tonumber(t[15]) or 0,
 	}
