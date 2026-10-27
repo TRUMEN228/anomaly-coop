@@ -1,3 +1,4 @@
+# usage: qa_actor_host.ps1 [vis=<outfit model>]
 # QA v2.7 (E4): the same fast fake guest also sends its actor's movement flags and angles; with engine r4 the partner is a second actor.
 $r = 'D:\Projects\stalker_coop'; $t = "$r\local\testA"
 Copy-Item "$r\tests\zz_coop_tradetest.script", "$r\tests\zz_coop_syntax.script" "$t\gamedata\scripts\" -Force
@@ -11,7 +12,7 @@ Start-Process "$r\local\launcherA\CoopLauncher.exe" -ArgumentList "--auto", "--n
 for ($i = 0; $i -lt 60 -and -not (Test-Path "$t\appdata\coop_out.txt"); $i++) { Start-Sleep 2 }
 Start-Sleep 5
 $shots = Start-Job { param($r) Start-Sleep 25; for ($k = 1; $k -le 4; $k++) { $g = Get-Process AnomalyDX11AVX* | select -First 1; if ($g) { & "$r\tests\shot.ps1" -ProcId $g.Id -Out "$r\local\shots\actor_$k.png" }; Start-Sleep 10 } } -ArgumentList $r
-python "$r\tests\fake_peer.py" guest 27015 70 stamp fast actor trade | Select-String "events:" | % { $_.Line -replace "'(chat|die|session_ready|unreg|sqm|art)[^']*',? ?", "" }
+python "$r\tests\fake_peer.py" guest 27015 70 stamp fast actor trade @args | Select-String "events:" | % { $_.Line -replace "'(chat|die|session_ready|unreg|sqm|art)[^']*',? ?", "" }
 Get-Content "$t\appdata\coop_syntax.txt" | ? { $_ -notmatch ': ok$' }
 Wait-Job $shots | Out-Null; if (-not (Get-Process AnomalyDX11AVX* -ErrorAction SilentlyContinue)) { "!!! game process is gone" }
 "--- host log"; Get-Content "$t\appdata\coop_log.txt" | Select-String "TRADETEST|trade:|failed|puppet|actor|error" | % Line

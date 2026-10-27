@@ -169,7 +169,13 @@ while time.time() - t0 < secs:
         px, pz = center[0] + 4 * math.cos(a), center[2] + 4 * math.sin(a)
         if "team" in sys.argv and mode == "host" and t > 85:
             lvl = "jupiter"  # the fake host "leaves" (vertex ids stay Zaton's, so the follow reloads Zaton)
-        st = f"s|p|{lvl}|{px:.2f}|{center[1]:.2f}|{pz:.2f}|{a:.2f}|{lv}|{gv}|s|1|wpn_ak74|||1.00|Bot"
+        # vis=<model>: the fake partner wears that outfit model (as the partner's state names it)
+        vis = next((x[4:] for x in sys.argv if x.startswith("vis=")), "")
+        # nowpn: empty hands (a bolt or nothing); still: stands at one spot
+        wpn = "" if "nowpn" in sys.argv else "wpn_ak74"
+        if "still" in sys.argv:
+            px, pz = center[0] + 3, center[2]
+        st = f"s|p|{lvl}|{px:.2f}|{center[1]:.2f}|{pz:.2f}|{a:.2f}|{lv}|{gv}|s|{0 if 'still' in sys.argv else 1}|{wpn}||{vis}|1.00|Bot"
         if "stamp" in sys.argv:
             # v2.3.3: sender clock in field 20; states sent in uneven bursts like a laggy link
             # actor mode (engine r5): a 2 s burst every 10 s (~10 shots/s), a reload 3 s after each burst
@@ -179,7 +185,10 @@ while time.time() - t0 < secs:
             if "actor" in sys.argv:
                 # v2.7 (engine r5): movement flags and angles of the sender's actor; it runs the circle
                 # facing its centre, which makes it strafe (mcLStrafe | mcFwd = 5) like a player circling a target
-                st += f"|5|{-a:.4f}:{-a:.4f}:0.0000"
+                # mstate=N: send these movement flags whatever the position does
+                ms = next((x[7:] for x in sys.argv if x.startswith("mstate=")), None)
+                ms = ms if ms is not None else (0 if "still" in sys.argv else 5)
+                st += f"|{ms}|{-a:.4f}:{-a:.4f}:0.0000"
         if "live" in sys.argv:
             # v2.3: stand still in front of the real player; reload, torch, healing, then a knockdown
             px, pz = center[0] + 3, center[2]

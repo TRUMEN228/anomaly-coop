@@ -1,0 +1,25 @@
+-- dev only: cycles the engine's coop_actor_exp switch while the actor partner stands, so one stand run compares
+-- several guesses about its T-pose. Logged to coop_log.txt; copy into gamedata\scripts for the run, then remove.
+local modes = { 7, 1, 7, 2, 7 }
+local start, current = nil, nil
+
+local function actor_on_update()
+	local now = time_global()
+	-- the clock starts once the partner's actor is in the level (and stays at 7 until then: no NPC fallback)
+	local id = coop_player.get_puppet_id()
+	if not start and not (id and level.object_by_id(id)) then
+		if current ~= 7 then current = 7; exec_console_cmd("coop_actor_exp 7") end
+		return
+	end
+	start = start or now
+	local i = math.min(#modes, math.floor((now - start) / 12000) + 1)
+	if modes[i] ~= current then
+		current = modes[i]
+		exec_console_cmd("coop_actor_exp " .. current)
+		coop_main.log("TPOSETEST mode " .. current)
+	end
+end
+
+function on_game_start()
+	RegisterScriptCallback("actor_on_update", actor_on_update)
+end
