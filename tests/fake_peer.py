@@ -188,7 +188,9 @@ while time.time() - t0 < secs:
             # actor mode (engine r5): a 2 s burst every 10 s (~10 shots/s), a reload 3 s after each burst
             shots = int(t // 10) * 20 + min(int((t % 10) * 10), 20) if "actor" in sys.argv else 0
             reloads = int((t + 5) // 10) if "actor" in sys.argv else 0
-            st += f"|{shots}||{reloads}|0|0|{int(t * 1000)}"
+            # torch: the torch is on 10 s out of every 20
+            torch = 1 if "torch" in sys.argv and t % 20 >= 10 else 0
+            st += f"|{shots}||{reloads}|{torch}|0|{int(t * 1000)}"
             if "actor" in sys.argv:
                 # v2.7 (engine r5): movement flags and angles of the sender's actor; it runs the circle
                 # facing its centre, which makes it strafe (mcLStrafe | mcFwd = 5) like a player circling a target

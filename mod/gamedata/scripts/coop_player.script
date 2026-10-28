@@ -56,6 +56,23 @@ end
 local actor_pose_checked = false
 local actor_mode_broken = false -- the actor puppet did not animate once: NPC puppets for the rest of the game
 
+-- the player's torch: whatever torch is in the torch slot (outfits and mods bring their own sections)
+local torch_logged = false
+local function torch_on(a)
+	local slot, named = a:item_in_slot(10), a:object("device_torch")
+	if coop_main.debug and not torch_logged then
+		torch_logged = true
+		coop_main.log("my torch: slot=" .. (slot and slot:section() or "nil") .. " device_torch=" .. tostring(named ~= nil))
+	end
+	for _, t in pairs({ slot or false, named or false }) do
+		if t then
+			local ok, on = pcall(t.torch_enabled, t)
+			if ok and on then return true end
+		end
+	end
+	return false
+end
+
 function get_remote() return remote end
 function get_puppet_id() return puppet_id end
 
@@ -111,7 +128,7 @@ coop_main.add_state_provider("p", function()
 		shots,
 		aim_point(),
 		reloads,
-		(a:object("device_torch") and a:object("device_torch"):torch_enabled()) and 1 or 0,
+		torch_on(a) and 1 or 0,
 		time_global() < heal_until and 1 or 0,
 		time_global(), -- sender's clock: the partner measures speed by it, not by when the state arrived
 		ENGINE >= 4 and a:net_actor_mstate() or "",
@@ -474,6 +491,20 @@ local function sync_puppet_torch(npc)
 		return
 	end
 	local on = remote.torch == true
+	if puppet_is_actor then
+		-- an actor shows a torch only from its torch slot, and switches it itself (the engine aims it by the partner's look)
+		local slot = 10
+		if not (npc:item_in_slot(slot) and npc:item_in_slot(slot):id() == t:id()) then
+			pcall(npc.move_to_slot, npc, t, slot)
+			puppet_torch_on = nil
+		end
+		if puppet_torch_on ~= on and pcall(t.enable_torch, t, on) then
+			puppet_torch_on = on
+			local held = npc:item_in_slot(slot)
+			coop_main.log("actor puppet torch " .. (on and "on" or "off") .. (held and held:id() == t:id() and "" or " (not in its slot)"))
+		end
+		return
+	end
 	if puppet_torch_on ~= on and pcall(t.enable_attachable_item, t, on) then puppet_torch_on = on end
 end
 
@@ -636,6 +667,7 @@ local function update()
 		end
 		sync_puppet_weapon(npc)
 		hold_actor_weapon(npc)
+		pcall(sync_puppet_torch, npc)
 		return
 	end
 	if spawn_pending then setup_puppet(npc) end
