@@ -172,10 +172,17 @@ while time.time() - t0 < secs:
         # vis=<model>: the fake partner wears that outfit model (as the partner's state names it)
         vis = next((x[4:] for x in sys.argv if x.startswith("vis=")), "")
         # nowpn: empty hands (a bolt or nothing); still: stands at one spot
-        wpn = "" if "nowpn" in sys.argv else "wpn_ak74"
-        if "still" in sys.argv:
+        # phases: every 12 s the next of (runs, flags 5) (stands, 0) (stands, 5) (runs, 0) (stands, 0, empty hands);
+        # the phase is in the name, Bot1..Bot5
+        still, nowpn, name, phase_ms = "still" in sys.argv, "nowpn" in sys.argv, "Bot", None
+        if "phases" in sys.argv:
+            ph = min(int(t // 12), 4)
+            still, phase_ms, nowpn = (False, True, True, False, True)[ph], (5, 0, 5, 0, 0)[ph], ph == 4
+            name = f"Bot{ph + 1}"
+        wpn = "" if nowpn else "wpn_ak74"
+        if still:
             px, pz = center[0] + 3, center[2]
-        st = f"s|p|{lvl}|{px:.2f}|{center[1]:.2f}|{pz:.2f}|{a:.2f}|{lv}|{gv}|s|{0 if 'still' in sys.argv else 1}|{wpn}||{vis}|1.00|Bot"
+        st = f"s|p|{lvl}|{px:.2f}|{center[1]:.2f}|{pz:.2f}|{a:.2f}|{lv}|{gv}|s|{0 if still else 1}|{wpn}||{vis}|1.00|{name}"
         if "stamp" in sys.argv:
             # v2.3.3: sender clock in field 20; states sent in uneven bursts like a laggy link
             # actor mode (engine r5): a 2 s burst every 10 s (~10 shots/s), a reload 3 s after each burst
@@ -187,7 +194,7 @@ while time.time() - t0 < secs:
                 # facing its centre, which makes it strafe (mcLStrafe | mcFwd = 5) like a player circling a target
                 # mstate=N: send these movement flags whatever the position does
                 ms = next((x[7:] for x in sys.argv if x.startswith("mstate=")), None)
-                ms = ms if ms is not None else (0 if "still" in sys.argv else 5)
+                ms = ms if ms is not None else (phase_ms if phase_ms is not None else (0 if still else 5))
                 st += f"|{ms}|{-a:.4f}:{-a:.4f}:0.0000"
         if "live" in sys.argv:
             # v2.3: stand still in front of the real player; reload, torch, healing, then a knockdown

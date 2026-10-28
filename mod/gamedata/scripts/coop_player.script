@@ -7,7 +7,7 @@
 --]]
 
 local PUPPET_SECTION = "stalker_azazel"
--- co-op engine r5 on both sides: the partner is shown as a second actor (mod_system_coop.ltx) moving with the
+-- co-op engine r6 on both sides: the partner is shown as a second actor (mod_system_coop.ltx) moving with the
 -- partner's own movement flags and angles, so it walks, sprints, strafes, jumps and climbs like a player
 local ACTOR_SECTION = "coop_partner"
 local SNAP_DIST = 20       -- teleport puppet only when hopelessly behind (or after a teleport of the partner)
@@ -40,17 +40,20 @@ local reload_pending = false
 local puppet_torch_id, puppet_torch_on = nil, nil
 local puppet_is_actor = false
 local actor_setup_time = 0
--- the actor partner is still experimental (outfit models freeze or sink on a second actor): only with
--- appdata\coop_actor.txt, otherwise the NPC puppet
-local actor_partner_flag = nil
+-- appdata\coop_actor.txt: "off" shows the partner as the NPC puppet even on engine r6; "keep" never falls back to it
+-- (for tests)
+local actor_partner_flag, actor_partner_keep = nil, false
 local function actor_partner_on()
 	if actor_partner_flag == nil then
 		local f = io.open(getFS():update_path("$app_data_root$", "coop_actor.txt"), "r")
-		actor_partner_flag = f ~= nil
+		local text = f and f:read("*a") or ""
 		if f then f:close() end
+		actor_partner_flag = text:find("off") == nil
+		actor_partner_keep = text:find("keep") ~= nil
 	end
 	return actor_partner_flag
 end
+local actor_pose_checked = false
 local actor_mode_broken = false -- the actor puppet did not animate once: NPC puppets for the rest of the game
 
 function get_remote() return remote end
@@ -373,7 +376,7 @@ local function spawn_puppet()
 	if lvid >= 4294967295 or level.vertex_position(lvid):distance_to(remote.pos) > 30 then
 		lvid = level.vertex_id(remote.pos)
 	end
-	local as_actor = ENGINE >= 5 and actor_partner_on() and not actor_mode_broken and remote.mstate ~= nil and ini_sys:section_exist(ACTOR_SECTION)
+	local as_actor = ENGINE >= 6 and actor_partner_on() and not actor_mode_broken and remote.mstate ~= nil and ini_sys:section_exist(ACTOR_SECTION)
 	local se = alife_create(as_actor and ACTOR_SECTION or PUPPET_SECTION, remote.pos, lvid, remote.gvid)
 	if not se then return end
 	se:set_character_name(remote.name)
@@ -394,6 +397,7 @@ end
 local function setup_actor_puppet(obj)
 	spawn_pending = false
 	actor_setup_time = time_global()
+	actor_pose_checked = false
 	-- the engine sends hits on the actor puppet here, without damage
 	obj:set_callback(callback.hit, function(_, amount, dir, who)
 		if who and who:id() == AC_ID then coop_team.partner_hit(amount) end
@@ -497,7 +501,7 @@ local function hold_actor_weapon(obj)
 		dbg_next = time_global() + 1000
 		local slots = {}
 		for i = 0, 13 do local it = obj:item_in_slot(i); if it then slots[#slots + 1] = i .. "=" .. it:section() end end
-		coop_main.log(string.format("actor puppet wpn=%s parent=%s active=%s slot=%s slots=%s", tostring(puppet_wpn_id),
+		coop_main.log(string.format("actor puppet (%s) wpn=%s parent=%s active=%s slot=%s slots=%s", remote and remote.name or "?", tostring(puppet_wpn_id),
 			tostring(w and w:parent() and w:parent():id()), tostring(active and active:section()), tostring(obj:active_slot()), table.concat(slots, ","))
 			.. (w and string.format(" state=%s dist=%.2f", tostring(w:get_state()), w:position():distance_to(obj:position())) or "")
 			.. string.format(" alive=%s hp=%.2f off=%.2f vis=%s %s", tostring(obj:alive()), obj.health, obj:position():distance_to(remote.pos), tostring(obj:get_visual_name()), obj:net_actor_debug()))
@@ -619,12 +623,16 @@ local function update()
 		-- an actor puppet: the engine places and animates it from the partner's state
 		if spawn_pending then setup_actor_puppet(npc) end
 		-- a model that does not play the actor's motions would stand in a T-pose: fall back to the NPC puppet
-		if time_global() - actor_setup_time > 3000 and not npc:net_actor_animated() then
-			coop_main.log("actor puppet does not animate (" .. npc:net_actor_debug() .. "), visual " ..
-				tostring(npc:get_visual_name()) .. ": NPC puppet instead")
-			actor_mode_broken = true
-			release_puppet()
-			return
+		-- checked once, 3 s in: the check reads the bones as the last frame drew them
+		if not actor_pose_checked and time_global() - actor_setup_time > 3000 then
+			actor_pose_checked = true
+			if not actor_partner_keep and not npc:net_actor_animated() then
+				coop_main.log("actor puppet does not animate (" .. npc:net_actor_debug() .. "), visual " ..
+					tostring(npc:get_visual_name()) .. ": NPC puppet instead")
+				actor_mode_broken = true
+				release_puppet()
+				return
+			end
 		end
 		sync_puppet_weapon(npc)
 		hold_actor_weapon(npc)
