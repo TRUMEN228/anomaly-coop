@@ -4,6 +4,8 @@
 	  coop_out.txt  game -> bridge (rewritten every tick)
 	  coop_in.txt   bridge -> game (rewritten by the bridge)
 	Both files end with an "end" line; a file without it is a partial write and is skipped.
+	v2.9: the launcher names a shared memory block in coop_in.txt (m|<name>); once the game opens it through LuaJIT FFI,
+	the same frames go through it instead (no disk, the partner's state is taken the frame it arrives), see GameLink.cs.
 	Line kinds:
 	  g|<sid>|<ack>|<ver>|<role>   header written by the game (ack = last bridge event applied)
 	  b|<sid>|<ack>|<role>|<connected>|<peer name>|<my name>|<beat>   header written by the bridge (beat changes every write)
@@ -12,7 +14,7 @@
 	Event types starting with "@" are handled by the bridge itself.
 --]]
 
-VERSION = "2.8"
+VERSION = "2.9"
 debug = false
 local TICK_MS = 100
 local FAST_MS = 50       -- states marked fast (the partner's position) go both ways twice as often
@@ -22,6 +24,105 @@ local sid = nil
 local out_seq, out_queue = 0, {}
 local in_sid, in_last = nil, 0
 local next_tick, next_fast = 0, 0
+
+------------------------------------------------------------------ shared memory with the launcher (v2.9)
+-- layout and protocol in launcher\GameLink.cs: channel 0 game -> launcher, channel 1 launcher -> game,
+-- two slots each, frame n in slot n % 2, seq written last
+local SHM_SLOT = 512 * 1024
+local SHM_CHAN = 64 + 2 * SHM_SLOT
+local shm = nil          -- the open block: { ffi, handle, view, base, event, seq_in, seq_out, last_in }
+local shm_tried = nil    -- the last block name tried (a new launcher run brings a new one)
+
+local function shm_ffi()
+	local ffi = rawget(_G, "ffi")
+	if not ffi then
+		local ok, m = pcall(require, "ffi")
+		ffi = ok and m or nil
+	end
+	if not ffi then return nil end
+	-- each on its own: another mod may have declared some of them already
+	for _, d in ipairs({
+		"void* OpenFileMappingA(uint32_t access, int inherit, const char* name);",
+		"void* MapViewOfFile(void* h, uint32_t access, uint32_t off_hi, uint32_t off_lo, size_t n);",
+		"int UnmapViewOfFile(const void* p);",
+		"int CloseHandle(void* h);",
+		"void* OpenEventA(uint32_t access, int inherit, const char* name);",
+		"int SetEvent(void* h);",
+	}) do pcall(ffi.cdef, d) end
+	return ffi
+end
+
+local function shm_open(name)
+	local ffi = shm_ffi()
+	if not ffi then
+		log("launcher link: files (no FFI in this exe)")
+		return
+	end
+	local ok, err = pcall(function()
+		local C = ffi.C
+		local h = C.OpenFileMappingA(0xF001F, 0, name) -- FILE_MAP_ALL_ACCESS
+		if h == nil then error("no block " .. name) end
+		local view = C.MapViewOfFile(h, 0xF001F, 0, 0, 64 + 2 * SHM_CHAN)
+		if view == nil then
+			C.CloseHandle(h)
+			error("cannot map " .. name)
+		end
+		local base = ffi.cast("uint8_t*", view)
+		local head = ffi.cast("uint32_t*", base)
+		if head[0] ~= 0x314F4341 or head[1] ~= SHM_SLOT then
+			C.UnmapViewOfFile(view)
+			C.CloseHandle(h)
+			error("unknown block layout")
+		end
+		local ev = C.OpenEventA(0x0002, 0, name .. "_out") -- EVENT_MODIFY_STATE
+		shm = { ffi = ffi, handle = h, view = view, base = base, event = ev, seq_in = 0,
+			seq_out = ffi.cast("uint32_t*", base + 64)[0], last_in = time_global() }
+	end)
+	log("launcher link: " .. (ok and ("shared memory " .. name) or ("files (" .. tostring(err) .. ")")))
+end
+
+local function shm_close(why)
+	if not shm then return end
+	local s = shm
+	shm = nil
+	pcall(function()
+		local C = s.ffi.C
+		C.UnmapViewOfFile(s.view)
+		C.CloseHandle(s.handle)
+		if s.event ~= nil then C.CloseHandle(s.event) end
+	end)
+	log("launcher link: back to files (" .. why .. ")")
+end
+
+-- the launcher's newest frame, or nil when nothing new came
+local function shm_read()
+	local ffi, chan = shm.ffi, shm.base + 64 + SHM_CHAN
+	local head = ffi.cast("uint32_t*", chan)
+	local seq = head[0]
+	if seq == shm.seq_in then return nil end
+	local slot = seq % 2
+	local len = head[1 + slot]
+	if len > SHM_SLOT then return nil end
+	local raw = ffi.string(chan + 64 + slot * SHM_SLOT, len)
+	if head[0] ~= seq then return nil end -- written twice meanwhile: the next frame takes it
+	shm.seq_in = seq
+	return raw
+end
+
+-- false when the frame does not fit (it goes by file then)
+local function shm_write(text)
+	if #text > SHM_SLOT then return false end
+	local ffi, chan = shm.ffi, shm.base + 64
+	local seq = (shm.seq_out + 1) % 4294967296
+	local slot = seq % 2
+	ffi.copy(chan + 64 + slot * SHM_SLOT, text, #text)
+	local head = ffi.cast("uint32_t*", chan)
+	head[1 + slot] = #text
+	head[0] = seq
+	shm.seq_out = seq
+	if shm.event ~= nil then ffi.C.SetEvent(shm.event) end
+	return true
+end
 
 -- shared session info, read by other coop_* modules
 role = "none"          -- "host" | "client" | "none" (from bridge)
@@ -107,9 +208,11 @@ local function write_out(full)
 	end
 	for i = 1, #out_queue do lines[#lines+1] = out_queue[i][2] end
 	lines[#lines+1] = "end\n"
+	local text = table.concat(lines, "\n")
+	if shm and shm_write(text) then return end
 	local f = io.open(path_out, "w")
 	if f then
-		f:write(table.concat(lines, "\n"))
+		f:write(text)
 		f:close()
 	end
 end
@@ -123,15 +226,27 @@ local function dispatch_event(typ, args)
 	end
 end
 
+-- true when a frame was taken
 local function read_in(full)
-	local f = io.open(path_in, "r")
-	if not f then
-		bridge_alive = false
-		return
+	local raw
+	if shm then
+		raw = shm_read()
+		if not raw then
+			-- the launcher writes at least every 100 ms; silence = it closed (a new run brings a new block by file)
+			if time_global() - shm.last_in > 3000 then shm_close("the launcher stopped writing") end
+			return false
+		end
+		shm.last_in = time_global()
+	else
+		local f = io.open(path_in, "r")
+		if not f then
+			bridge_alive = false
+			return false
+		end
+		raw = f:read("*a")
+		f:close()
 	end
-	local raw = f:read("*a")
-	f:close()
-	if not raw or not raw:find("\nend") then return end -- partial write
+	if not raw or not raw:find("\nend") then return false end -- partial write
 
 	local now = time_global()
 	if raw ~= last_in_raw then
@@ -168,6 +283,11 @@ local function read_in(full)
 				local ok, err = pcall(fn, args)
 				if not ok then log("state " .. t[2] .. " failed: " .. tostring(err)) end
 			end
+		elseif k == "m" then
+			if not shm and t[2] and t[2] ~= shm_tried then
+				shm_tried = t[2]
+				shm_open(t[2])
+			end
 		elseif k == "e" then
 			local id = tonumber(t[2]) or 0
 			if id > in_last then
@@ -187,15 +307,22 @@ local function read_in(full)
 		end
 		dispatch_event("_connection", { connected and "1" or "0" })
 	end
+	return true
 end
 
+local next_tick_in = 0
 local function actor_on_update()
 	local now = time_global()
+	-- through shared memory a frame is taken the moment it comes (states other than fast ones still every TICK_MS)
+	if shm then
+		local full_in = now >= next_tick_in
+		if read_in(full_in) and full_in then next_tick_in = now + TICK_MS end
+	end
 	if now < next_fast then return end
 	next_fast = now + FAST_MS
 	local full = now >= next_tick
 	if full then next_tick = now + TICK_MS end
-	read_in(full)
+	if not shm then read_in(full) end
 	write_out(full)
 end
 

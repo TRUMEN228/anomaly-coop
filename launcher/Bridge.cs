@@ -244,7 +244,7 @@ namespace CoopLauncher
             {
                 while (running && link == l && !q.IsCompleted)
                 {
-                    if (q.TryTake(out var f, 15))
+                    if (q.TryTake(out var f, 5))
                     {
                         l.Send(f);
                         Interlocked.Add(ref BytesSent, f.Length);
@@ -351,6 +351,7 @@ namespace CoopLauncher
                             var p = line.Split('|');
                             if (p.Length >= 2 && p[0] == "s") peerState[p[1]] = line;
                         }
+                    ipcWake.Set();
                     break;
                 }
                 case MsgEvent:
@@ -408,6 +409,7 @@ namespace CoopLauncher
         public void ToGame(string evt)
         {
             lock (sync) toGame.Add(new KeyValuePair<long, string>(++toGameSeq, evt));
+            ipcWake.Set();
         }
 
         public void SendChat(string text)
@@ -458,14 +460,24 @@ namespace CoopLauncher
             var outPath = Path.Combine(appdata, "coop_out.txt");
             var inPath = Path.Combine(appdata, "coop_in.txt");
             var inTmp = inPath + ".tmp";
-            DateTime lastOutStamp = DateTime.MinValue;
+            DateTime lastOutStamp = DateTime.MinValue, lastShmIn = DateTime.MinValue;
             long gameAck = 0;
+            // shared memory with the game (v2.9): its name goes to the game in coop_in.txt; a game that opens it
+            // stops touching the files, and both sides take a frame the moment it is written
+            var shm = GameLink.TryCreate(GameEnc);
+            var wakers = shm != null ? new WaitHandle[] { shm.GameWrote, ipcWake } : new WaitHandle[] { ipcWake };
 
             while (running)
             {
                 try
                 {
-                    // read game output
+                    // read game output: from shared memory, else (older mod, stock exe without FFI, a frame too big) the file
+                    var fromShm = shm?.Read();
+                    if (fromShm != null && fromShm.Contains("\nend"))
+                    {
+                        lastShmIn = lastGameOutWrite = DateTime.Now;
+                        gameAck = ParseGameOut(fromShm);
+                    }
                     var stamp = File.Exists(outPath) ? File.GetLastWriteTimeUtc(outPath) : DateTime.MinValue;
                     if (stamp != lastOutStamp)
                     {
@@ -478,6 +490,7 @@ namespace CoopLauncher
                             gameAck = ParseGameOut(raw);
                         }
                     }
+                    bool gameOnShm = (DateTime.Now - lastShmIn).TotalSeconds < 3;
 
                     // write game input
                     var sb = new StringBuilder();
@@ -490,26 +503,33 @@ namespace CoopLauncher
                         foreach (var line in peerState.Values) sb.Append(line).Append('\n');
                         foreach (var e in toGame) sb.Append("e|").Append(e.Key).Append('|').Append(e.Value).Append('\n');
                     }
+                    if (shm != null) sb.Append("m|").Append(shm.Name).Append('\n');
                     sb.Append("end\n");
-                    // polled every 25 ms for the partner's position, but written only when something came in
-                    // (or every 100 ms, to show the game the launcher is alive)
+                    // written when something came in (or every 100 ms, to show the game the launcher is alive)
                     var body = sb.ToString();
                     var content = body.Substring(body.IndexOf('\n'));
                     if (content != lastInContent || (DateTime.Now - lastInWrite).TotalMilliseconds >= 100)
                     {
                         lastInContent = content;
                         lastInWrite = DateTime.Now;
-                        File.WriteAllText(inTmp, body, GameEnc);
-                        if (File.Exists(inPath)) File.Replace(inTmp, inPath, null);
-                        else File.Move(inTmp, inPath);
+                        if (!(gameOnShm && shm.Write(body)))
+                        {
+                            File.WriteAllText(inTmp, body, GameEnc);
+                            if (File.Exists(inPath)) File.Replace(inTmp, inPath, null);
+                            else File.Move(inTmp, inPath);
+                        }
                     }
                     else --heartbeat;
                 }
                 catch (Exception e) when (e is IOException || e is UnauthorizedAccessException) { }
                 catch (Exception e) { Log?.Invoke("IPC: " + e.Message); }
-                Thread.Sleep(25);
+                // until the game writes or the partner's data comes in; the files are still checked every 25 ms
+                WaitHandle.WaitAny(wakers, 25);
             }
+            shm?.Dispose();
         }
+
+        readonly AutoResetEvent ipcWake = new AutoResetEvent(false);
 
         long heartbeat;
         string lastInContent;

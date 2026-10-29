@@ -31,6 +31,8 @@ local shots = 0            -- local shot counter, sent in the state
 local fire_until = 0       -- puppet keeps firing until this time
 local last_remote_shots = nil
 local puppet_wpn_id, puppet_wpn_sec = nil, nil
+local puppet_wpn_addons = 0  -- addon flags the puppet's weapon was made with: 1 scope, 2 grenade launcher, 4 silencer
+local show_weapon_addons      -- defined with the puppet weapon code below
 local firing = false
 local release_puppet_weapon  -- defined below
 local reloads = 0            -- local reload counter, sent in the state
@@ -90,6 +92,13 @@ function aim_point()
 	return string.format("%.2f:%.2f:%.2f", p.x, p.y, p.z)
 end
 
+-- the addons attached to a firearm (not the built-in ones), as the flags a weapon is spawned with
+local function addon_flags(wpn)
+	if not (wpn and IsWeapon(wpn)) then return 0 end
+	local ok, flag = pcall(utils_item.get_addon_flag, wpn, false)
+	return ok and tonumber(flag) or 0
+end
+
 local function actor_on_weapon_fired(obj, wpn)
 	if obj and obj:id() == AC_ID then shots = shots + 1 end
 end
@@ -133,6 +142,7 @@ coop_main.add_state_provider("p", function()
 		time_global(), -- sender's clock: the partner measures speed by it, not by when the state arrived
 		ENGINE >= 4 and a:net_actor_mstate() or "",
 		ENGINE >= 4 and string.format("%.4f:%.4f:%.4f", a:net_actor_angles().x, a:net_actor_angles().y, a:net_actor_angles().z) or "",
+		addon_flags(wpn),
 	}
 end, true) -- fast: the engine puppet interpolates between these positions
 
@@ -154,6 +164,7 @@ coop_main.on_state("p", function(t)
 	r.healing = t[19] == "1"
 	r.stamp = tonumber(t[20])
 	r.mstate = tonumber(t[21])
+	r.addons = tonumber(t[23]) or 0
 	local mx, my, mz = (t[22] or ""):match("^([^:]+):([^:]+):([^:]+)$")
 	if mx then r.angles = vector():set(tonumber(mx), tonumber(my), tonumber(mz)) end
 	-- the same state is read again every tick until a new one arrives: it only proves the partner is there
@@ -166,9 +177,13 @@ coop_main.on_state("p", function(t)
 	local ax, ay, az = (t[16] or ""):match("^([^:]+):([^:]+):([^:]+)$")
 	if ax then r.aim = vector():set(tonumber(ax), tonumber(ay), tonumber(az)) end
 	if last_remote_shots and r.shots > last_remote_shots then
-		-- ~10 shots per second for automatic fire, keep firing a bit after the last one
-		if coop_main.debug and time_global() > fire_until then coop_main.log("partner burst start") end
-		fire_until = time_global() + 250
+		-- hold the trigger about as long as these shots take at the weapon's rate: a longer hold fires extra shots
+		local now = time_global()
+		if coop_main.debug and now > fire_until then coop_main.log("partner burst start") end
+		local ok, rpm = pcall(SYS_GetParam, 2, puppet_wpn_sec or "", "rpm", 600)
+		local period = 60000 / math.max(ok and tonumber(rpm) or 600, 60)
+		local hold = math.max(30, (r.shots - last_remote_shots) * period * 0.8)
+		fire_until = math.min(math.max(fire_until, now) + hold, now + 400)
 	end
 	last_remote_shots = r.shots
 	if (not remote or remote.level ~= r.level) and r.level ~= last_level_note then
@@ -266,6 +281,7 @@ function action_coop_puppet:step()
 
 	local w = puppet_wpn_id and level.object_by_id(puppet_wpn_id)
 	if w and not (w:parent() and w:parent():id() == npc:id()) then w = nil end
+	show_weapon_addons(w)
 
 	-- knocked down or dead: lie wounded where the partner fell
 	if coop_team.is_partner_down() or (r.health or 1) <= 0 then
@@ -468,17 +484,23 @@ end
 -- give the puppet the partner's weapon (plus its ammo); called while the puppet is online
 local function sync_puppet_weapon(npc)
 	local want = (is_firearm(remote.weapon) or (puppet_is_actor and is_handheld(remote.weapon))) and remote.weapon or nil
-	if want == puppet_wpn_sec and (not want or alife_object(puppet_wpn_id)) then return end
+	local addons = want and is_firearm(want) and remote.addons or 0
+	if want == puppet_wpn_sec and addons == puppet_wpn_addons and (not want or alife_object(puppet_wpn_id)) then return end
 	release_puppet_weapon()
 	if not want then return end
 	local se = alife_create_item(want, npc)
 	if not se then return end
-	puppet_wpn_id, puppet_wpn_sec = se.id, want
+	puppet_wpn_id, puppet_wpn_sec, puppet_wpn_addons = se.id, want, addons
 	local ammo = is_firearm(want) and parse_list(ini_sys, want, "ammo_class")[1]
 	if ammo and ini_sys:section_exist(ammo) then
 		for i = 1, 3 do alife_create_item(ammo, npc) end
 	end
-	coop_main.log("puppet weapon " .. want)
+	coop_main.log("puppet weapon " .. want .. (addons > 0 and (" addons " .. addons) or ""))
+end
+
+-- the partner's scope, silencer and grenade launcher on the weapon once it is in the puppet's hands (engine r7)
+show_weapon_addons = function(w)
+	if ENGINE >= 7 and w and is_firearm(w:section()) then w:net_weapon_addons(puppet_wpn_addons) end
 end
 
 local function sync_puppet_torch(npc)
@@ -514,6 +536,7 @@ local dbg_next
 local function hold_actor_weapon(obj)
 	local w = puppet_wpn_id and level.object_by_id(puppet_wpn_id)
 	if not (w and w:parent() and w:parent():id() == obj:id()) then w = nil end
+	show_weapon_addons(w)
 	local active = obj:active_item()
 	if w and not (active and active:id() == w:id()) then
 		local slot
@@ -540,7 +563,13 @@ local function hold_actor_weapon(obj)
 	obj:net_actor_fire(w ~= nil and time_global() < fire_until)
 	if reload_pending then
 		reload_pending = false
-		if w then obj:net_actor_reload() end
+		-- a full magazine would refuse to reload: the partner's game counts the rounds, here it only shows the reload.
+		-- One round short, not empty: a reload takes from the puppet's few boxes only what the magazine lacks
+		if w then
+			local mag = tonumber(SYS_GetParam(2, w:section(), "ammo_mag_size", 0)) or 0
+			if mag > 1 and w:get_ammo_in_magazine() >= mag then pcall(w.set_ammo_elapsed, w, mag - 1) end
+			obj:net_actor_reload()
+		end
 	end
 end
 

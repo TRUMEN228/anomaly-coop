@@ -20,6 +20,7 @@ local ENGINE = rawget(_G, "coop_engine_version") and coop_engine_version() or 0
 local NPC_PUPPET_HOLD = 6500 -- ms without an update before a creature goes back to the guest's own AI
 local npc_puppets = {}       -- local id -> time of the last update
 local npc_crouched = {}      -- host: ids of the stalkers in the last "n" that crouch (sent as "nb")
+local npc_mental = {}        -- host: "id:state" of the stalkers in the last "n" (sent as "nm"), state as in anim.danger/free/panic
 
 local applying = false         -- true while we apply a remote event, to avoid echoing it back
 function is_applying() return applying end
@@ -97,13 +98,17 @@ coop_main.add_state_provider("n", function()
 		npc_sent = {}
 	end
 	local list = { tostring(now) }
-	local crouched = {}
+	local crouched, mental = {}, {}
 	for id, st in pairs(db.storage) do
 		local obj = st.object
 		if obj and id ~= AC_ID and not coop_player.is_puppet(id) and is_creature(obj) and obj:alive() then
 			local p = obj:position()
 			if p:distance_to(apos) < NPC_SYNC_RADIUS or (rpos and p:distance_to(rpos) < NPC_SYNC_RADIUS) then
-				if IsStalker(obj) and obj:body_state() == move.crouch then crouched[#crouched+1] = tostring(id) end
+				if IsStalker(obj) then
+					if obj:body_state() == move.crouch then crouched[#crouched+1] = tostring(id) end
+					local m = tonumber(obj:mental_state())
+					if m then mental[#mental+1] = id .. ":" .. m end
+				end
 				local last = npc_sent[id]
 				local rel_now = IsStalker(obj) and obj:relation(db.actor) or 2
 				if not last or last.pos:distance_to(p) > 0.1 or math.abs(last.h - obj.health) > 0.02 or last.rel ~= rel_now then
@@ -115,6 +120,7 @@ coop_main.add_state_provider("n", function()
 		end
 	end
 	npc_crouched = crouched
+	npc_mental = mental
 	return list
 end)
 
@@ -134,6 +140,25 @@ coop_main.on_state("nb", function(t)
 	for id in pairs(npc_puppets) do
 		local obj = level.object_by_id(id)
 		if obj and IsStalker(obj) then obj:net_puppet_body(crouch[id] and 0 or 1) end
+	end
+end)
+
+-- how calm the host's stalkers are: the guest's own AI would show them alert at whatever it hears (r7)
+coop_main.add_state_provider("nm", function()
+	if not coop_main.is_host() then return end
+	return { table.concat(npc_mental, ",") }
+end)
+
+coop_main.on_state("nm", function(t)
+	if ENGINE < 7 or not coop_main.is_client() then return end
+	local mental = {}
+	for hid, m in (t[1] or ""):gmatch("(%d+):(%d+)") do
+		local id = coop_spawn.L(hid)
+		if id then mental[id] = tonumber(m) end
+	end
+	for id in pairs(npc_puppets) do
+		local obj = level.object_by_id(id)
+		if obj and IsStalker(obj) then obj:net_puppet_mental(mental[id] or 255) end
 	end
 end)
 

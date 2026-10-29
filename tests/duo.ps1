@@ -31,7 +31,9 @@ Start-Process python -ArgumentList "-u", "$r\tests\lag_relay.py", 27016, 27015, 
 Start-Process powershell -ArgumentList "-NoProfile", "-File", "$r\tests\wake_game.ps1", "-Dir", "$r\local\testA" -WindowStyle Hidden | Out-Null
 Start-Process "$r\local\launcherA\CoopLauncher.exe" -ArgumentList "--auto", "--no-upnp" -WorkingDirectory "$r\local\launcherA" | Out-Null
 $t0 = Get-Date
-while (-not (Test-Path "$r\local\testA\appdata\coop_out.txt") -and ((Get-Date) - $t0).TotalSeconds -lt 300) { Start-Sleep 2 }
+# in the level: coop_out.txt, or with the shared memory link (v2.9) its line in coop_log.txt
+function InLevel($d) { (Test-Path "$d\appdata\coop_out.txt") -or ((Test-Path "$d\appdata\coop_log.txt") -and (Select-String -Path "$d\appdata\coop_log.txt" -Pattern "launcher link" -Quiet)) }
+while (-not (InLevel "$r\local\testA") -and ((Get-Date) - $t0).TotalSeconds -lt 300) { Start-Sleep 2 }
 "host game up after {0:n0} s" -f ((Get-Date) - $t0).TotalSeconds
 # the first wake can come while the level is still loading: a paused host never sends its world to the guest
 Start-Sleep 15
@@ -39,7 +41,7 @@ $h = Get-Process AnomalyDX11AVX* -ErrorAction SilentlyContinue | ? { $_.Path -li
 if ($h) { & "$r\tests\wake_game.ps1" -ProcId $h.Id }
 Start-Process powershell -ArgumentList "-NoProfile", "-File", "$r\tests\wake_game.ps1", "-Dir", "$r\local\testB" -WindowStyle Hidden | Out-Null
 Start-Process "$r\local\launcherB\CoopLauncher.exe" -ArgumentList "--auto", "--no-upnp" -WorkingDirectory "$r\local\launcherB" | Out-Null
-while (-not (Test-Path "$r\local\testB\appdata\coop_out.txt") -and ((Get-Date) - $t0).TotalSeconds -lt 600) { Start-Sleep 2 }
+while (-not (InLevel "$r\local\testB") -and ((Get-Date) - $t0).TotalSeconds -lt 600) { Start-Sleep 2 }
 "guest game up after {0:n0} s" -f ((Get-Date) - $t0).TotalSeconds
 Start-Sleep 20
 "--- relay"; Get-Content "$r\local\relay.log"
