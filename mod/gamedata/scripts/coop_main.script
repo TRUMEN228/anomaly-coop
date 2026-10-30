@@ -14,7 +14,7 @@
 	Event types starting with "@" are handled by the bridge itself.
 --]]
 
-VERSION = "2.10"
+VERSION = "2.10.1"
 debug = false
 local TICK_MS = 100
 local FAST_MS = 50       -- states marked fast (the partner's position) go both ways twice as often
@@ -443,8 +443,20 @@ local function hook_fatal_window()
 	end
 end
 
+-- the task list of an NPC without script storage (the partner, an NPC not bound yet) crashed vanilla dialogs
+local function guard_task_dialogs()
+	if rawget(_G, "coop_tasks_guarded") or not (axr_task_manager and axr_task_manager.generate_available_tasks) then return end
+	_G.coop_tasks_guarded = true
+	local generate = axr_task_manager.generate_available_tasks
+	axr_task_manager.generate_available_tasks = function(npc, is_sim)
+		if not (npc and db.storage[npc:id()]) then return end
+		return generate(npc, is_sim)
+	end
+end
+
 function on_game_start()
 	hook_fatal_window()
+	pcall(guard_task_dialogs)
 	path_out = getFS():update_path("$app_data_root$", "coop_out.txt")
 	path_in = getFS():update_path("$app_data_root$", "coop_in.txt")
 	local dbgf = io.open(getFS():update_path("$app_data_root$", "coop_debug.txt"), "r")

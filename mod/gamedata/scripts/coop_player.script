@@ -378,7 +378,10 @@ end
 ------------------------------------------------------------------ puppet lifecycle
 -- alife_release() ignores stalkers without a squad (it only removes them through the squad), so release directly
 local function release_npc(se)
-	if se then alife():release(se, true) end
+	if not se then return end
+	-- an error inside this engine call would end the game (no tempsave in co-op): log it instead
+	local ok, err = pcall(function() alife():release(se, true) end)
+	if not ok then coop_main.log("release of " .. tostring(se.id) .. " failed: " .. tostring(err)) end
 end
 
 local function release_puppet()
@@ -429,6 +432,8 @@ end
 
 local function setup_actor_puppet(obj)
 	spawn_pending = false
+	-- "use" on the partner would open a dialog with an actor that has no script storage (crashed in the task list)
+	pcall(obj.disable_talk, obj)
 	actor_setup_time = time_global()
 	actor_pose_checked = false
 	-- the engine sends hits on the actor puppet here, without damage
@@ -485,7 +490,10 @@ end
 local function sync_puppet_weapon(npc)
 	local want = (is_firearm(remote.weapon) or (puppet_is_actor and is_handheld(remote.weapon))) and remote.weapon or nil
 	local addons = want and is_firearm(want) and remote.addons or 0
-	if want == puppet_wpn_sec and addons == puppet_wpn_addons and (not want or alife_object(puppet_wpn_id)) then return end
+	-- a bolt in an actor's hands may have no server object while it is online: the item in its hands counts too
+	-- (looking only at alife made a new bolt every tick, and the flood of spawns crashed the game)
+	local have = puppet_wpn_id and (alife_object(puppet_wpn_id) or level.object_by_id(puppet_wpn_id))
+	if want == puppet_wpn_sec and addons == puppet_wpn_addons and (not want or have) then return end
 	release_puppet_weapon()
 	if not want then return end
 	local se = alife_create_item(want, npc)
