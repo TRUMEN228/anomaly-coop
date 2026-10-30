@@ -1,0 +1,136 @@
+<?xml version="1.0" encoding="windows-1251"?>
+<!-- Anomaly Co-op: the "Network game" page of the main menu (coop_menu.script), styled like the load page -->
+<w>
+	<background x="0" y="0" width="1024" height="768">
+		<auto_static x="0" y="0" width="1024" height="768" stretch="1">
+			<texture x="0" y="0" width="1280" height="768">ui\ui_actor_main_menu_one</texture>
+		</auto_static>
+	</background>
+
+	<dialog x="192" y="104" width="640" height="560">
+		<background x="0" y="0" width="640" height="560" stretch="1">
+			<texture>ui_inGame2_opt_main_window</texture>
+		</background>
+		<caption x="24" y="10" width="592" height="30">
+			<text font="graffiti22" r="170" g="170" b="170" align="c" vert_align="c">Сетевая игра</text>
+		</caption>
+
+		<cap_nick x="32" y="62" width="140" height="28">
+			<text font="letterica18" r="170" g="170" b="170" align="l" vert_align="c">Ваш ник</text>
+		</cap_nick>
+		<fld_nick x="180" y="60" width="240" height="30">
+			<text x="3" font="letterica18" complex_mode="0" vert_align="c" align="l"/>
+			<texture>ui_inGame2_edit_box_2</texture>
+		</fld_nick>
+
+		<cap_host x="32" y="104" width="576" height="26">
+			<text font="letterica18" r="215" g="195" b="150" align="l" vert_align="c">Создать игру</text>
+		</cap_host>
+		<cap_save x="32" y="136" width="140" height="24">
+			<text font="letterica16" r="170" g="170" b="170" align="l" vert_align="c">Сейв</text>
+		</cap_save>
+		<list_saves x="180" y="138" width="260" height="20">
+			<list_font r="170" g="170" b="170" font="letterica16"/>
+			<text_color>
+				<e r="170" g="170" b="170"/>
+				<d r="70" g="70" b="70"/>
+			</text_color>
+		</list_saves>
+		<btn_host_steam x="180" y="172" width="170" height="28">
+			<text font="letterica16" align="c">Через Steam</text>
+			<texture>ui_button_ordinary</texture>
+			<text_color><e r="210" g="210" b="210"/></text_color>
+		</btn_host_steam>
+		<btn_host_ip x="360" y="172" width="170" height="28">
+			<text font="letterica16" align="c">По IP, порт</text>
+			<texture>ui_button_ordinary</texture>
+			<text_color><e r="210" g="210" b="210"/></text_color>
+		</btn_host_ip>
+		<fld_port x="536" y="171" width="72" height="30">
+			<text x="3" font="letterica18" complex_mode="0" vert_align="c" align="l"/>
+			<texture>ui_inGame2_edit_box_2</texture>
+		</fld_port>
+
+		<cap_join x="32" y="220" width="576" height="26">
+			<text font="letterica18" r="215" g="195" b="150" align="l" vert_align="c">Подключиться</text>
+		</cap_join>
+		<cap_friend x="32" y="252" width="140" height="24">
+			<text font="letterica16" r="170" g="170" b="170" align="l" vert_align="c">Друг в Steam</text>
+		</cap_friend>
+		<list_friends x="180" y="254" width="260" height="20">
+			<list_font r="170" g="170" b="170" font="letterica16"/>
+			<text_color>
+				<e r="170" g="170" b="170"/>
+				<d r="70" g="70" b="70"/>
+			</text_color>
+		</list_friends>
+		<btn_refresh x="450" y="250" width="158" height="28">
+			<text font="letterica16" align="c">Обновить</text>
+			<texture>ui_button_ordinary</texture>
+			<text_color><e r="210" g="210" b="210"/></text_color>
+		</btn_refresh>
+		<btn_join_steam x="180" y="286" width="170" height="28">
+			<text font="letterica16" align="c">Войти к другу</text>
+			<texture>ui_button_ordinary</texture>
+			<text_color><e r="210" g="210" b="210"/></text_color>
+		</btn_join_steam>
+		<cap_ip x="32" y="324" width="140" height="24">
+			<text font="letterica16" r="170" g="170" b="170" align="l" vert_align="c">IP хоста:порт</text>
+		</cap_ip>
+		<fld_ip x="180" y="321" width="260" height="30">
+			<text x="3" font="letterica18" complex_mode="0" vert_align="c" align="l"/>
+			<texture>ui_inGame2_edit_box_2</texture>
+		</fld_ip>
+		<btn_join_ip x="450" y="322" width="158" height="28">
+			<text font="letterica16" align="c">Войти по IP</text>
+			<texture>ui_button_ordinary</texture>
+			<text_color><e r="210" g="210" b="210"/></text_color>
+		</btn_join_ip>
+
+		<cap_options x="32" y="366" width="576" height="26">
+			<text font="letterica18" r="215" g="195" b="150" align="l" vert_align="c">Правила (решает хост)</text>
+		</cap_options>
+		<check_ff x="40" y="396" width="32" height="21" vert_align="c">
+			<texture>ui_inGame2_checkbox</texture>
+			<text x="-8" font="letterica16" r="170" g="170" b="170">Огонь по своим</text>
+		</check_ff>
+		<check_money x="330" y="396" width="32" height="21" vert_align="c">
+			<texture>ui_inGame2_checkbox</texture>
+			<text x="-8" font="letterica16" r="170" g="170" b="170">Общие деньги</text>
+		</check_money>
+		<check_rewards x="40" y="422" width="32" height="21" vert_align="c">
+			<texture>ui_inGame2_checkbox</texture>
+			<text x="-8" font="letterica16" r="170" g="170" b="170">Награда за задания обоим</text>
+		</check_rewards>
+		<check_revive x="330" y="422" width="32" height="21" vert_align="c">
+			<texture>ui_inGame2_checkbox</texture>
+			<text x="-8" font="letterica16" r="170" g="170" b="170">Нокдаун вместо смерти</text>
+		</check_revive>
+		<check_follow x="40" y="448" width="32" height="21" vert_align="c">
+			<texture>ui_inGame2_checkbox</texture>
+			<text x="-8" font="letterica16" r="170" g="170" b="170">Переход на локацию за напарником</text>
+		</check_follow>
+
+		<status x="32" y="480" width="576" height="26">
+			<text font="letterica16" r="230" g="200" b="120" align="l" vert_align="c" complex_mode="1"/>
+		</status>
+		<update x="24" y="20" width="200" height="22">
+			<text font="letterica16" r="120" g="200" b="120" align="l" vert_align="c"/>
+		</update>
+		<btn_update x="32" y="516" width="140" height="28">
+			<text font="letterica16" align="c">Обновить</text>
+			<texture>ui_button_ordinary</texture>
+			<text_color><e r="210" g="210" b="210"/></text_color>
+		</btn_update>
+		<btn_stop x="180" y="516" width="170" height="28">
+			<text font="letterica16" align="c">Отключиться</text>
+			<texture>ui_button_ordinary</texture>
+			<text_color><e r="210" g="210" b="210"/></text_color>
+		</btn_stop>
+		<btn_back x="438" y="516" width="170" height="28">
+			<text font="letterica16" align="c">Назад</text>
+			<texture>ui_button_ordinary</texture>
+			<text_color><e r="210" g="210" b="210"/></text_color>
+		</btn_back>
+	</dialog>
+</w>

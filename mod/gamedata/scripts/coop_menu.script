@@ -1,0 +1,381 @@
+--[[
+	Anomaly Co-op: the "Network game" entry of the main menu, in place of CoopLauncher (co-op engine r8).
+	The engine calls before_main_menu() before it makes the main menu (the scripts' own callbacks are only
+	registered once a game starts) and puts main_menu_entry() into the main list; the entry opens a page to host
+	or join through Steam or by IP, and to set the rules. Its settings go to appdata\coop_keys.txt, which the mod reads (the launcher wrote it before).
+	A guest that joins from the main menu enters the host's world as soon as it arrives.
+--]]
+
+local ENGINE = rawget(_G, "coop_engine_version") and coop_engine_version() or 0
+local DEFAULT_PORT = 27015
+local OPTIONS = { "ff", "money", "rewards", "revive", "follow" }
+local DEFAULTS = { ff = false, money = false, rewards = true, revive = true, follow = true }
+
+local function keys_path() return getFS():update_path("$app_data_root$", "coop_keys.txt") end
+
+-- coop_keys.txt as "name=value" lines in their order (keys, options, nick, port, save)
+local function read_settings()
+	local list, map = {}, {}
+	local f = io.open(keys_path(), "r")
+	if f then
+		for line in f:lines() do
+			local k, v = line:match("^%s*([%w_]+)%s*=%s*(.-)%s*$")
+			if k then
+				list[#list + 1] = k
+				map[k] = v
+			end
+		end
+		f:close()
+	end
+	return list, map
+end
+
+local function write_settings(list, map)
+	local f = io.open(keys_path(), "w")
+	if not f then return end
+	for _, k in ipairs(list) do f:write(k .. "=" .. tostring(map[k]) .. "\n") end
+	f:close()
+end
+
+local function set_settings(changes)
+	local list, map = read_settings()
+	for k, v in pairs(changes) do
+		if map[k] == nil then list[#list + 1] = k end
+		map[k] = v
+	end
+	write_settings(list, map)
+end
+
+local function in_game() return level.present() and db.actor ~= nil end
+
+-- "load" works only inside a running game; from the main menu a save starts as the load page starts it
+local function load_world(name)
+	if alife() == nil then
+		exec_console_cmd("disconnect")
+		exec_console_cmd("start server(" .. name .. "/single/alife/load) client(localhost)")
+	else
+		exec_console_cmd("load " .. name)
+	end
+end
+
+-- script namespaces load on first use (rawget would not see one that has not been used yet)
+local function version() return coop_main.VERSION or "" end
+
+local poll_link, open_menu, menu_wnd -- the main menu entry, below
+local update_checked = false
+
+------------------------------------------------------------------ the window
+class "CoopMenu" (CUIScriptWnd)
+
+function CoopMenu:__init(owner) super()
+	self.owner = owner
+	self.loading = false
+	self:SetWndRect(Frect():set(0, 0, 1024, 768))
+	local xml = CScriptXmlInit()
+	xml:ParseFile("ui_coop_menu.xml")
+	xml:InitStatic("background", self)
+	local dlg = xml:InitStatic("dialog", self)
+	xml:InitStatic("dialog:background", dlg)
+	xml:InitStatic("dialog:caption", dlg)
+	for _, cap in ipairs({ "cap_nick", "cap_host", "cap_save", "cap_join", "cap_friend", "cap_ip", "cap_options" }) do
+		xml:InitStatic("dialog:" .. cap, dlg)
+	end
+	self.nick = xml:InitEditBox("dialog:fld_nick", dlg)
+	self.saves = xml:InitComboBox("dialog:list_saves", dlg)
+	self.port = xml:InitEditBox("dialog:fld_port", dlg)
+	self.friends = xml:InitComboBox("dialog:list_friends", dlg)
+	self.ip = xml:InitEditBox("dialog:fld_ip", dlg)
+	self.checks = {}
+	for _, o in ipairs(OPTIONS) do self.checks[o] = xml:InitCheck("dialog:check_" .. o, dlg) end
+	self.status = xml:InitTextWnd("dialog:status", dlg)
+	self.update = xml:InitTextWnd("dialog:update", dlg)
+	self.btn_update = xml:Init3tButton("dialog:btn_update", dlg)
+	self:Register(self.btn_update, "btn_update")
+	self:AddCallback("btn_update", ui_events.BUTTON_CLICKED, self.OnUpdate, self)
+
+	for _, b in ipairs({ "btn_host_steam", "btn_host_ip", "btn_refresh", "btn_join_steam", "btn_join_ip", "btn_stop", "btn_back" }) do
+		self:Register(xml:Init3tButton("dialog:" .. b, dlg), b)
+	end
+	self:AddCallback("btn_host_steam", ui_events.BUTTON_CLICKED, self.OnHostSteam, self)
+	self:AddCallback("btn_host_ip", ui_events.BUTTON_CLICKED, self.OnHostIp, self)
+	self:AddCallback("btn_refresh", ui_events.BUTTON_CLICKED, self.FillFriends, self)
+	self:AddCallback("btn_join_steam", ui_events.BUTTON_CLICKED, self.OnJoinSteam, self)
+	self:AddCallback("btn_join_ip", ui_events.BUTTON_CLICKED, self.OnJoinIp, self)
+	self:AddCallback("btn_stop", ui_events.BUTTON_CLICKED, self.OnStop, self)
+	self:AddCallback("btn_back", ui_events.BUTTON_CLICKED, self.OnBack, self)
+	self:Load()
+end
+
+function CoopMenu:Load()
+	local _, map = read_settings()
+	self.nick:SetText(map.nick or "")
+	self.port:SetText(map.port or tostring(DEFAULT_PORT))
+	self.ip:SetText(map.host_ip or "")
+	for _, o in ipairs(OPTIONS) do
+		local v = map[o]
+		if v == nil then self.checks[o]:SetCheck(DEFAULTS[o]) else self.checks[o]:SetCheck(v ~= "0") end
+	end
+	self:FillSaves(map.last_save)
+	self.friend_ids = {}
+	self.status:SetText("")
+	-- once a run: is there a newer release
+	if not update_checked then
+		update_checked = true
+		coop_update_check(version())
+	end
+	self:ShowUpdate()
+end
+
+-- "available|2.10" and the like: a line at the top and the button that goes with it
+function CoopMenu:ShowUpdate()
+	local s = coop_update_status()
+	local k, v = s:match("^(%a+)|?(.*)")
+	local text, button = "", nil
+	if k == "available" then text, button = "Есть версия " .. v, "Обновить"
+	elseif k == "downloading" then text = "Скачиваю " .. v .. "..."
+	elseif k == "ready" then text, button = "Версия " .. v .. " скачана", "Установить"
+	elseif k == "error" then text = "Обновление: " .. v end
+	self.update:SetText(text)
+	self.btn_update:Show(button ~= nil)
+	if button then self.btn_update:TextControl():SetText(button) end
+end
+
+function CoopMenu:OnUpdate()
+	local k = coop_update_status():match("^(%a+)")
+	if k == "available" then
+		coop_update_download()
+	elseif k == "ready" then
+		-- unpacked over the game once it has quit; the player starts it again
+		if coop_update_apply() then
+			self.status:SetText("Игра закроется и обновится, затем запустите её снова")
+			exec_console_cmd("quit")
+		else
+			self.status:SetText("Не удалось запустить установку обновления")
+		end
+	end
+	self:ShowUpdate()
+end
+
+function CoopMenu:FillSaves(last)
+	self.saves:ClearList()
+	self.save_names = {}
+	local ext = ".scop"
+	local flist = getFS():file_list_open_ex("$game_saves$", bit_or(FS.FS_ListFiles, FS.FS_RootOnly), "*" .. ext)
+	flist:Sort(FS.FS_sort_by_modif_down)
+	local pick = nil
+	for i = 0, flist:Size() - 1 do
+		local full = flist:GetAt(i):NameFull()
+		local name = full:sub(1, #full - #ext)
+		-- the guest's copy of the host's world is not a world to host
+		if name ~= "coop_session" then
+			self.save_names[#self.save_names + 1] = name
+			self.saves:AddItem(name, #self.save_names - 1)
+			if name == last then pick = name end
+		end
+	end
+	pick = pick or self.save_names[1]
+	if pick then self.saves:SetText(pick) end
+end
+
+function CoopMenu:FillFriends()
+	self.friends:ClearList()
+	self.friend_ids = {}
+	local raw = coop_link_friends() or ""
+	for name, lobby in raw:gmatch("([^|\n]*)|(%d+)\n") do
+		self.friend_ids[#self.friend_ids + 1] = { name = name, lobby = lobby }
+		self.friends:AddItem(name, #self.friend_ids - 1)
+	end
+	if self.friend_ids[1] then
+		self.friends:SetText(self.friend_ids[1].name)
+		self.status:SetText("Друзей с открытой игрой: " .. #self.friend_ids)
+	else
+		self.status:SetText("Никто из друзей в Steam сейчас не создал игру")
+	end
+end
+
+-- the rules and the nick for the mod (the host's rules count for both)
+function CoopMenu:Save(extra)
+	local changes = extra or {}
+	local nick = self.nick:GetText()
+	if nick ~= "" then changes.nick = nick end
+	for _, o in ipairs(OPTIONS) do changes[o] = self.checks[o]:GetCheck() and 1 or 0 end
+	set_settings(changes)
+	coop_main.reload_options()
+end
+
+function CoopMenu:Nick()
+	local n = self.nick:GetText()
+	return n ~= "" and n or "Stalker"
+end
+
+-- host: start the link, then the chosen world (in a game already: keep playing in it)
+function CoopMenu:StartHost(steam)
+	local save = self.saves:GetText()
+	if not in_game() and (not save or save == "") then
+		self.status:SetText("Нет сейва: начните новую игру, сохранитесь и создайте кооператив из неё")
+		return
+	end
+	local port = tonumber(self.port:GetText()) or DEFAULT_PORT
+	self:Save({ last_save = save or "", port = port })
+	local ok
+	if steam then ok = coop_link_host_steam(self:Nick(), version())
+	else ok = coop_link_host(port, self:Nick(), version()) end
+	if not ok then
+		self.status:SetText(self:StatusText())
+		return
+	end
+	if in_game() then
+		self.status:SetText("Игра открыта. Напарник войдёт в ваш мир, когда подключится")
+		self:Close()
+		return
+	end
+	self.loading = true
+	self:Close(true)
+	load_world(save)
+end
+
+function CoopMenu:OnHostSteam() self:StartHost(true) end
+function CoopMenu:OnHostIp() self:StartHost(false) end
+
+function CoopMenu:OnJoinSteam()
+	local i = self.friends:CurrentID()
+	local f = i and self.friend_ids[i + 1]
+	if not f then
+		self:FillFriends()
+		return
+	end
+	self:Save()
+	coop_link_join_steam(f.lobby, self:Nick(), version())
+	self.status:SetText("Подключаюсь к " .. f.name .. "...")
+end
+
+function CoopMenu:OnJoinIp()
+	local text = self.ip:GetText()
+	local addr, port = text:match("^%s*([^:%s]+):?(%d*)%s*$")
+	if not addr then
+		self.status:SetText("Введите IP хоста, например 192.168.0.5:27015")
+		return
+	end
+	self:Save({ host_ip = text })
+	coop_link_join(addr, tonumber(port) or DEFAULT_PORT, self:Nick(), version())
+	self.status:SetText("Подключаюсь к " .. addr .. "...")
+end
+
+function CoopMenu:OnStop()
+	coop_link_stop()
+	self.status:SetText("Отключено")
+end
+
+function CoopMenu:StatusText()
+	local s = coop_link_status()
+	local k, a, b, c = s:match("^(%a+)|?([^|]*)|?([^|]*)|?([^|]*)")
+	if k == "connected" then
+		return "Подключён: " .. a .. (tonumber(b) and tonumber(b) > 0 and (", пинг " .. b .. " мс") or "")
+	elseif k == "listening" then return "Ждём напарника..."
+	elseif k == "connecting" then return "Подключаюсь..."
+	elseif k == "starting" then return "Запускаю Steam..."
+	elseif k == "error" then return "Ошибка: " .. a
+	end
+	return ""
+end
+
+function CoopMenu:Update()
+	CUIScriptWnd.Update(self)
+	if self.owner then pcall(poll_link, self.owner) end
+	local now = time_global()
+	if now < (self.next_poll or 0) then return end
+	self.next_poll = now + 250
+	local text = self:StatusText()
+	if text ~= "" then self.status:SetText(text) end
+	self:ShowUpdate()
+end
+
+function CoopMenu:OnKeyboard(dik, action)
+	local res = CUIScriptWnd.OnKeyboard(self, dik, action)
+	if not res and action == ui_events.WINDOW_KEY_PRESSED and dik == DIK_keys.DIK_ESCAPE then
+		self:OnBack()
+		return true
+	end
+	return res
+end
+
+function CoopMenu:OnBack()
+	self:Save()
+	self:Close()
+end
+
+-- back to the main menu, or (loading a world) just away
+function CoopMenu:Close(loading)
+	self:HideDialog()
+	if not loading and self.owner then
+		self.owner:ShowDialog(true)
+		self.owner:Show(true)
+	end
+end
+
+------------------------------------------------------------------ the main menu entry
+local patched = false
+
+open_menu = function(main)
+	if not menu_wnd then menu_wnd = CoopMenu(main) end
+	menu_wnd.owner = main
+	menu_wnd.loading = false
+	menu_wnd:Load()
+	menu_wnd:ShowDialog(true)
+	main:HideDialog()
+	main:Show(false)
+end
+
+-- a guest out of a game goes into the host's world the moment it arrives; a Steam invite joins right away
+local next_poll = 0
+poll_link = function(main)
+	local now = time_global()
+	if now < next_poll then return end
+	next_poll = now + 250
+	local lobby = coop_link_invite()
+	if lobby and lobby ~= "" then
+		local _, map = read_settings()
+		coop_link_join_steam(lobby, map.nick or "Stalker", version())
+		open_menu(main)
+		return
+	end
+	if coop_link_take_session() and not in_game() then
+		if menu_wnd and menu_wnd:IsShown() then menu_wnd:Close(true) end
+		load_world("coop_session")
+	end
+end
+
+-- the entry itself is in the main list (the engine puts it there, named "btn_coop")
+local function add_entry(main)
+	main:AddCallback("btn_coop", ui_events.BUTTON_CLICKED, function() open_menu(main) end, main)
+end
+
+-- the engine asks for the entry's caption while it builds the main list; nothing = no entry
+function main_menu_entry()
+	if ENGINE < 8 then return "" end
+	return "Сетевая игра"
+end
+
+-- called by the engine (r8) before each main menu is made
+function before_main_menu()
+	if patched or ENGINE < 8 or not (ui_main_menu and ui_main_menu.main_menu) then return end
+	patched = true
+	local init = ui_main_menu.main_menu.InitControls
+	ui_main_menu.main_menu.InitControls = function(self, ...)
+		init(self, ...)
+		local ok, err = pcall(add_entry, self)
+		if not ok then printf("! coop menu: %s", tostring(err)) end
+	end
+	local update = ui_main_menu.main_menu.Update
+	ui_main_menu.main_menu.Update = function(self, ...)
+		update(self, ...)
+		local ok, err = pcall(poll_link, self)
+		if not ok then
+			printf("! coop menu: %s", tostring(err))
+			next_poll = time_global() + 5000
+		end
+	end
+	-- a Steam invite ("Join game") or a test's appdata\coop_link.txt: start right away
+	local ok, err = pcall(function() coop_main.start_link_from_menu() end)
+	if not ok then printf("! coop menu: %s", tostring(err)) end
+end

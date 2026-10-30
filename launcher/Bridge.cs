@@ -16,7 +16,8 @@ namespace CoopLauncher
     /// </summary>
     public sealed class Bridge : IDisposable
     {
-        public const string ProtocolVersion = "6";
+        // 7: states go uncompressed, so the link in the co-op engine (r8) needs no inflate
+        public const string ProtocolVersion = "7";
         const byte MsgHello = 1, MsgState = 2, MsgEvent = 3, MsgFile = 4, MsgPing = 5, MsgStateZ = 6, MsgPong = 7;
 
         public static readonly Encoding GameEnc = Encoding.GetEncoding(1251);
@@ -295,17 +296,8 @@ namespace CoopLauncher
             try { q.Add(Frame(type, payload)); } catch (InvalidOperationException) { } // link just closed
         }
 
-        static byte[] StateFrame(string text)
-        {
-            var raw = GameEnc.GetBytes(text);
-            if (raw.Length < 512) return Frame(MsgState, raw);
-            using (var ms = new MemoryStream())
-            {
-                using (var z = new System.IO.Compression.DeflateStream(ms, System.IO.Compression.CompressionLevel.Fastest, true))
-                    z.Write(raw, 0, raw.Length);
-                return Frame(MsgStateZ, ms.ToArray());
-            }
-        }
+        // protocol 7: never compressed (MsgStateZ is still read, from nobody now)
+        static byte[] StateFrame(string text) => Frame(MsgState, GameEnc.GetBytes(text));
 
         void Handle(byte type, byte[] buf, int off, int len)
         {

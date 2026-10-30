@@ -33,6 +33,37 @@ local SHM_CHAN = 64 + 2 * SHM_SLOT
 local shm = nil          -- the open block: { ffi, handle, view, base, event, seq_in, seq_out, last_in }
 local shm_tried = nil    -- the last block name tried (a new launcher run brings a new one)
 
+------------------------------------------------------------------ the link in the engine (r8), without the launcher
+-- the engine keeps the connection itself (coop_link.cpp) and swaps with the script the same frames as the files.
+-- Until the in-game menu, appdata\coop_link.txt starts it: "host 27015" or "join 1.2.3.4 27015", "name Nick"
+local ENGINE = rawget(_G, "coop_engine_version") and coop_engine_version() or 0
+local link_on = false
+
+local function start_link()
+	if ENGINE < 8 then return end
+	if coop_link_status() ~= "idle" then
+		link_on = true -- kept across level loads
+		return
+	end
+	local f = io.open(getFS():update_path("$app_data_root$", "coop_link.txt"), "r")
+	if not f then return end
+	local mode, addr, port, name
+	for line in f:lines() do
+		local k, a, b = line:match("^%s*(%a+)%s+(%S+)%s*(%S*)")
+		if k == "host" then mode, port = "host", tonumber(a)
+		elseif k == "join" then mode, addr, port = "join", a, tonumber(b)
+		elseif k == "name" then name = line:match("^%s*name%s+(.-)%s*$") end
+	end
+	f:close()
+	name = name or "Stalker"
+	if mode == "host" then link_on = coop_link_host(port or 27015, name, VERSION)
+	elseif mode == "join" and addr then link_on = coop_link_join(addr, port or 27015, name, VERSION) end
+	log("engine link: " .. tostring(mode) .. " " .. tostring(addr or "") .. " " .. tostring(port) .. " -> " .. coop_link_status())
+end
+
+-- the main menu (coop_menu.script) starts a test's or a returning player's link before any game is loaded
+function start_link_from_menu() start_link() end
+
 local function shm_ffi()
 	local ffi = rawget(_G, "ffi")
 	if not ffi then
@@ -209,6 +240,10 @@ local function write_out(full)
 	for i = 1, #out_queue do lines[#lines+1] = out_queue[i][2] end
 	lines[#lines+1] = "end\n"
 	local text = table.concat(lines, "\n")
+	if link_on then
+		coop_link_out(text)
+		return
+	end
 	if shm and shm_write(text) then return end
 	local f = io.open(path_out, "w")
 	if f then
@@ -229,7 +264,10 @@ end
 -- true when a frame was taken
 local function read_in(full)
 	local raw
-	if shm then
+	if link_on then
+		raw = coop_link_in()
+		if not raw then return false end
+	elseif shm then
 		raw = shm_read()
 		if not raw then
 			-- the launcher writes at least every 100 ms; silence = it closed (a new run brings a new block by file)
@@ -314,7 +352,7 @@ local next_tick_in = 0
 local function actor_on_update()
 	local now = time_global()
 	-- through shared memory a frame is taken the moment it comes (states other than fast ones still every TICK_MS)
-	if shm then
+	if shm or link_on then
 		local full_in = now >= next_tick_in
 		if read_in(full_in) and full_in then next_tick_in = now + TICK_MS end
 	end
@@ -322,7 +360,7 @@ local function actor_on_update()
 	next_fast = now + FAST_MS
 	local full = now >= next_tick
 	if full then next_tick = now + TICK_MS end
-	if not shm then read_in(full) end
+	if not (shm or link_on) then read_in(full) end
 	write_out(full)
 end
 
@@ -346,6 +384,9 @@ local function load_keys()
 	end
 	f:close()
 end
+
+-- the co-op menu changed coop_keys.txt
+function reload_options() options = nil end
 
 -- launcher option (true/false); def when the launcher did not write it
 function option(name, def)
@@ -381,6 +422,9 @@ local function on_key_press(key)
 	end
 end
 
+-- what the launcher's window would show, from the engine link
+on_event("note", function(a) msg(a[1] or "") end)
+
 -- commands typed into the bridge window arrive as "cmd" events
 on_event("cmd", function(a) dispatch_event("_cmd_" .. (a[1] or ""), { a[2], a[3], a[4] }) end)
 on_event("chat", function(a) msg(a[1] or "", a[2] or peer_name, "ui_inGame2_PD_Lider") end)
@@ -413,5 +457,6 @@ function on_game_start()
 	out_seq, out_queue, in_sid, in_last = 0, {}, nil, 0
 	RegisterScriptCallback("actor_on_update", actor_on_update)
 	load_keys()
+	start_link()
 	RegisterScriptCallback("on_key_press", on_key_press)
 end
