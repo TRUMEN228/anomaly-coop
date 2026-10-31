@@ -1,0 +1,126 @@
+--[[
+	Anomaly Co-op: a conversation with an NPC is seen by both players.
+	The co-op engine (r10) calls on_line for every line of a talk window as it appears: the NPC's and the talker's.
+	The line goes to the partner, whose game shows the conversation on screen like subtitles: who talks to whom,
+	then the last lines with their speakers. They stay while the talk window is open on the talker's side and for
+	a while after; the whole last conversation comes back with Num5.
+--]]
+
+local MAX_LINES = 7
+local HISTORY_LINES = 14
+local AFTER_MS = 15000  -- the lines stay this long after the talker closed the talk window
+local PANEL = nil
+local lines = {}        -- { text, until }: on screen
+local history = {}      -- the last conversation, all of it
+local last_other = nil
+local talking = false   -- this player's own talk window
+
+function on_line(speaker, text, other)
+	if not (coop_main.connected and db.actor) or not text or text == "" then return end
+	coop_main.send("dlg", db.actor:character_name(), speaker or "", text, other or "")
+end
+
+class "UICoopTalk" (CUIScriptWnd)
+
+function UICoopTalk:__init() super()
+	local xml = utils_xml.get_hud_xml()
+	self.text = xml:InitTextWnd("companion_list:slot:distance", self)
+	local ok, font = pcall(function() return GetFontLetterica16Russian() end)
+	self.text:SetFont(ok and font or GetFontSmall())
+	self.text:SetTextComplexMode(true)
+	self.text:SetWndPos(vector2():set(30, 300))
+	self.text:SetWndSize(vector2():set(560, 330))
+	self.text:SetTextAlignment(0)
+	self.text:SetVTextAlignment(0)
+	self.shown_text = nil
+end
+
+function UICoopTalk:__finalize() end
+
+function UICoopTalk:Update()
+	CUIScriptWnd.Update(self)
+	local now = time_global()
+	local keep = {}
+	for _, l in ipairs(lines) do
+		if l[2] > now then keep[#keep + 1] = l end
+	end
+	lines = keep
+	local text = ""
+	if #lines > 0 and main_hud_shown() then
+		local parts = {}
+		for _, l in ipairs(lines) do parts[#parts + 1] = l[1] end
+		text = table.concat(parts, "\\n")
+	end
+	if text ~= self.shown_text then
+		self.shown_text = text
+		self.text:SetText(text)
+	end
+end
+
+-- a line stays until the talk is over (math.huge), then AFTER_MS more
+local function add(text)
+	lines[#lines + 1] = { text, math.huge }
+	while #lines > MAX_LINES do table.remove(lines, 1) end
+	history[#history + 1] = text
+	while #history > HISTORY_LINES do table.remove(history, 1) end
+end
+
+coop_main.on_event("dlg", function(a)
+	if not db.actor then return end
+	local who, speaker, text, other = a[1] or "", a[2] or "", a[3] or "", a[4] or ""
+	if #text > 260 then text = text:sub(1, 257) .. "..." end
+	-- a new conversation (or the same NPC after a pause) starts with who talks to whom
+	if other ~= last_other or #lines == 0 then
+		last_other = other
+		history = {}
+		add(string.format("%%c[255,240,200,120]%s говорит с %s%%c[default]", who, other))
+	end
+	local color = speaker == other and "%c[255,200,200,190]" or "%c[255,150,210,255]"
+	add(string.format("%s%s:%%c[default] %s", color, speaker, text))
+end)
+
+-- the talker closed its talk window: the lines go after a while
+coop_main.on_event("dlg_end", function()
+	local at = time_global() + AFTER_MS
+	for _, l in ipairs(lines) do
+		if l[2] > at then l[2] = at end
+	end
+end)
+
+-- Num5: the whole last conversation again, for a while
+coop_main.on_event("_cmd_talk", function()
+	if #history == 0 then
+		coop_main.msg("Разговоров напарника пока не было")
+		return
+	end
+	lines = {}
+	local at = time_global() + 30000
+	for _, text in ipairs(history) do lines[#lines + 1] = { text, at } end
+end)
+
+-- this player's talk window closing tells the partner the conversation is over
+local function actor_on_update()
+	local now_talking = db.actor:is_talking()
+	if talking and not now_talking and coop_main.connected then coop_main.send("dlg_end") end
+	talking = now_talking
+end
+
+local function show_panel()
+	if PANEL or not get_hud() then return end
+	PANEL = UICoopTalk()
+	get_hud():AddDialogToRender(PANEL)
+end
+
+local function hide_panel()
+	if PANEL then
+		get_hud():RemoveDialogToRender(PANEL)
+		PANEL = nil
+	end
+	lines = {}
+end
+
+function on_game_start()
+	RegisterScriptCallback("actor_on_first_update", show_panel)
+	RegisterScriptCallback("actor_on_update", actor_on_update)
+	RegisterScriptCallback("actor_on_net_destroy", hide_panel)
+end

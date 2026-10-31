@@ -40,7 +40,7 @@ local heal_until = 0         -- the actor is healing until then (medkit, bandage
 local last_remote_reloads = nil
 local reload_pending = false
 local puppet_torch_id, puppet_torch_on = nil, nil
-local puppet_flash_id, puppet_flash_sec = nil, nil -- the hand flashlight the actor puppet carries (engine r9)
+local puppet_flash_id, puppet_flash_sec = nil, nil -- the hand device the actor puppet carries (engine r9: a flashlight, r10: a detector too)
 local puppet_is_actor = false
 local actor_setup_time = 0
 -- appdata\coop_actor.txt: "off" shows the partner as the NPC puppet even on engine r6; "keep" never falls back to it
@@ -94,18 +94,18 @@ function aim_point()
 end
 
 -- the addons attached to a firearm (not the built-in ones), as the flags a weapon is spawned with
--- the hand flashlight out (a device held like a detector): its section, or ""
+-- the device in the player's left hand: a flashlight or a detector
 local function hand_flashlight(a)
 	local d = a.active_detector and a:active_detector()
-	if not d then return "" end
-	local sec = d:section()
-	return ini_sys:r_string_ex(sec, "class") == "D_FLALIT" and sec or ""
+	return d and d:section() or ""
 end
 
--- the partner's hand flashlight: the actor puppet gets one of the same kind and the engine lights it
+-- the partner's hand device: the actor puppet gets one of the same kind and the engine shows it in its left hand
+-- (a flashlight shines); engines before r10 show only a flashlight's light
 local function sync_puppet_flashlight(npc)
 	if ENGINE < 9 then return end
 	local want = remote and remote.flashlight or ""
+	if ENGINE < 10 and want ~= "" and ini_sys:r_string_ex(want, "class") ~= "D_FLALIT" then want = "" end
 	if want ~= "" and want ~= puppet_flash_sec then
 		if puppet_flash_id then
 			local se = alife_object(puppet_flash_id)

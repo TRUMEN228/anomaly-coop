@@ -10,7 +10,7 @@
     <Nullable>disable</Nullable>
     <AssemblyName>AnomalyCoopSetup</AssemblyName>
     <RootNamespace>CoopLauncher</RootNamespace>
-    <Version>2.11.0</Version>
+    <Version>2.12.0</Version>
     <DefineConstants>$(DefineConstants);COOP_INSTALLER</DefineConstants>
     <ApplicationManifest>..\launcher\app.manifest</ApplicationManifest>
     <GenerateAssemblyInfo>true</GenerateAssemblyInfo>

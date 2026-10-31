@@ -775,7 +775,30 @@ function main_menu_entry()
 end
 
 -- called by the engine (r8) before each main menu is made
+-- for making the partner's poses: appdata\coop_extract.txt lists game files ("actors\x.ogf" under meshes, or
+-- "visual:<item section>") to copy out of the game's archives into appdata\extract
+local function extract_files()
+	local fs = getFS()
+	local f = io.open(fs:update_path("$app_data_root$", "coop_extract.txt"), "r")
+	if not f then return end
+	for line in f:lines() do
+		line = line:gsub("%s+$", "")
+		local sec = line:match("^visual:(.+)$")
+		local rel = sec and ini_sys:r_string_ex(sec, "visual") or line
+		if rel and rel ~= "" then
+			rel = rel:gsub("/", "\\")
+			if not rel:find("%.%w+$") then rel = rel .. ".ogf" end
+			local src = fs:update_path("$game_meshes$", rel)
+			local dst = fs:update_path("$app_data_root$", "extract\\" .. rel)
+			local ok = fs:exist(src) and pcall(fs.file_copy, fs, src, dst)
+			printf("coop extract %s -> %s", src, ok and dst or "missing")
+		end
+	end
+	f:close()
+end
+
 function before_main_menu()
+	pcall(extract_files)
 	if patched or ENGINE < 8 or not (ui_main_menu and ui_main_menu.main_menu) then return end
 	patched = true
 	local init = ui_main_menu.main_menu.InitControls

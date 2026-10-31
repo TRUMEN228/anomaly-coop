@@ -115,9 +115,27 @@ function portrait()
 	return b and b.character_icon or ""
 end
 
+-- the F1-F4 quick slots (item sections): they live in the save, so a guest would get the host's
+local function quick_slots()
+	local q = {}
+	for i = 0, 3 do
+		local ok, v = pcall(function() return get_console():get_string("slot_" .. i) end)
+		q[#q + 1] = coop_main.esc(ok and v or "")
+	end
+	return q
+end
+
+local function set_quick_slots(q)
+	for i = 0, 3 do
+		local v = q and q[i + 1] or ""
+		exec_console_cmd("slot_" .. i .. " " .. (v ~= "" and v or ""))
+	end
+end
+
 local function character_lines()
 	local lines = { "v|1", "m|" .. db.actor:money(), "n|" .. coop_main.esc(db.actor:character_name()),
-		"f|" .. coop_main.esc(db.actor:character_community()), "p|" .. coop_main.esc(portrait()) }
+		"f|" .. coop_main.esc(db.actor:character_community()), "p|" .. coop_main.esc(portrait()),
+		"q|" .. table.concat(quick_slots(), "|") }
 	db.actor:iterate_inventory(function(_, obj)
 		if obj and SKIP[obj:section()] ~= true then lines[#lines+1] = item_line(obj) end
 	end, nil)
@@ -180,6 +198,10 @@ local function read_character()
 			c.money = tonumber(t[2]) or 0
 		elseif t[1] == "p" then
 			c.icon = t[2]
+		elseif t[1] == "q" then
+			c.quick = { t[2] or "", t[3] or "", t[4] or "", t[5] or "" }
+		elseif t[1] == "n" then
+			c.name = t[2]
 		elseif t[1] == "i" then
 			local upg = {}
 			for u in (t[6] or ""):gmatch("[^,]+") do upg[#upg+1] = u end
@@ -340,6 +362,15 @@ local function import_character()
 	end
 	db.actor:give_money(c.money - db.actor:money())
 	if c.icon and c.icon ~= "" and db.actor_binder then db.actor_binder.character_icon = c.icon end
+	-- the guest's own profile (traders, the PDA), not the host's that came with its save
+	if c.icon and c.icon ~= "" then pcall(db.actor.set_character_icon, db.actor, c.icon) end
+	if c.name and c.name ~= "" then
+		if db.actor.set_character_name then pcall(db.actor.set_character_name, db.actor, c.name) end
+		local se = alife():actor()
+		if se and se.set_character_name then pcall(se.set_character_name, se, c.name) end
+	end
+	-- the guest's own F1-F4, not the ones the host's save brought (none yet: empty)
+	pcall(set_quick_slots, c.quick)
 
 	local spawned = {}
 	for _, it in ipairs(c.items) do
@@ -408,11 +439,32 @@ local function send_session()
 	exec_console_cmd("save " .. save_name)
 	coop_main.msg("Сессия сохранена, отправляю напарнику...")
 end
-coop_main.on_event("_cmd_sync", send_session)
+
+-- Num2 on the host: both games go back to this moment together - the world is saved and sent, the guest loads
+-- it as soon as it has it and says so, and then the host loads the same save
+local function reload_both()
+	if coop_main.role ~= "host" then
+		coop_main.msg("Перезагрузить мир у обоих может только хост")
+		return
+	end
+	if not coop_main.connected then
+		coop_main.msg("Напарник не подключён")
+		return
+	end
+	send_session()
+	coop_main.msg("Перезагрузка мира у обоих: ждём, пока напарник получит сейв...")
+end
+coop_main.on_event("_cmd_sync", reload_both)
+
+coop_main.on_event("reloading", function()
+	if coop_main.role ~= "host" or not db.actor then return end
+	coop_main.msg("Напарник загружается, загружаем тот же сейв")
+	exec_console_cmd("load " .. session_save())
+end)
 
 -- a guest waiting ready in its lobby gets the world once this game is up (the lobby's own requests are lost in
 -- the main menu); once per wait: it is sent again only after the guest has been in a game or gone
-local world_sent, level_up_at = false, nil
+local world_sent, level_up_at, reload_at = false, nil, nil
 local function send_to_waiting_guest(now)
 	if coop_main.role ~= "host" or not coop_main.connected then
 		world_sent = false
@@ -429,8 +481,14 @@ local function send_to_waiting_guest(now)
 	end
 end
 
+-- in a game the host's world comes only when the host reloads both games: it is loaded at once
 coop_main.on_event("session_ready", function()
-	coop_main.msg("Получена сессия хоста. Нажмите " .. coop_main.key_name("load") .. ", чтобы войти в его мир")
+	if coop_main.role == "host" or not db.actor then return end
+	coop_main.msg("Хост перезагружает мир у обоих")
+	export_character()
+	coop_main.send("reloading")
+	-- a moment for the word to leave this game before loading stops it
+	reload_at = time_global() + 1000
 end)
 
 coop_main.on_event("_cmd_load", function()
@@ -475,6 +533,10 @@ local function actor_on_update()
 		end
 	end
 	send_to_waiting_guest(now)
+	if reload_at and now > reload_at then
+		reload_at = nil
+		exec_console_cmd("load " .. session_save())
+	end
 	if mirror_at and now > mirror_at then
 		mirror_at = nil
 		exec_console_cmd("save " .. session_save())

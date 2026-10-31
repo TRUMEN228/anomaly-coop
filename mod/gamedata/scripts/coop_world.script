@@ -8,7 +8,7 @@
 	                  items dropped ("drop") or put into boxes ("bput")
 --]]
 
-local NPC_SYNC_RADIUS = 70
+local NPC_SYNC_RADIUS = 150 -- as far as creatures come online: closer, the guest's own AI would have them elsewhere
 local NPC_SNAP_DIST = 3      -- standing and out of sight
 local NPC_SNAP_MOVING = 10   -- running: the host's position is already behind
 local NPC_SNAP_SEEN = 15     -- in the guest's view: a jump is worse than a small difference
