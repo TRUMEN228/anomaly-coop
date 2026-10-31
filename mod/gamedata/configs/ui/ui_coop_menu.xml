@@ -27,15 +27,19 @@
 			<text font="letterica18" r="215" g="195" b="150" align="l" vert_align="c">Создать игру</text>
 		</cap_host>
 		<cap_save x="32" y="136" width="140" height="24">
-			<text font="letterica16" r="170" g="170" b="170" align="l" vert_align="c">Сейв</text>
+			<text font="letterica16" r="170" g="170" b="170" align="l" vert_align="c">Мир</text>
 		</cap_save>
-		<list_saves x="180" y="138" width="260" height="20">
+		<list_saves x="180" y="138" width="200" height="20">
 			<list_font r="170" g="170" b="170" font="letterica16"/>
 			<text_color>
 				<e r="170" g="170" b="170"/>
 				<d r="70" g="70" b="70"/>
 			</text_color>
 		</list_saves>
+		<fld_world x="390" y="135" width="218" height="30">
+			<text x="3" font="letterica18" complex_mode="0" vert_align="c" align="l"/>
+			<texture>ui_inGame2_edit_box_2</texture>
+		</fld_world>
 		<btn_host_steam x="180" y="172" width="170" height="28">
 			<text font="letterica16" align="c">Через Steam</text>
 			<texture>ui_button_ordinary</texture>
@@ -133,4 +137,134 @@
 			<text_color><e r="210" g="210" b="210"/></text_color>
 		</btn_back>
 	</dialog>
+	<!-- over the game's new game page for two (coop_newgame.script) -->
+	<ng_status x="212" y="6" width="600" height="24">
+		<text font="letterica18" r="230" g="200" b="120" align="c" vert_align="c"/>
+	</ng_status>
+
+	<ng_players x="764" y="34" width="250" height="90">
+		<text font="letterica16" r="230" g="230" b="230" align="l" vert_align="t" complex_mode="1"/>
+	</ng_players>
+
+	<!-- the lobby: both players' cards, then together into the host's world (a save or a new game) -->
+	<lobby x="192" y="104" width="640" height="560">
+		<background x="0" y="0" width="640" height="560" stretch="1">
+			<texture>ui_inGame2_opt_main_window</texture>
+		</background>
+		<caption x="24" y="10" width="592" height="30">
+			<text font="graffiti22" r="170" g="170" b="170" align="c" vert_align="c">Лобби</text>
+		</caption>
+		<world x="24" y="44" width="592" height="22">
+			<text font="letterica16" r="215" g="195" b="150" align="c" vert_align="c"/>
+		</world>
+		<card x="0" y="0" width="290" height="392">
+			<frame x="0" y="0" width="290" height="392">
+				<texture>ui_inGame2_servers_list_frame</texture>
+			</frame>
+			<who x="10" y="6" width="270" height="20">
+				<text font="letterica16" r="140" g="140" b="140" align="l" vert_align="c"/>
+			</who>
+			<name x="10" y="26" width="270" height="26">
+				<text font="letterica18" r="215" g="195" b="150" align="l" vert_align="c"/>
+			</name>
+			<state x="10" y="52" width="270" height="20">
+				<text font="letterica16" r="120" g="200" b="120" align="l" vert_align="c"/>
+			</state>
+			<money x="10" y="72" width="270" height="20">
+				<text font="letterica16" r="170" g="170" b="170" align="l" vert_align="c"/>
+			</money>
+			<portrait x="10" y="98" width="90" height="120" stretch="1"/>
+			<suit x="110" y="98" width="170" height="120" stretch="1"/>
+			<suit_name x="10" y="220" width="270" height="22">
+				<text font="letterica16" r="215" g="195" b="150" align="c" vert_align="c"/>
+			</suit_name>
+			<icon x="10" y="0" width="76" height="44" stretch="1"/>
+			<item x="94" y="0" width="186" height="44">
+				<text font="letterica16" r="170" g="170" b="170" align="l" vert_align="c" complex_mode="1"/>
+			</item>
+			<more x="10" y="248" width="270" height="84">
+				<text font="letterica16" r="150" g="150" b="150" align="l" vert_align="t" complex_mode="1"/>
+			</more>
+		</card>
+		<status x="24" y="474" width="592" height="26">
+			<text font="letterica16" r="230" g="200" b="120" align="l" vert_align="c" complex_mode="1"/>
+		</status>
+		<btn_loadout x="24" y="510" width="150" height="28">
+			<text font="letterica16" align="c">Снаряжение</text>
+			<texture>ui_button_ordinary</texture>
+			<text_color><e r="210" g="210" b="210"/></text_color>
+		</btn_loadout>
+		<btn_ready x="184" y="510" width="130" height="28">
+			<text font="letterica16" align="c">Готов</text>
+			<texture>ui_button_ordinary</texture>
+			<text_color><e r="210" g="210" b="210"/></text_color>
+		</btn_ready>
+		<btn_start x="324" y="510" width="150" height="28">
+			<text font="letterica16" align="c">Начать</text>
+			<texture>ui_button_ordinary</texture>
+			<text_color><e r="210" g="210" b="210"/></text_color>
+		</btn_start>
+		<btn_leave x="484" y="510" width="132" height="28">
+			<text font="letterica16" align="c">Выйти</text>
+			<texture>ui_button_ordinary</texture>
+			<text_color><e r="210" g="210" b="210"/></text_color>
+		</btn_leave>
+	</lobby>
+
+	<!-- the guest's starting kit, bought with points like a new game's (no faction choice: the host's faction) -->
+	<picker x="192" y="104" width="640" height="560">
+		<background x="0" y="0" width="640" height="560" stretch="1">
+			<texture>ui_inGame2_opt_main_window</texture>
+		</background>
+		<caption x="24" y="10" width="592" height="30">
+			<text font="graffiti22" r="170" g="170" b="170" align="c" vert_align="c">Снаряжение</text>
+		</caption>
+		<points x="24" y="44" width="592" height="22">
+			<text font="letterica18" r="215" g="195" b="150" align="l" vert_align="c"/>
+		</points>
+		<base x="24" y="68" width="592" height="56">
+			<text font="letterica16" r="150" g="150" b="150" align="l" vert_align="t" complex_mode="1"/>
+		</base>
+		<list_frame x="20" y="128" width="600" height="368">
+			<texture>ui_inGame2_servers_list_frame</texture>
+		</list_frame>
+		<list x="24" y="132" width="592" height="360" always_show_scroll="0" right_ident="0" left_ident="0" top_indent="0" bottom_indent="0" vert_interval="2"/>
+		<row x="0" y="0" width="570" height="36">
+			<icon x="4" y="2" width="56" height="32" stretch="1"/>
+			<name x="68" y="0" width="300" height="36">
+				<text font="letterica16" r="170" g="170" b="170" align="l" vert_align="c"/>
+			</name>
+			<price x="370" y="0" width="80" height="36">
+				<text font="letterica16" r="215" g="195" b="150" align="r" vert_align="c"/>
+			</price>
+			<count x="486" y="0" width="34" height="36">
+				<text font="letterica18" r="210" g="210" b="210" align="c" vert_align="c"/>
+			</count>
+			<btn_minus x="456" y="4" width="28" height="28">
+				<text font="letterica18" align="c">-</text>
+				<texture>ui_button_ordinary</texture>
+				<text_color><e r="210" g="210" b="210"/></text_color>
+			</btn_minus>
+			<btn_plus x="522" y="4" width="28" height="28">
+				<text font="letterica18" align="c">+</text>
+				<texture>ui_button_ordinary</texture>
+				<text_color><e r="210" g="210" b="210"/></text_color>
+			</btn_plus>
+		</row>
+		<btn_pick_clear x="24" y="510" width="150" height="28">
+			<text font="letterica16" align="c">Сбросить</text>
+			<texture>ui_button_ordinary</texture>
+			<text_color><e r="210" g="210" b="210"/></text_color>
+		</btn_pick_clear>
+		<btn_pick_done x="324" y="510" width="150" height="28">
+			<text font="letterica16" align="c">Готово</text>
+			<texture>ui_button_ordinary</texture>
+			<text_color><e r="210" g="210" b="210"/></text_color>
+		</btn_pick_done>
+		<btn_pick_cancel x="484" y="510" width="132" height="28">
+			<text font="letterica16" align="c">Отмена</text>
+			<texture>ui_button_ordinary</texture>
+			<text_color><e r="210" g="210" b="210"/></text_color>
+		</btn_pick_cancel>
+	</picker>
 </w>

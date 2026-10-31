@@ -1,8 +1,11 @@
 # Two real games on one PC, the host without a launcher: testA hosts through the link in the engine (r8,
 # appdata\coop_link.txt), testB joins through lag_relay.py - with its launcher (protocol 7), or with -NoLauncher
 # from the main menu, which loads the host's world by itself once it arrives.
-# usage: duo_link.ps1 [-NoLauncher] [-MinMs 50 -MaxMs 150]   |   duo.ps1 -Stop closes them
-param([switch]$NoLauncher, [int]$MinMs = 50, [int]$MaxMs = 150)
+# -Lobby: both games just start in the main menu (relay up, no coop_link.txt); the player goes through the lobby:
+# host "Network game" -> by IP (27015), guest -> IP 127.0.0.1:27016.
+# usage: duo_link.ps1 [-NoLauncher | -Lobby] [-MinMs 50 -MaxMs 150]   |   duo.ps1 -Stop closes them
+param([switch]$NoLauncher, [switch]$Lobby, [int]$MinMs = 50, [int]$MaxMs = 150)
+if ($Lobby) { $NoLauncher = $true }
 $r = 'D:\Projects\stalker_coop'
 $iniB = "$r\local\launcherB\coop_launcher.ini"
 & "$r\tests\duo.ps1" -Stop | Out-Null
@@ -10,7 +13,12 @@ Start-Sleep 2
 
 foreach ($n in 'A', 'B') {
     $t = "$r\local\test$n"
-    Copy-Item 'D:\Projects\xray-monolith\_build\_game\bin_dbg\AnomalyDX11AVX.exe' "$t\bin\AnomalyDX11AVX_coop.exe" -Force
+    # a game that is still closing holds its exe: retry until the fresh build is really in place
+    $src = 'D:\Projects\xray-monolith\_build\_game\bin_dbg\AnomalyDX11AVX.exe'
+    for ($i = 0; $i -lt 30; $i++) {
+        try { Copy-Item $src "$t\bin\AnomalyDX11AVX_coop.exe" -Force -ErrorAction Stop; break } catch { Start-Sleep 1 }
+    }
+    if ((Get-Item "$t\bin\AnomalyDX11AVX_coop.exe").Length -ne (Get-Item $src).Length) { "!! $n still runs the old engine" }
     Copy-Item "$r\launcher\steam\steam_api64.dll" "$t\bin\" -Force
     foreach ($x in 'coop_out.txt', 'coop_in.txt', 'coop_log.txt', 'coop_syntax.txt', 'coop_link.txt') { Remove-Item "$t\appdata\$x" -ErrorAction SilentlyContinue }
     "1" | Set-Content "$t\appdata\coop_debug.txt"
@@ -25,13 +33,21 @@ foreach ($n in $hand) {
     New-Item -ItemType Directory -Force "$r\local\test$n\gamedata\configs\ui" | Out-Null
     Copy-Item "$r\build\gamedata\configs\ui\*.xml" "$r\local\test$n\gamedata\configs\ui\" -Force
 }
-"host 27015`nname Host" | Set-Content "$r\local\testA\appdata\coop_link.txt" -Encoding ascii
-if ($NoLauncher) { "join 127.0.0.1 27016`nname Guest" | Set-Content "$r\local\testB\appdata\coop_link.txt" -Encoding ascii }
+if (-not $Lobby) { "host 27015`nname Host" | Set-Content "$r\local\testA\appdata\coop_link.txt" -Encoding ascii }
+if ($NoLauncher -and -not $Lobby) { "join 127.0.0.1 27016`nname Guest" | Set-Content "$r\local\testB\appdata\coop_link.txt" -Encoding ascii }
 foreach ($x in 'scop', 'scoc', 'dds') { Remove-Item "$r\local\testB\appdata\savedgames\coop_session.$x" -ErrorAction SilentlyContinue }
 (Get-Content $iniB) -replace '^port=.*', 'port=27016' | Set-Content $iniB
 
 Start-Process python -ArgumentList "-u", "$r\tests\lag_relay.py", 27016, 27015, $MinMs, $MaxMs -WindowStyle Hidden `
     -RedirectStandardOutput "$r\local\relay.log" -RedirectStandardError "$r\local\relay_err.log" | Out-Null
+if ($Lobby) {
+    foreach ($n in 'A', 'B') {
+        Start-Process "$r\local\test$n\bin\AnomalyDX11AVX_coop.exe" -WorkingDirectory "$r\local\test$n" -ArgumentList "-fsltx fsgame_coop.ltx -nointro" | Out-Null
+        Start-Sleep 20
+    }
+    "both in the main menu: host -> Network game -> by IP 27015, guest -> IP 127.0.0.1:27016"
+    exit
+}
 Start-Process powershell -ArgumentList "-NoProfile", "-File", "$r\tests\wake_game.ps1", "-Dir", "$r\local\testA" -WindowStyle Hidden | Out-Null
 Start-Process "$r\local\testA\bin\AnomalyDX11AVX_coop.exe" -WorkingDirectory "$r\local\testA" `
     -ArgumentList "-fsltx fsgame_coop.ltx -nointro -start server(aaaaa/single/alife/load) client(localhost)" | Out-Null

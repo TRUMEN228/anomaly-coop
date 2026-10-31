@@ -170,6 +170,7 @@ namespace CoopLauncher
     }
 
     /// <summary>Options: in-game keys, port, UPnP. Replaces the old system-styled dialog.</summary>
+#if !COOP_INSTALLER // the installer shares these dialogs, not the launcher's options
     public sealed class OptionsDialog : ZoneDialog
     {
         public static readonly string[][] Actions = KeysDialog.Actions;
@@ -253,6 +254,7 @@ namespace CoopLauncher
             Close();
         }
     }
+#endif
 
     /// <summary>
     /// Folder picker in the launcher's style. Drives on top, folders below; folders that hold an

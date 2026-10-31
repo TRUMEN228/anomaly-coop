@@ -1,0 +1,29 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Anomaly Co-op setup: puts AnomalyCoop.zip (embedded) into an Anomaly folder with a backup of what it replaces,
+       makes shortcuts, and takes it all back. Shares the launcher's look (Theme.cs, Dialogs.cs). -->
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net48</TargetFramework>
+    <PlatformTarget>x64</PlatformTarget>
+    <UseWindowsForms>true</UseWindowsForms>
+    <LangVersion>latest</LangVersion>
+    <Nullable>disable</Nullable>
+    <AssemblyName>AnomalyCoopSetup</AssemblyName>
+    <RootNamespace>CoopLauncher</RootNamespace>
+    <Version>2.11.0</Version>
+    <DefineConstants>$(DefineConstants);COOP_INSTALLER</DefineConstants>
+    <ApplicationManifest>..\launcher\app.manifest</ApplicationManifest>
+    <GenerateAssemblyInfo>true</GenerateAssemblyInfo>
+  </PropertyGroup>
+  <ItemGroup>
+    <Reference Include="System.IO.Compression" />
+    <Reference Include="System.IO.Compression.FileSystem" />
+    <Reference Include="Microsoft.CSharp" />
+  </ItemGroup>
+  <ItemGroup>
+    <Compile Include="..\launcher\Theme.cs" Link="Theme.cs" />
+    <Compile Include="..\launcher\Dialogs.cs" Link="Dialogs.cs" />
+    <!-- built by build.py with the zip option -->
+    <EmbeddedResource Include="..\dist\AnomalyCoop.zip" LogicalName="AnomalyCoop.zip" />
+  </ItemGroup>
+</Project>

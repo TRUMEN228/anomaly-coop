@@ -1,0 +1,211 @@
+--[[
+	Anomaly Co-op: a new game for two. Once both are ready in the lobby (coop_menu), both get the game's own new
+	game page (ui_mm_faction_select.UINewGame): the host chooses everything as usual, the guest only its kit and
+	its own portrait - the rest is greyed out and follows the host's choice (faction, economy, difficulty). The
+	guest's "Ready" makes its kit its character in that world (coop_character_<world>.txt); the host's "Start" goes on only once every
+	guest is ready, the host's page lists the players and how far each is.
+	The guest enters the host's world as soon as it arrives.
+--]]
+
+-- what a guest may not change: the new game page's own handlers do nothing for it
+local GUARDED = { "OnFactionClicked", "OnRandomize", "OnSelectMap", "OnSelectDifficulty",
+	"OnSelectEconomy", "OnSelectHardcoreLives", "OnSelectHardcoreRegen", "OnSelectTimer", "OnCheckSetStory",
+	"OnCheckSetAzazel", "OnCheckSetWarfare", "OnCheckSetSurvival", "OnCheckResetList", "OnFactionSelect" }
+-- and its fields, greyed out
+local CONTROLS = { "character_name", "list_map", "list_difficulty", "list_economy", "list_hardcore_lives",
+	"list_hardcore_regen", "list_timer", "ck_story", "ck_survival", "ck_azazel_mode", "ck_warfare", "ck_hardcore",
+	"ck_campfire", "ck_conditions", "ck_routes", "ck_reset" }
+
+local page = nil
+local next_tick = 0
+local note, note_until = nil, 0 -- a message over the page's own status for a moment
+
+local function nick()
+	local _, map = coop_menu.settings()
+	return map.nick and map.nick ~= "" and map.nick or "Stalker"
+end
+
+-- the page's kit, as its own start collects it
+local function chosen_sections(self)
+	local list = {}
+	for _, ci in pairs(self.CC["inventory"].cell) do
+		if ci:IsShown() then
+			for _ = 1, ci:CountChilds() + 1 do list[#list + 1] = ci.section end
+		end
+	end
+	return list
+end
+
+local function on_start(self, start)
+	local L = coop_menu.state()
+	if self.coop_guest then
+		-- "Ready" again takes it back (the kit can still change)
+		if L.ng_ready then
+			L.ng_ready = false
+		else
+			L.ng_ready = coop_session.write_kit(nick(), self.selected_money or 0, "actor_" .. (self.selected_faction or "stalker"),
+				coop_session.kit_items(chosen_sections(self)), self.selected_icon, coop_menu.host_world()) and true or false
+		end
+		if self.coop_ready then self.coop_ready:TextControl():SetText(L.ng_ready and "Не готов" or "Готов") end
+		return
+	end
+	L.ng_ready = true
+	-- the host's start goes on (the game's own: its settings, then the world) once every guest has its kit:
+	-- now, or by itself the moment the last one is ready
+	self.coop_start = start
+	if not coop_menu.connected() or (L.partner_lobby and L.partner_lobby.ng_ready) then
+		self.coop_started = true
+		start(self)
+	else
+		note, note_until = "Не все готовы: игра начнётся сама, когда гость нажмёт «Готов»", time_global() + 4000
+	end
+end
+
+local function on_quit(self)
+	local L = coop_menu.state()
+	L.ready, L.ng_ready, L.ng_open = false, false, false
+	self:HideDialog()
+	page = nil
+	coop_menu.open(self.owner)
+end
+
+-- the host's choice on the guest's page (only what the guest's kit depends on, and what it should see)
+local function follow_host(self, ng)
+	if ng.faction and ng.faction ~= "" and ng.faction ~= self.selected_faction then
+		self:LoadFaction(false, ng.faction)
+		self:LoadIcon(false) -- the faction's portraits
+		self:LoadLoadout(false)
+	end
+	if ng.economy and ng.economy ~= "" and ng.economy ~= self.selected_economy then
+		self.selected_economy = ng.economy
+		self.list_economy:SetText(game.translate_string(ng.economy))
+		self:LoadLoadout(false)
+	end
+	if ng.difficulty and ng.difficulty ~= "" and ng.difficulty ~= self.selected_difficulty then
+		self.selected_difficulty = ng.difficulty
+		self.list_difficulty:SetText(game.translate_string(ng.difficulty))
+	end
+end
+
+local function status(ready)
+	return ready and "%c[255,90,220,90]готов%c[default]" or "%c[255,230,80,80]не готов%c[default]"
+end
+
+local function on_update(self)
+	local now = time_global()
+	if now < next_tick then return end
+	next_tick = now + 300
+	local L = coop_menu.state()
+	local on = coop_menu.connected()
+	if self.coop_guest then
+		coop_menu.exchange()
+		if L.partner_ng then follow_host(self, L.partner_ng) end
+		coop_menu.poll(self.owner)
+	else
+		coop_menu.exchange({ string.format("s|ng|%s|%s|%s|%s", self.selected_faction or "", self.selected_economy or "",
+			self.selected_difficulty or "", self.selected_map or "") })
+	end
+	local their = L.partner_lobby
+	local text
+	if not on then
+		text = "Напарник отключился" .. (self.coop_guest and "" or ": «Начать» запустит игру без него")
+	elseif self.coop_guest then
+		text = L.ng_ready and "Снаряжение выбрано. Ждём, пока хост начнёт"
+			or "Выберите снаряжение и нажмите «Начать». Остальное выбирает хост"
+	elseif their and their.ng_ready then
+		text = L.ng_ready and "Оба готовы: «Начать» запускает игру" or "Гость готов. Выберите всё и нажмите «Начать»"
+	else
+		text = L.ng_ready and "Вы готовы. Ждём, пока гость выберет снаряжение" or "Гость выбирает снаряжение. Выберите всё и нажмите «Начать»"
+	end
+	if note and now < note_until then text = note end
+	if self.coop_status then self.coop_status:SetText(text) end
+	-- the players, one a line, ready in green and not in red (one guest now; the list is ready for more)
+	if self.coop_players then
+		local name = L.partner_card and L.partner_card.name or nil
+		local lines = { "Игроки:", "%c[255,215,195,150]" .. nick() .. " (вы)%c[default]  " .. status(L.ng_ready) }
+		if on then
+			lines[#lines + 1] = "%c[255,215,195,150]" .. (name and name ~= "" and name or "Напарник") .. "%c[default]  "
+				.. status(their and their.ng_ready)
+		end
+		-- a line break in the game's text is the two characters "\n"
+		self.coop_players:SetText(table.concat(lines, "\\n"))
+	end
+	-- everyone ready after the host's "Start": the game starts by itself
+	if not self.coop_guest and L.ng_ready and not self.coop_started and self.coop_start
+		and (not on or (their and their.ng_ready)) then
+		self.coop_started = true
+		self.coop_start(self)
+	end
+end
+
+local patched = false
+local function patch()
+	if patched then return end
+	patched = true
+	local cls = ui_mm_faction_select.UINewGame
+	for _, m in ipairs(GUARDED) do
+		local orig = cls[m]
+		if orig then
+			cls[m] = function(self, ...)
+				if self.coop_guest then return end
+				return orig(self, ...)
+			end
+		end
+	end
+	local start, quit, update = cls.OnStartGame, cls.OnQuit, cls.Update
+	cls.OnStartGame = function(self, ...)
+		if not self.coop then return start(self, ...) end
+		local ok, err = pcall(on_start, self, start)
+		if not ok then printf("! coop new game: %s", tostring(err)) end
+	end
+	cls.OnQuit = function(self, ...)
+		if not self.coop then return quit(self, ...) end
+		on_quit(self)
+	end
+	cls.Update = function(self, ...)
+		update(self, ...)
+		if self.coop then
+			local ok, err = pcall(on_update, self)
+			if not ok then
+				printf("! coop new game: %s", tostring(err))
+				next_tick = time_global() + 5000
+			end
+		end
+	end
+end
+
+-- the new game page for the lobby's pair (the main menu is its owner: the host's start is the game's own)
+function open(main, guest)
+	patch()
+	hide()
+	page = ui_mm_faction_select.UINewGame(main)
+	page.coop, page.coop_guest = true, guest
+	coop_menu.state().ng_ready = false
+	local xml = CScriptXmlInit()
+	xml:ParseFile("ui_coop_menu.xml")
+	page.coop_status = xml:InitTextWnd("ng_status", page)
+	page.coop_players = xml:InitTextWnd("ng_players", page)
+	if guest then
+		page.character_name:SetText(nick())
+		for _, name in ipairs(CONTROLS) do
+			local c = page[name]
+			if c then pcall(c.Enable, c, false) end
+		end
+		-- "Ready" over the page's "Start" (a copy of it from the page's own layout, on top)
+		local ok, btn = pcall(page.xml.Init3tButton, page.xml, "main_dialog:btn_start", page.dialog)
+		if ok and btn then
+			btn:TextControl():SetText("Готов")
+			page:Register(btn, "coop_ready")
+			page:AddCallback("coop_ready", ui_events.BUTTON_CLICKED, function() page:OnStartGame() end, page)
+			page.coop_ready = btn
+		end
+	end
+	page:ShowDialog(true)
+	main:HideDialog()
+	main:Show(false)
+end
+
+function hide()
+	if page then pcall(page.HideDialog, page) end
+	page = nil
+end

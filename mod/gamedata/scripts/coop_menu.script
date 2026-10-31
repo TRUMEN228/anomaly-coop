@@ -3,7 +3,10 @@
 	The engine calls before_main_menu() before it makes the main menu (the scripts' own callbacks are only
 	registered once a game starts) and puts main_menu_entry() into the main list; the entry opens a page to host
 	or join through Steam or by IP, and to set the rules. Its settings go to appdata\coop_keys.txt, which the mod reads (the launcher wrote it before).
-	A guest that joins from the main menu enters the host's world as soon as it arrives.
+	Hosting or joining opens the lobby: both players' cards (what each brings: money, outfit, weapons), the guest's
+	kit (bought with points like a new game's, only for a player without a character), "ready", and the host starts the
+	world - a save, or a new game through the game's own new game page. A guest enters the host's world as soon as
+	it arrives, also when the host is already playing (joining a running game).
 --]]
 
 local ENGINE = rawget(_G, "coop_engine_version") and coop_engine_version() or 0
@@ -62,7 +65,30 @@ end
 local function version() return coop_main.VERSION or "" end
 
 local poll_link, open_menu, menu_wnd -- the main menu entry, below
+-- the lobby's state lives in the script: the new game page (coop_newgame) carries it on while this window is hidden
+L = { role = "host", world = nil, ready = false, ng_ready = false, ng_open = false,
+	partner_card = nil, partner_lobby = nil, partner_ng = nil }
 local update_checked = false
+local NEW_GAME = "Новая игра"
+local LOADOUTS = "items\\settings\\new_game_loadouts.ltx"
+
+-- an item's icon on a static (as the game's own windows show it)
+local function set_icon(st, sec)
+	if not (sec and sec ~= "" and ini_sys:section_exist(sec)) then
+		st:Show(false)
+		return
+	end
+	local ico = utils_xml.get_item_axis(sec)
+	st:InitTexture(utils_xml.get_icons_texture(sec))
+	st:SetTextureRect(Frect():set(ico.x1, ico.y1, ico.x2, ico.y2))
+	st:SetStretchTexture(true)
+	st:Show(true)
+end
+
+local function item_name(sec)
+	if not (sec and ini_sys:section_exist(sec)) then return sec or "" end
+	return game.translate_string(ini_sys:r_string_ex(sec, "inv_name") or sec)
+end
 
 ------------------------------------------------------------------ the window
 class "CoopMenu" (CUIScriptWnd)
@@ -75,6 +101,7 @@ function CoopMenu:__init(owner) super()
 	xml:ParseFile("ui_coop_menu.xml")
 	xml:InitStatic("background", self)
 	local dlg = xml:InitStatic("dialog", self)
+	self.dlg = dlg
 	xml:InitStatic("dialog:background", dlg)
 	xml:InitStatic("dialog:caption", dlg)
 	for _, cap in ipairs({ "cap_nick", "cap_host", "cap_save", "cap_join", "cap_friend", "cap_ip", "cap_options" }) do
@@ -82,6 +109,7 @@ function CoopMenu:__init(owner) super()
 	end
 	self.nick = xml:InitEditBox("dialog:fld_nick", dlg)
 	self.saves = xml:InitComboBox("dialog:list_saves", dlg)
+	self.world_field = xml:InitEditBox("dialog:fld_world", dlg)
 	self.port = xml:InitEditBox("dialog:fld_port", dlg)
 	self.friends = xml:InitComboBox("dialog:list_friends", dlg)
 	self.ip = xml:InitEditBox("dialog:fld_ip", dlg)
@@ -103,7 +131,16 @@ function CoopMenu:__init(owner) super()
 	self:AddCallback("btn_join_ip", ui_events.BUTTON_CLICKED, self.OnJoinIp, self)
 	self:AddCallback("btn_stop", ui_events.BUTTON_CLICKED, self.OnStop, self)
 	self:AddCallback("btn_back", ui_events.BUTTON_CLICKED, self.OnBack, self)
+	self:InitLobby(xml)
+	self:InitPicker(xml)
 	self:Load()
+end
+
+function CoopMenu:ShowView(view)
+	self.view = view
+	self.dlg:Show(view == "setup")
+	self.lobby:Show(view == "lobby")
+	self.picker:Show(view == "picker")
 end
 
 function CoopMenu:Load()
@@ -118,6 +155,8 @@ function CoopMenu:Load()
 	self:FillSaves(map.last_save)
 	self.friend_ids = {}
 	self.status:SetText("")
+	-- a link that is up (or starting) is a lobby to come back to
+	self:ShowView(coop_link_status() ~= "idle" and "lobby" or "setup")
 	-- once a run: is there a newer release
 	if not update_checked then
 		update_checked = true
@@ -163,18 +202,21 @@ function CoopMenu:FillSaves(last)
 	local flist = getFS():file_list_open_ex("$game_saves$", bit_or(FS.FS_ListFiles, FS.FS_RootOnly), "*" .. ext)
 	flist:Sort(FS.FS_sort_by_modif_down)
 	local pick = nil
+	-- a new game is made through the game's own page once the lobby starts it
+	self.saves:AddItem(NEW_GAME, 0)
 	for i = 0, flist:Size() - 1 do
 		local full = flist:GetAt(i):NameFull()
 		local name = full:sub(1, #full - #ext)
-		-- the guest's copy of the host's world is not a world to host
-		if name ~= "coop_session" then
-			self.save_names[#self.save_names + 1] = name
-			self.saves:AddItem(name, #self.save_names - 1)
-			if name == last then pick = name end
+		-- co-op worlds only ("coop_<name>"), shown by their names; the old session save is not one
+		local world = name:match("^coop_(.+)$")
+		if world and name ~= "coop_session" and not world:find("^card_") then
+			self.save_names[#self.save_names + 1] = world
+			self.saves:AddItem(world, #self.save_names)
+			if world == last then pick = world end
 		end
 	end
-	pick = pick or self.save_names[1]
-	if pick then self.saves:SetText(pick) end
+	if last == NEW_GAME then pick = NEW_GAME end
+	self.saves:SetText(pick or self.save_names[1] or NEW_GAME)
 end
 
 function CoopMenu:FillFriends()
@@ -208,15 +250,21 @@ function CoopMenu:Nick()
 	return n ~= "" and n or "Stalker"
 end
 
--- host: start the link, then the chosen world (in a game already: keep playing in it)
+-- host: start the link and wait in the lobby (in a game already: the partner comes into it)
 function CoopMenu:StartHost(steam)
 	local save = self.saves:GetText()
-	if not in_game() and (not save or save == "") then
-		self.status:SetText("Нет сейва: начните новую игру, сохранитесь и создайте кооператив из неё")
-		return
+	if not save or save == "" then save = NEW_GAME end
+	local world = save
+	if save == NEW_GAME then
+		-- a new world's name: its saves will be "coop_<name>"
+		world = (self.world_field:GetText() or ""):gsub("^%s+", ""):gsub("%s+$", "")
+		if world == "" or world:find("[^%w_%-]") then
+			self.status:SetText("Введите название нового мира: латиница, цифры, _ и -")
+			return
+		end
 	end
 	local port = tonumber(self.port:GetText()) or DEFAULT_PORT
-	self:Save({ last_save = save or "", port = port })
+	self:Save({ last_save = save or "", port = port, world = world })
 	local ok
 	if steam then ok = coop_link_host_steam(self:Nick(), version())
 	else ok = coop_link_host(port, self:Nick(), version()) end
@@ -224,14 +272,11 @@ function CoopMenu:StartHost(steam)
 		self.status:SetText(self:StatusText())
 		return
 	end
-	if in_game() then
-		self.status:SetText("Игра открыта. Напарник войдёт в ваш мир, когда подключится")
-		self:Close()
-		return
-	end
-	self.loading = true
-	self:Close(true)
-	load_world(save)
+	L.role = "host"
+	L.world = save
+	L.world_name = world
+	L.ready, L.ng_ready, L.ng_open = false, false, false
+	self:ShowView("lobby")
 end
 
 function CoopMenu:OnHostSteam() self:StartHost(true) end
@@ -246,7 +291,8 @@ function CoopMenu:OnJoinSteam()
 	end
 	self:Save()
 	coop_link_join_steam(f.lobby, self:Nick(), version())
-	self.status:SetText("Подключаюсь к " .. f.name .. "...")
+	L.role, L.ready, L.ng_ready, L.ng_open = "client", false, false, false
+	self:ShowView("lobby")
 end
 
 function CoopMenu:OnJoinIp()
@@ -258,7 +304,8 @@ function CoopMenu:OnJoinIp()
 	end
 	self:Save({ host_ip = text })
 	coop_link_join(addr, tonumber(port) or DEFAULT_PORT, self:Nick(), version())
-	self.status:SetText("Подключаюсь к " .. addr .. "...")
+	L.role, L.ready, L.ng_ready, L.ng_open = "client", false, false, false
+	self:ShowView("lobby")
 end
 
 function CoopMenu:OnStop()
@@ -288,6 +335,10 @@ function CoopMenu:Update()
 	local text = self:StatusText()
 	if text ~= "" then self.status:SetText(text) end
 	self:ShowUpdate()
+	if self.view == "lobby" then
+		local ok, err = pcall(self.LobbyTick, self)
+		if not ok then self.lobby_status:SetText("Лобби: " .. tostring(err)) end
+	end
 end
 
 function CoopMenu:OnKeyboard(dik, action)
@@ -300,7 +351,11 @@ function CoopMenu:OnKeyboard(dik, action)
 end
 
 function CoopMenu:OnBack()
-	self:Save()
+	if self.view == "picker" then
+		self:ShowView("lobby")
+		return
+	end
+	if self.view == "setup" then self:Save() end
 	self:Close()
 end
 
@@ -312,6 +367,362 @@ function CoopMenu:Close(loading)
 		self.owner:Show(true)
 	end
 end
+
+------------------------------------------------------------------ the lobby
+local menu_sid, menu_ack = tostring(math.random(100000, 999999)), 0
+
+-- the host's world is a new game (the guest knows it from the host's lobby line)
+local function new_world()
+	if L.role == "client" then return L.partner_lobby and L.partner_lobby.world == "new" end
+	return not L.world or L.world == NEW_GAME
+end
+function is_new_world() return new_world() end
+
+-- the host's world by its name, as the guest knows it from the host's lobby
+function host_world()
+	local n = L.partner_lobby and L.partner_lobby.name or ""
+	return n ~= "" and n or nil
+end
+function state() return L end
+
+-- a new game's character: in a sweater, as the game starts everyone
+local function sweater_card()
+	local _, map = read_settings()
+	return { name = map.nick or "", money = 0, faction = "", slot = {}, meds = 0, rounds = 0, sweater = true }
+end
+
+-- what this player brings: in a game its actor; a new game a sweater; the host the chosen save's character,
+-- a guest its own (nil: a new character that chooses its kit)
+local function my_card()
+	if in_game() then return coop_session.card_from_actor() end
+	if new_world() then return sweater_card() end
+	-- a guest: its character in the host's world (each world has its own)
+	if L.role == "client" then return coop_session.card_from_file(nil, host_world()) end
+	return coop_session.card_from_file("coop_" .. (L.world_name or ""))
+end
+
+-- out of a game the lobby swaps its state with the partner itself, through the engine link (in a game the mod
+-- does); the new game page calls it too, with its settings (host) for the partner's page
+function exchange(extra)
+	local lines = { "g|m" .. menu_sid .. "|" .. menu_ack .. "|" .. version(),
+		"s|card|" .. table.concat(coop_session.card_fields(my_card()), "|"),
+		string.format("s|lobby|%d|menu|%d|%s|%s", L.ready and 1 or 0, L.ng_ready and 1 or 0,
+			(L.role ~= "client" and new_world()) and "new" or "save", coop_main.esc(L.role ~= "client" and L.world_name or "")) }
+	for _, l in ipairs(extra or {}) do lines[#lines + 1] = l end
+	lines[#lines + 1] = "end\n"
+	coop_link_out(table.concat(lines, "\n"))
+	local raw = coop_link_in()
+	if not raw then return end
+	for line in raw:gmatch("[^\n]+") do
+		local t = coop_main.split(line)
+		if t[1] == "s" and t[2] == "card" then
+			table.remove(t, 1); table.remove(t, 1)
+			L.partner_card = coop_session.card_parse(t) or false
+		elseif t[1] == "s" and t[2] == "lobby" then
+			L.partner_lobby = { ready = t[3] == "1", where = t[4], ng_ready = t[5] == "1", world = t[6], name = t[7] or "" }
+		elseif t[1] == "s" and t[2] == "ng" then
+			L.partner_ng = { faction = t[3], economy = t[4], difficulty = t[5], map = t[6] }
+		elseif t[1] == "e" then
+			menu_ack = math.max(menu_ack, tonumber(t[2]) or 0)
+		end
+	end
+end
+
+function connected() return coop_link_status():find("^connected") ~= nil end
+
+function CoopMenu:InitLobby(xml)
+	local lobby = xml:InitStatic("lobby", self)
+	self.lobby = lobby
+	xml:InitStatic("lobby:background", lobby)
+	xml:InitStatic("lobby:caption", lobby)
+	self.lobby_world = xml:InitTextWnd("lobby:world", lobby)
+	self.lobby_status = xml:InitTextWnd("lobby:status", lobby)
+	self.cards = {}
+	for i, x in ipairs({ 24, 326 }) do
+		local c = { wnd = xml:InitStatic("lobby:card", lobby) }
+		c.wnd:SetWndPos(vector2():set(x, 72))
+		xml:InitStatic("lobby:card:frame", c.wnd)
+		for _, f in ipairs({ "who", "name", "state", "money", "more" }) do c[f] = xml:InitTextWnd("lobby:card:" .. f, c.wnd) end
+		c.portrait = xml:InitStatic("lobby:card:portrait", c.wnd)
+		c.suit = xml:InitStatic("lobby:card:suit", c.wnd)
+		c.suit_name = xml:InitTextWnd("lobby:card:suit_name", c.wnd)
+		c.icons, c.items = {}, {}
+		for row = 1, 3 do
+			local y = 248 + (row - 1) * 46
+			c.icons[row] = xml:InitStatic("lobby:card:icon", c.wnd)
+			c.icons[row]:SetWndPos(vector2():set(10, y))
+			c.items[row] = xml:InitTextWnd("lobby:card:item", c.wnd)
+			c.items[row]:SetWndPos(vector2():set(94, y))
+		end
+		c.who:SetText(i == 1 and "Вы" or "Напарник")
+		self.cards[i] = c
+	end
+	for _, b in ipairs({ "btn_loadout", "btn_ready", "btn_start", "btn_leave" }) do
+		self[b] = xml:Init3tButton("lobby:" .. b, lobby)
+		self:Register(self[b], b)
+	end
+	self:AddCallback("btn_loadout", ui_events.BUTTON_CLICKED, self.OnLoadout, self)
+	self:AddCallback("btn_ready", ui_events.BUTTON_CLICKED, self.OnReady, self)
+	self:AddCallback("btn_start", ui_events.BUTTON_CLICKED, self.OnStart, self)
+	self:AddCallback("btn_leave", ui_events.BUTTON_CLICKED, self.OnLeave, self)
+end
+
+local SLOT_ROWS = { 12, 3, 2 } -- helmet, weapon, pistol (the outfit is the big picture)
+
+-- a card: the portrait and the outfit as pictures (a new character: in a sweater), then what it holds
+function CoopMenu:FillCard(c, card, state)
+	c.state:SetText(state)
+	c.portrait:Show(false)
+	c.suit:Show(false)
+	c.suit_name:SetText("")
+	for row = 1, 3 do
+		c.icons[row]:Show(false)
+		c.items[row]:SetText("")
+	end
+	c.name:SetText(card and (card.name ~= "" and card.name or "Сталкер") or "")
+	c.money:SetText("")
+	c.more:SetText("")
+	if not card then return end
+	c.portrait:InitTexture(card.icon and card.icon ~= "" and card.icon or "ui_inGame2_no_data")
+	c.portrait:SetStretchTexture(true)
+	c.portrait:Show(true)
+	local outfit = not card.sweater and card.slot[7]
+	if outfit then
+		set_icon(c.suit, outfit)
+		c.suit_name:SetText(item_name(outfit))
+	else
+		c.suit_name:SetText("Свитер")
+	end
+	if card.sweater then
+		-- a new game: nobody has a character yet
+		c.portrait:Show(false)
+		c.suit_name:SetText("")
+		return
+	end
+	c.money:SetText(string.format("%d RU   аптечки: %d   патроны: %d", card.money, card.meds, card.rounds))
+	for row, slot in ipairs(SLOT_ROWS) do
+		set_icon(c.icons[row], card.slot[slot])
+		c.items[row]:SetText(card.slot[slot] and item_name(card.slot[slot]) or "")
+	end
+end
+-- the host's faction for the guest's kit ("actor_dolg" -> "dolg")
+local function faction_of(card)
+	local f = card and card.faction or ""
+	f = f:gsub("^actor_", "")
+	return f ~= "" and f or "stalker"
+end
+
+function CoopMenu:LobbyTick()
+	local on = connected()
+	local mine, theirs, their_lobby
+	if in_game() then
+		mine = my_card()
+		theirs, their_lobby = coop_session.partner()
+	else
+		exchange()
+		mine = my_card()
+		theirs, their_lobby = L.partner_card, L.partner_lobby
+	end
+	if not on then theirs, their_lobby = nil, nil end
+	local host = L.role ~= "client"
+	local fresh = new_world()
+	local partner_ready = their_lobby and (their_lobby.ready or their_lobby.where == "game")
+
+	local my_state = in_game() and "в игре" or (L.ready and "готов") or "не готов"
+	if not mine and not in_game() then
+		my_state = host and "персонаж этого сейва неизвестен (сохраните его с v2.11)" or "новый персонаж: выберите снаряжение"
+	end
+	self:FillCard(self.cards[1], mine, my_state)
+	local their_state = not on and self:StatusText()
+		or (their_lobby and their_lobby.where == "game" and "в игре")
+		or (their_lobby and their_lobby.ready and "готов") or "не готов"
+	self:FillCard(self.cards[2], theirs or nil, their_state)
+	if on and theirs == false then self.cards[2].more:SetText("Выбирает снаряжение") end
+
+	if host then
+		self.lobby_world:SetText("Мир: " .. (in_game() and "текущая игра" or (L.world or NEW_GAME)))
+	else
+		self.lobby_world:SetText(fresh and "Мир: новая игра хоста" or "Мир хоста загрузится сам, когда хост начнёт")
+	end
+	self.btn_ready:Show(not in_game())
+	self.btn_ready:TextControl():SetText(L.ready and "Не готов" or "Готов")
+	-- a kit is chosen here only for a new character in the host's saved world (a new game chooses it on its page)
+	self.btn_loadout:Show(not host and not in_game() and not fresh and not mine)
+	-- the host starts a save once both are ready; a new game opens its page for both by itself
+	self.btn_start:Show(host and (in_game() or not on or not fresh))
+	self.btn_start:TextControl():SetText(in_game() and "В игру" or "Начать")
+
+	local hint
+	if in_game() then hint = "Напарник войдёт в вашу игру, когда подключится"
+	elseif not on then hint = host and "Ждём напарника. Начать можно и одному: он войдёт позже" or self:StatusText()
+	elseif not (L.ready and partner_ready) then hint = "Нажмите «Готов» оба" .. (fresh and ": откроется экран новой игры" or "")
+	else hint = host and (fresh and "Открываю экран новой игры..." or "Оба готовы: «Начать»") or "Оба готовы: ждём хоста" end
+	self.lobby_status:SetText(hint)
+
+	-- both ready for a save: the host's world loads by itself (the host's "Ready" was its go)
+	if host and not fresh and on and L.ready and partner_ready and not in_game() and not self.loading then
+		self:OnStart()
+		return
+	end
+	-- both ready for a new game: its page for both, the guest's with only the kit to choose
+	if fresh and on and L.ready and partner_ready and not in_game() and not L.ng_open then
+		L.ng_open = true
+		self:HideDialog()
+		coop_newgame.open(self.owner, not host)
+	end
+end
+
+function CoopMenu:OnReady()
+	if not L.ready and L.role == "client" and not new_world() and not my_card() then
+		self.lobby_status:SetText("Сначала выберите снаряжение")
+		return
+	end
+	L.ready = not L.ready
+end
+
+function CoopMenu:OnStart()
+	if in_game() then
+		self:Close()
+		return
+	end
+	if connected() and not (L.partner_lobby and L.partner_lobby.ready) then
+		self.lobby_status:SetText("Напарник ещё не готов")
+		return
+	end
+	self:Save({ last_save = L.world or NEW_GAME, world = L.world_name })
+	if new_world() then
+		-- alone: the game's own new game page, as usual (a partner may join the running game later)
+		self:HideDialog()
+		if self.owner and self.owner.ShowFactionUI then self.owner:ShowFactionUI() end
+		return
+	end
+	self.loading = true
+	self:Close(true)
+	load_world("coop_" .. L.world_name)
+end
+
+function CoopMenu:OnLeave()
+	coop_link_stop()
+	L.partner_card, L.partner_lobby, L.partner_ng = nil, nil, nil
+	L.ready, L.ng_ready, L.ng_open = false, false, false
+	self:ShowView("setup")
+end
+
+------------------------------------------------------------------ the guest's kit
+function CoopMenu:InitPicker(xml)
+	local pk = xml:InitStatic("picker", self)
+	self.picker = pk
+	xml:InitStatic("picker:background", pk)
+	xml:InitStatic("picker:caption", pk)
+	xml:InitFrame("picker:list_frame", pk)
+	self.pk_points = xml:InitTextWnd("picker:points", pk)
+	self.pk_base = xml:InitTextWnd("picker:base", pk)
+	self.pk_list = xml:InitScrollView("picker:list", pk)
+	self.pk_xml = xml
+	for _, b in ipairs({ "btn_pick_clear", "btn_pick_done", "btn_pick_cancel" }) do
+		self:Register(xml:Init3tButton("picker:" .. b, pk), b)
+	end
+	self:AddCallback("btn_pick_clear", ui_events.BUTTON_CLICKED, self.OnPickClear, self)
+	self:AddCallback("btn_pick_done", ui_events.BUTTON_CLICKED, self.OnPickDone, self)
+	self:AddCallback("btn_pick_cancel", ui_events.BUTTON_CLICKED, function() self:ShowView("lobby") end, self)
+	self.pk_rows = {}
+	self.pk_callbacks = {}
+end
+
+-- the faction's base kit and what can be bought, from the game's new game loadouts
+function CoopMenu:LoadKit()
+	local ini = ini_file(LOADOUTS)
+	local faction = faction_of(L.partner_card or (in_game() and coop_session.partner()) or nil)
+	local sec = faction .. "_loadout"
+	if not ini:section_exist(sec) then faction, sec = "stalker", "stalker_loadout" end
+	local kit = { faction = faction, base = {}, buy = {}, budget = ini:r_float_ex("points", "total_points_eco_1") or 1000,
+		money = ini:section_exist(faction .. "_money") and ini:r_float_ex(faction .. "_money", "money") or 1000 }
+	for i = 0, ini:line_count(sec) - 1 do
+		local _, item, value = ini:r_line(sec, i, "", "")
+		local t = str_explode(value or "", ",")
+		if item and ini_sys:section_exist(item) and item ~= "cash" then
+			if t[1] == "true" then
+				kit.buy[#kit.buy + 1] = { sec = item, max = tonumber(t[2]) or 1, price = tonumber(t[3]) or 0, count = 0 }
+			else
+				kit.base[#kit.base + 1] = item
+			end
+		end
+	end
+	table.sort(kit.buy, function(a, b) return a.price > b.price end)
+	return kit
+end
+
+function CoopMenu:OnLoadout()
+	if coop_session.card_from_file(nil, host_world()) then return end
+	self.kit = self:LoadKit()
+	local xml = self.pk_xml
+	self.pk_list:Clear()
+	self.pk_rows = {}
+	for i, it in ipairs(self.kit.buy) do
+		local row = xml:InitStatic("picker:row", nil)
+		set_icon(xml:InitStatic("picker:row:icon", row), it.sec)
+		xml:InitTextWnd("picker:row:name", row):SetText(item_name(it.sec))
+		xml:InitTextWnd("picker:row:price", row):SetText(tostring(it.price))
+		local r = { count = xml:InitTextWnd("picker:row:count", row) }
+		local minus, plus = xml:Init3tButton("picker:row:btn_minus", row), xml:Init3tButton("picker:row:btn_plus", row)
+		self:Register(minus, "pk_minus_" .. i)
+		self:Register(plus, "pk_plus_" .. i)
+		-- callbacks go by name: once per row number, the rows themselves are made anew each time
+		if not self.pk_callbacks[i] then
+			self.pk_callbacks[i] = true
+			self:AddCallback("pk_minus_" .. i, ui_events.BUTTON_CLICKED, function() self:PickChange(i, -1) end, self)
+			self:AddCallback("pk_plus_" .. i, ui_events.BUTTON_CLICKED, function() self:PickChange(i, 1) end, self)
+		end
+		self.pk_rows[i] = r
+		self.pk_list:AddWindow(row, true)
+		row:SetAutoDelete(true)
+	end
+	local names = {}
+	for _, sec in ipairs(self.kit.base) do names[#names + 1] = item_name(sec) end
+	self.pk_base:SetText("Всегда с собой (" .. self.kit.faction .. "): " .. table.concat(names, ", "))
+	self:PickShow()
+	self:ShowView("picker")
+end
+
+function CoopMenu:PickSpent()
+	local spent = 0
+	for _, it in ipairs(self.kit.buy) do spent = spent + it.count * it.price end
+	return spent
+end
+
+function CoopMenu:PickChange(i, d)
+	local it = self.kit.buy[i]
+	local n = it.count + d
+	if n < 0 or n > it.max then return end
+	if d > 0 and self:PickSpent() + it.price > self.kit.budget then return end
+	it.count = n
+	self:PickShow()
+end
+
+function CoopMenu:PickShow()
+	for i, it in ipairs(self.kit.buy) do self.pk_rows[i].count:SetText(tostring(it.count)) end
+	self.pk_points:SetText(string.format("Очки: %d из %d", self.kit.budget - self:PickSpent(), self.kit.budget))
+end
+
+function CoopMenu:OnPickClear()
+	for _, it in ipairs(self.kit.buy) do it.count = 0 end
+	self:PickShow()
+end
+
+function CoopMenu:OnPickDone()
+	local sections = {}
+	for _, sec in ipairs(self.kit.base) do sections[#sections + 1] = sec end
+	for _, it in ipairs(self.kit.buy) do for _ = 1, it.count do sections[#sections + 1] = it.sec end end
+	if coop_session.write_kit(self:Nick(), self.kit.money, "actor_" .. self.kit.faction, coop_session.kit_items(sections), nil, host_world()) then
+		L.ready = true
+	end
+	self:ShowView("lobby")
+end
+
+-- for coop_newgame: the settings file, back to this page, and the main menu's watch for the host's world
+function settings() return read_settings() end
+function open(main) open_menu(main) end
+function poll(main) poll_link(main) end
 
 ------------------------------------------------------------------ the main menu entry
 local patched = false
@@ -341,7 +752,14 @@ poll_link = function(main)
 	end
 	if coop_link_take_session() and not in_game() then
 		if menu_wnd and menu_wnd:IsShown() then menu_wnd:Close(true) end
-		load_world("coop_session")
+		pcall(function() coop_newgame.hide() end)
+		-- the host's world under its name (an older host: the one session save)
+		local w = L.partner_lobby and L.partner_lobby.name or ""
+		if w == "" and in_game() == false then
+			local _, pl = coop_session.partner()
+			w = pl and pl.name or ""
+		end
+		load_world(w ~= "" and ("coop_" .. w) or "coop_session")
 	end
 end
 

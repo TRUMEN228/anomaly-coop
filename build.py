@@ -52,3 +52,7 @@ if "--zip" in sys.argv:
         for name, f in sorted(files.items()):
             z.write(f, name)
     print("zip", out, f"({len(files)} files, {out.stat().st_size // 1024} KB)")
+    # the setup carries the archive inside it
+    subprocess.check_call(["dotnet", "build", str(root / "installer" / "CoopSetup.csproj"), "-c", "Release", "-nologo", "-v", "q"])
+    shutil.copy2(root / "installer" / "bin" / "Release" / "net48" / "AnomalyCoopSetup.exe", dist / "AnomalyCoopSetup.exe")
+    print("setup", dist / "AnomalyCoopSetup.exe")

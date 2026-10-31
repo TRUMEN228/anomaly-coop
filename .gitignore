@@ -7,3 +7,5 @@ dist/
 *.log
 coop_launcher.ini
 launcher/steam/
+installer/bin/
+installer/obj/

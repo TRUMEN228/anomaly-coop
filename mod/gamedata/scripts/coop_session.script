@@ -1,12 +1,49 @@
 --[[
 	Anomaly Co-op: session save and the guest's own character.
-	- The host saves "coop_session" and CoopLauncher sends the save to the guest.
+	- A co-op game is a world of its own: "coop_<name>" (the name given when it was made in the lobby). The host saves
+	  it and the link sends it to the guest, which keeps it under the same name; every save the host makes during a
+	  co-op game updates that world too.
 	- The save remembers who made it (player id). When anyone else loads it, they are a guest:
 	  their actor is the host's clone, so we swap in the guest's own inventory and money from
-	  appdata\coop_character.txt. The guest keeps that file up to date while playing (solo or co-op).
+	  appdata\coop_character_<world>.txt - one character per co-op world (coop_character.txt for the old unnamed
+	  session). The guest keeps that file up to date while playing; a world it has no character in yet gets the kit
+	  chosen in the lobby.
 --]]
 
-SESSION_SAVE = "coop_session"
+SESSION_SAVE = "coop_session" -- the save of games from before named worlds (v2.11)
+
+-- the co-op world this game is: the host's from its lobby (appdata\coop_keys.txt "world="), a guest's the host's
+local world_cache, world_read_at = nil, -1e9
+local function keys_world()
+	-- read at most every 2 s: the lobby state asks for it every tick
+	if time_global() - world_read_at < 2000 then return world_cache end
+	world_read_at = time_global()
+	world_cache = nil
+	local f = io.open(getFS():update_path("$app_data_root$", "coop_keys.txt"), "r")
+	if not f then return nil end
+	local name
+	for line in f:lines() do name = line:match("^%s*world%s*=%s*(.-)%s*$") or name end
+	f:close()
+	world_cache = name ~= "" and name or nil
+	return world_cache
+end
+
+-- the world a loaded save belongs to (written into it by the host), known from the first frame on
+local loaded_world = nil
+
+function world_name()
+	if coop_main.role == "client" or is_guest_session() then
+		if loaded_world then return loaded_world end
+		local _, pl = partner()
+		return pl and pl.name ~= "" and pl.name or nil
+	end
+	return keys_world()
+end
+
+function session_save()
+	local w = world_name()
+	return w and ("coop_" .. w) or SESSION_SAVE
+end
 
 local player_id = nil
 local session_owner = nil      -- player id stored in the loaded save
@@ -23,6 +60,12 @@ local STARTER_KIT = {
 local STARTER_MONEY = 3000
 
 local function app_path(name) return getFS():update_path("$app_data_root$", name) end
+
+-- this player's character in a co-op world (nil: the world of this game)
+local function char_file(world)
+	world = world or (world_name and world_name())
+	return world and ("coop_character_" .. world .. ".txt") or "coop_character.txt"
+end
 
 local function load_player_id()
 	local f = io.open(app_path("coop_player_id.txt"), "r")
@@ -66,13 +109,50 @@ local function item_line(obj)
 	return string.format("i|%s|%.3f|%d|%d|%s", sec, cond, extra, slot, table.concat(upg, ","))
 end
 
-function export_character()
-	if not (db.actor and char_ready) then return end
-	local lines = { "v|1", "m|" .. db.actor:money(), "n|" .. coop_main.esc(db.actor:character_name()) }
+-- the actor's PDA portrait (the new game page's choice)
+function portrait()
+	local b = db.actor_binder
+	return b and b.character_icon or ""
+end
+
+local function character_lines()
+	local lines = { "v|1", "m|" .. db.actor:money(), "n|" .. coop_main.esc(db.actor:character_name()),
+		"f|" .. coop_main.esc(db.actor:character_community()), "p|" .. coop_main.esc(portrait()) }
 	db.actor:iterate_inventory(function(_, obj)
 		if obj and SKIP[obj:section()] ~= true then lines[#lines+1] = item_line(obj) end
 	end, nil)
 	lines[#lines+1] = "end\n"
+	return lines
+end
+
+-- each save of one's own world leaves the character in it next to the save's name (the lobby shows the host
+-- what a save brings before it is loaded)
+local mirror_at = nil
+local function save_card(fname)
+	if not (db.actor and char_ready) or is_guest_session() then return end
+	local name = tostring(fname or ""):match("([^\\/]+)%.scop$")
+	if not name then return end
+	if coop_main.role == "host" and world_name() and name ~= session_save() then mirror_at = time_global() + 1000 end
+	local f = io.open(app_path("coop_card_" .. name .. ".txt"), "w")
+	if not f then return end
+	f:write(table.concat(character_lines(), "\n"))
+	f:close()
+end
+
+local function hook_saves()
+	if rawget(_G, "coop_saves_hooked") or not (alife_storage_manager and alife_storage_manager.CALifeStorageManager_before_save) then return end
+	_G.coop_saves_hooked = true
+	local before = alife_storage_manager.CALifeStorageManager_before_save
+	alife_storage_manager.CALifeStorageManager_before_save = function(fname, ...)
+		local ok, err = pcall(save_card, fname)
+		if not ok then coop_main.log("save card failed: " .. tostring(err)) end
+		return before(fname, ...)
+	end
+end
+
+function export_character()
+	if not (db.actor and char_ready) then return end
+	local lines = character_lines()
 	local f = io.open(app_path("coop_character.tmp"), "w")
 	if not f then return end
 	f:write(table.concat(lines, "\n"))
@@ -82,13 +162,13 @@ function export_character()
 	local data = src and src:read("*a")
 	if src then src:close() end
 	if data and data:find("\nend") then
-		local dst = io.open(app_path("coop_character.txt"), "w")
+		local dst = io.open(app_path(char_file()), "w")
 		if dst then dst:write(data) dst:close() end
 	end
 end
 
 local function read_character()
-	local f = io.open(app_path("coop_character.txt"), "r")
+	local f = io.open(app_path(char_file()), "r")
 	if not f then return nil end
 	local raw = f:read("*a")
 	f:close()
@@ -98,6 +178,8 @@ local function read_character()
 		local t = coop_main.split(line)
 		if t[1] == "m" then
 			c.money = tonumber(t[2]) or 0
+		elseif t[1] == "p" then
+			c.icon = t[2]
 		elseif t[1] == "i" then
 			local upg = {}
 			for u in (t[6] or ""):gmatch("[^,]+") do upg[#upg+1] = u end
@@ -106,6 +188,139 @@ local function read_character()
 	end
 	return c
 end
+
+------------------------------------------------------------------ the lobby's character cards
+-- a card: the character as the lobby shows it - money, the faction, what is worn and held, how much medicine
+-- and ammo; on the wire "s|card|name|money|faction|outfit|helmet|weapon|weapon|meds|rounds|new"
+local MEDS = { medkit = true, medkit_army = true, medkit_scientic = true, bandage = true, stimpack = true,
+	stimpack_army = true, stimpack_scientic = true, survival_kit = true }
+
+local function card_of(name, money, faction, items, icon)
+	local c = { name = name or "", money = money or 0, faction = faction or "", slot = {}, meds = 0, rounds = 0, icon = icon or "" }
+	for _, it in ipairs(items) do
+		if it.slot and it.slot > 0 and not c.slot[it.slot] then c.slot[it.slot] = it.sec end
+		if MEDS[it.sec] then c.meds = c.meds + 1 end
+		if ini_sys:section_exist(it.sec) and ini_sys:line_exist(it.sec, "box_size") and not ini_sys:line_exist(it.sec, "ammo_class") then
+			c.rounds = c.rounds + math.max(it.extra or 0, 0)
+		end
+	end
+	return c
+end
+
+-- this player's character as the next co-op game will bring it (nil: none yet, a new kit is chosen);
+-- with a save's name, the character that save holds (nil: saved before v2.11, or never saved)
+function card_from_file(save, world)
+	local f = io.open(app_path(save and ("coop_card_" .. save .. ".txt") or char_file(world)), "r")
+	if not f then return nil end
+	local raw = f:read("*a")
+	f:close()
+	if not raw:find("\nend") then return nil end
+	local name, money, faction, items, icon = nil, 0, "", {}, ""
+	for line in raw:gmatch("[^\n]+") do
+		local t = coop_main.split(line)
+		if t[1] == "n" then name = t[2]
+		elseif t[1] == "p" then icon = t[2] or ""
+		elseif t[1] == "m" then money = tonumber(t[2]) or 0
+		elseif t[1] == "f" then faction = t[2] or ""
+		elseif t[1] == "i" then items[#items + 1] = { sec = t[2], extra = tonumber(t[4]) or 0, slot = tonumber(t[5]) or 0 } end
+	end
+	return card_of(name, money, faction, items, icon)
+end
+
+function card_from_actor()
+	if not db.actor then return nil end
+	local items = {}
+	db.actor:iterate_inventory(function(_, obj)
+		local it = { sec = obj:section(), extra = IsAmmo(obj) and obj:ammo_get_count() or 0, slot = 0 }
+		for slot = 1, 13 do
+			local o = db.actor:item_in_slot(slot)
+			if o and o:id() == obj:id() then it.slot = slot break end
+		end
+		items[#items + 1] = it
+	end, nil)
+	return card_of(db.actor:character_name(), db.actor:money(), db.actor:character_community(), items, portrait())
+end
+
+function card_fields(c)
+	if not c then return { "", 0, "", "", "", "", "", 0, 0, 1, "", 0 } end
+	local e = coop_main.esc
+	return { e(c.name), c.money, e(c.faction), c.slot[7] or "", c.slot[12] or "", c.slot[3] or c.slot[1] or "",
+		c.slot[2] or "", c.meds, c.rounds, 0, e(c.icon or ""), c.sweater and 1 or 0 }
+end
+
+-- fields after "s|card|" back into a card (nil: no character, the player chooses a new kit)
+function card_parse(t)
+	if not t[1] or t[10] == "1" then return nil end
+	local c = { name = t[1], money = tonumber(t[2]) or 0, faction = t[3] or "", slot = {}, meds = tonumber(t[8]) or 0, rounds = tonumber(t[9]) or 0 }
+	c.slot[7], c.slot[12], c.slot[3], c.slot[2] = t[4] ~= "" and t[4] or nil, t[5] ~= "" and t[5] or nil, t[6] ~= "" and t[6] or nil, t[7] ~= "" and t[7] or nil
+	c.icon, c.sweater = t[11] or "", t[12] == "1"
+	return c
+end
+
+-- a list of item sections as a new game hands them out: in the backpack, a weapon with its ammo (the type and
+-- count the game's new game loadouts give it)
+function kit_items(sections)
+	local ini_itm = ini_file("items\\settings\\new_game_loadouts.ltx")
+	local items, ammo = {}, {}
+	for _, sec in ipairs(sections) do
+		if ini_sys:section_exist(sec) and sec ~= "cash" then
+			local is_ammo = ini_sys:line_exist(sec, "box_size") and not ini_sys:line_exist(sec, "ammo_class")
+			local slot = (not is_ammo) and ini_sys:r_float_ex(sec, "slot") or nil
+			-- into the backpack, as a new game hands its kit out (the player puts things in their slots)
+			items[#items + 1] = { sec = sec, extra = 0, slot = 0 }
+			local ani = ini_sys:r_float_ex(sec, "animation_slot")
+			if ini_sys:r_string_ex(sec, "ammo_class") and slot and ((slot == 0 and ani == 1) or slot == 1 or slot == 2) then
+				local box = ini_itm:r_string_ex("ammo_type_per_wpn", sec) or str_explode(ini_sys:r_string_ex(sec, "ammo_class"), ",")[1]
+				if box and ini_sys:section_exist(box) then
+					local size = ini_sys:r_float_ex(box, "box_size") or 50
+					ammo[box] = (ammo[box] or 0) + (ini_itm:r_float_ex("ammo_count", box) or (size < 30 and 2 * size or size))
+				end
+			end
+		end
+	end
+	for box, count in pairs(ammo) do items[#items + 1] = { sec = box, extra = count, slot = 0 } end
+	return items
+end
+
+-- the kit chosen in the lobby becomes this player's character for the host's world
+function write_kit(name, money, faction, items, icon, world)
+	local lines = { "v|1", "m|" .. math.floor(money), "n|" .. coop_main.esc(name), "f|" .. coop_main.esc(faction),
+		"p|" .. coop_main.esc(icon or "") }
+	for _, it in ipairs(items) do
+		lines[#lines + 1] = string.format("i|%s|1.000|%d|%d|", it.sec, it.extra or 0, it.slot or 0)
+	end
+	lines[#lines + 1] = "end\n"
+	local f = io.open(app_path(char_file(world)), "w")
+	if not f then return false end
+	f:write(table.concat(lines, "\n"))
+	f:close()
+	return true
+end
+
+-- in a game the card comes from the actor (a guest joining a running game sees the host's), every few seconds
+local card_cache, card_at = nil, 0
+coop_main.add_state_provider("card", function()
+	local now = time_global()
+	if not card_cache or now > card_at then
+		card_at = now + 3000
+		card_cache = card_fields(card_from_actor())
+	end
+	return card_cache
+end)
+
+-- the lobby sees a player who is in a game as ready
+coop_main.add_state_provider("lobby", function() return { 1, "game", 0, "save", coop_main.esc(world_name() or "") } end)
+
+-- the partner's card and lobby state as they come in during a game (the lobby page shows them)
+local partner_card, partner_lobby = nil, nil
+coop_main.on_state("card", function(t)
+	partner_card = card_parse(t)
+	if not partner_card then partner_card = false end
+end)
+coop_main.on_state("lobby", function(t)
+	partner_lobby = { ready = t[1] == "1", where = t[2], ng_ready = t[3] == "1", world = t[4], name = t[5] or "" }
+end)
+function partner() return partner_card, partner_lobby end
 
 -- step 1: wipe the clone's inventory and spawn ours; step 2 (next ticks): conditions, upgrades, slots
 local function import_character()
@@ -124,6 +339,7 @@ local function import_character()
 		if se then alife_release(se) end
 	end
 	db.actor:give_money(c.money - db.actor:money())
+	if c.icon and c.icon ~= "" and db.actor_binder then db.actor_binder.character_icon = c.icon end
 
 	local spawned = {}
 	for _, it in ipairs(c.items) do
@@ -180,16 +396,38 @@ coop_main.add_state_provider("g", function()
 end)
 
 ------------------------------------------------------------------ host: send session / guest: load it
-local save_pending = nil
-coop_main.on_event("_cmd_sync", function()
+local save_pending, save_tries, save_name = nil, 0, nil
+local function send_session()
 	if coop_main.role ~= "host" then
 		coop_main.msg("Отправить сессию может только хост")
 		return
 	end
-	save_pending = time_global() + 200
-	exec_console_cmd("save " .. SESSION_SAVE)
+	save_name = session_save()
+	save_pending, save_tries = time_global() + 200, 0
+	pcall(os.remove, getFS():update_path("$game_saves$", save_name .. ".scop"))
+	exec_console_cmd("save " .. save_name)
 	coop_main.msg("Сессия сохранена, отправляю напарнику...")
-end)
+end
+coop_main.on_event("_cmd_sync", send_session)
+
+-- a guest waiting ready in its lobby gets the world once this game is up (the lobby's own requests are lost in
+-- the main menu); once per wait: it is sent again only after the guest has been in a game or gone
+local world_sent, level_up_at = false, nil
+local function send_to_waiting_guest(now)
+	if coop_main.role ~= "host" or not coop_main.connected then
+		world_sent = false
+		return
+	end
+	local _, pl = partner()
+	if not pl or pl.where ~= "menu" then
+		if pl and pl.where == "game" then world_sent = false end
+		return
+	end
+	if pl.ready and not world_sent and not save_pending and level_up_at and now > level_up_at then
+		world_sent = true
+		send_session()
+	end
+end
 
 coop_main.on_event("session_ready", function()
 	coop_main.msg("Получена сессия хоста. Нажмите " .. coop_main.key_name("load") .. ", чтобы войти в его мир")
@@ -201,21 +439,24 @@ coop_main.on_event("_cmd_load", function()
 		return
 	end
 	export_character()
-	exec_console_cmd("load " .. SESSION_SAVE)
+	exec_console_cmd("load " .. session_save())
 end)
 
 ------------------------------------------------------------------ callbacks
 local function save_state(m_data)
 	-- sessions saved by the host are owned by the host; a guest's quicksave of a session stays the host's
 	m_data.coop_owner = session_owner or player_id
+	m_data.coop_world = world_name()
 	if not session_owner then session_owner = player_id end
 end
 
 local function load_state(m_data)
 	session_owner = m_data.coop_owner
+	loaded_world = m_data.coop_world
 end
 
 local function actor_on_first_update()
+	level_up_at = time_global() + 5000
 	if is_guest_session() then
 		char_ready = false
 		import_character()
@@ -233,10 +474,29 @@ local function actor_on_update()
 			import_step, char_ready = nil, true
 		end
 	end
+	send_to_waiting_guest(now)
+	if mirror_at and now > mirror_at then
+		mirror_at = nil
+		exec_console_cmd("save " .. session_save())
+	end
 	if save_pending and now > save_pending then
-		save_pending = nil
-		coop_main.send("@saved", SESSION_SAVE)
-		coop_spawn.arm("session saved")
+		-- only a save that is really there goes to the guest (a world that is still starting may not save yet)
+		local f = io.open(getFS():update_path("$game_saves$", save_name .. ".scop"), "rb")
+		if f then
+			f:close()
+			save_pending, save_tries = nil, 0
+			coop_main.send("@saved", save_name)
+			coop_spawn.arm("session saved")
+		else
+			save_tries = (save_tries or 0) + 1
+			if save_tries > 20 then
+				save_pending, save_tries = nil, 0
+				coop_main.msg("Сессия не сохранилась, повторите (" .. coop_main.key_name("sync") .. ")")
+			else
+				if save_tries % 5 == 0 then exec_console_cmd("save " .. save_name) end
+				save_pending = now + 500
+			end
+		end
 	end
 	if now > next_export then
 		next_export = now + 15000
@@ -250,6 +510,7 @@ local function on_before_save_input()
 end
 
 function on_game_start()
+	pcall(hook_saves)
 	player_id = load_player_id()
 	session_owner, char_ready, import_step = nil, false, nil
 	RegisterScriptCallback("save_state", save_state)

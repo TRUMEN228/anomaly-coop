@@ -40,6 +40,7 @@ local heal_until = 0         -- the actor is healing until then (medkit, bandage
 local last_remote_reloads = nil
 local reload_pending = false
 local puppet_torch_id, puppet_torch_on = nil, nil
+local puppet_flash_id, puppet_flash_sec = nil, nil -- the hand flashlight the actor puppet carries (engine r9)
 local puppet_is_actor = false
 local actor_setup_time = 0
 -- appdata\coop_actor.txt: "off" shows the partner as the NPC puppet even on engine r6; "keep" never falls back to it
@@ -93,6 +94,30 @@ function aim_point()
 end
 
 -- the addons attached to a firearm (not the built-in ones), as the flags a weapon is spawned with
+-- the hand flashlight out (a device held like a detector): its section, or ""
+local function hand_flashlight(a)
+	local d = a.active_detector and a:active_detector()
+	if not d then return "" end
+	local sec = d:section()
+	return ini_sys:r_string_ex(sec, "class") == "D_FLALIT" and sec or ""
+end
+
+-- the partner's hand flashlight: the actor puppet gets one of the same kind and the engine lights it
+local function sync_puppet_flashlight(npc)
+	if ENGINE < 9 then return end
+	local want = remote and remote.flashlight or ""
+	if want ~= "" and want ~= puppet_flash_sec then
+		if puppet_flash_id then
+			local se = alife_object(puppet_flash_id)
+			if se then alife_release(se) end
+		end
+		local se = ini_sys:section_exist(want) and alife_create_item(want, npc)
+		puppet_flash_id, puppet_flash_sec = se and se.id, se and want
+		coop_main.log("actor puppet flashlight " .. want .. (se and "" or " (not made)"))
+	end
+	npc:net_actor_flashlight(want ~= "" and puppet_flash_id ~= nil and level.object_by_id(puppet_flash_id) ~= nil)
+end
+
 local function addon_flags(wpn)
 	if not (wpn and IsWeapon(wpn)) then return 0 end
 	local ok, flag = pcall(utils_item.get_addon_flag, wpn, false)
@@ -143,6 +168,7 @@ coop_main.add_state_provider("p", function()
 		ENGINE >= 4 and a:net_actor_mstate() or "",
 		ENGINE >= 4 and string.format("%.4f:%.4f:%.4f", a:net_actor_angles().x, a:net_actor_angles().y, a:net_actor_angles().z) or "",
 		addon_flags(wpn),
+		hand_flashlight(a),
 	}
 end, true) -- fast: the engine puppet interpolates between these positions
 
@@ -165,6 +191,7 @@ coop_main.on_state("p", function(t)
 	r.stamp = tonumber(t[20])
 	r.mstate = tonumber(t[21])
 	r.addons = tonumber(t[23]) or 0
+	r.flashlight = t[24] or ""
 	local mx, my, mz = (t[22] or ""):match("^([^:]+):([^:]+):([^:]+)$")
 	if mx then r.angles = vector():set(tonumber(mx), tonumber(my), tonumber(mz)) end
 	-- the same state is read again every tick until a new one arrives: it only proves the partner is there
@@ -398,6 +425,11 @@ local function release_puppet()
 		local se = alife_object(puppet_torch_id)
 		if se then alife_release(se) end
 		puppet_torch_id, puppet_torch_on = nil, nil
+	end
+	if puppet_flash_id then
+		local se = alife_object(puppet_flash_id)
+		if se then alife_release(se) end
+		puppet_flash_id, puppet_flash_sec = nil, nil
 	end
 	puppet_id = nil
 	puppet_visual = nil
@@ -705,6 +737,7 @@ local function update()
 		sync_puppet_weapon(npc)
 		hold_actor_weapon(npc)
 		pcall(sync_puppet_torch, npc)
+		pcall(sync_puppet_flashlight, npc)
 		return
 	end
 	if spawn_pending then setup_puppet(npc) end
