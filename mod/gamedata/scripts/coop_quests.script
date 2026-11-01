@@ -19,7 +19,14 @@ local remote_end = {}        -- task id -> { money, share } while the partner's 
 local suppress = nil         -- "all" | "money" while such an end runs its on_complete effects
 local pending_done = {}      -- ends to report once delayed rewards (fetch payment) have arrived
 local share_rewards = true   -- host option (coop_keys.txt "rewards=0|1")
+local in_task_end = false    -- a task's end runs here (its rewards are given on both sides already)
+local in_give_task = false   -- a task is being given here (its start may hand out gear)
+local gifting = false        -- a partner's gift is being handed over here
 local resync_at = nil
+local gift_until = 0         -- a task was given: its items may still be coming
+local reward_until = 0       -- a task ended: what comes now is its reward
+local talk_until = 0         -- a talk just ended: what it handed out may still be coming
+local reward_remote = false  -- the last task end here was the partner's (its reward items come as gifts)
 
 local function host() return coop_main.is_host() end
 local function guest() return coop_session.is_guest_session() end
@@ -175,19 +182,73 @@ local function hook_give()
 	if m.coop_give_hooked then return end
 	local orig = m.give_task
 	m.give_task = function(self, id, giver)
-		if applying or not ready() then return orig(self, id, giver) end
-		if guest() then
-			-- the host creates the task: its squads and items must come from the host's world
-			coop_main.send("qreq", id, R(giver) or "", pack(task_vars(id), R))
-			dbg("asked host for " .. tostring(id))
-			return
-		end
-		local res = orig(self, id, giver)
-		pcall(send_give, id)
+		in_give_task = true
+		local ok, res = pcall(function()
+			if applying or not ready() then return orig(self, id, giver) end
+			if guest() then
+				-- the host creates the task: its squads and items must come from the host's world
+				coop_main.send("qreq", id, R(giver) or "", pack(task_vars(id), R))
+				dbg("asked host for " .. tostring(id))
+				return
+			end
+			local r = orig(self, id, giver)
+			pcall(send_give, id)
+			return r
+		end)
+		in_give_task = false
+		gift_until = time_global() + 3000
+		if not ok then coop_main.log("give task " .. tostring(id) .. " failed: " .. tostring(res)) end
 		return res
 	end
 	m.coop_give_hooked = true
 end
+
+-- gear a dialog or a task's start hands to one player goes to both: whatever comes into the actor's inventory
+-- while a talk is on (not in a trade window) or in the seconds after a task was given - the items a task needs
+-- as well as presents. A task's reward items go to both as well (when the host shares rewards: the partner's
+-- own reward effects are skipped then); trade, crafting, boxes and the ground do not count. Items are spawned a
+-- few frames after the script asks, hence the time windows.
+local incoming = {}           -- section -> count of the partner's gifts still to arrive here (not sent back)
+
+local function menu_shown()
+	local m = ActorMenu and ActorMenu.get_actor_menu and ActorMenu.get_actor_menu()
+	return m and m:IsShown()
+end
+
+local function actor_on_item_take(item)
+	if not (item and coop_main.connected and ready()) then return end
+	local sec = item:section()
+	if (incoming[sec] or 0) > 0 then
+		incoming[sec] = incoming[sec] - 1
+		return
+	end
+	local now = time_global()
+	local talking = not menu_shown() and (db.actor:is_talking() or now < talk_until)
+	dbg(string.format("item in: %s (talking %s, task given %s, task ended %s)", sec, tostring(talking),
+		tostring(now < gift_until or in_give_task), tostring(now < reward_until or in_task_end)))
+	if now < reward_until or in_task_end then
+		-- this player's own task paid: the partner gets the same (the host decides whether rewards are shared)
+		if reward_remote or (host() and not share_rewards) then return end
+		coop_main.send("gift", sec, 1, "r")
+		dbg("reward sent " .. sec)
+		return
+	end
+	if not (now < gift_until or in_give_task or talking) then return end
+	coop_main.send("gift", sec, 1)
+	dbg("gift sent " .. sec)
+end
+
+coop_main.on_event("gift", function(a)
+	local sec, n = a[1], tonumber(a[2]) or 1
+	if not (db.actor and sec and ini_sys:section_exist(sec)) then return end
+	-- a reward of the guest's task, and the host does not share rewards
+	if a[3] == "r" and host() and not share_rewards then return end
+	for _ = 1, n do
+		incoming[sec] = (incoming[sec] or 0) + 1
+		alife_create_item(sec, db.actor)
+	end
+	coop_main.msg(string.format("Вы тоже получили: %s", ui_item and ui_item.get_sec_name and ui_item.get_sec_name(sec) or sec))
+end)
 
 coop_main.on_event("qreq", function(a)
 	if not host() then return end
@@ -254,7 +315,8 @@ local function hook_effects()
 		end
 	end
 	for _, n in ipairs(TAKE) do wrap(n, function() return suppress ~= nil end) end
-	for _, n in ipairs(GIVE) do wrap(n, function() return suppress == "all" end) end
+	-- (the partner's reward items come as gifts from the partner's game)
+	for _, n in ipairs(GIVE) do wrap(n, function() return suppress ~= nil end) end
 	wrap("reward_stash", function() return guest() and coop_main.connected end)
 end
 
@@ -272,7 +334,13 @@ local function hook_callback()
 			suppress = remote.share and "money" or "all"
 		end
 		local m0 = db.actor and db.actor:money() or 0
+		-- (only an end pays: the callback also comes for a task just given, whose items go to both)
+		local ending = state == task.completed or state == task.fail
+		in_task_end = ending
+		if ending then reward_remote = remote ~= nil end
 		local ok, err = pcall(orig, tsk, state)
+		in_task_end = false
+		if ending then reward_until = time_global() + 3000 end
 		suppress = nil
 		if not ok then coop_main.log("task end " .. tostring(id) .. " failed: " .. tostring(err)) end
 		if not t or not (state == task.completed or state == task.fail) then return end
@@ -324,6 +392,7 @@ end
 local next_tick = 0
 local function actor_on_update()
 	local now = time_global()
+	if db.actor:is_talking() and not menu_shown() then talk_until = now + 3000 end
 	if now < next_tick then return end
 	next_tick = now + 500
 	local ok, err = pcall(function()
@@ -350,4 +419,5 @@ function on_game_start()
 	RegisterScriptCallback("actor_on_first_update", actor_on_first_update)
 	RegisterScriptCallback("actor_on_update", actor_on_update)
 	RegisterScriptCallback("actor_on_info_callback", actor_on_info_callback)
+	RegisterScriptCallback("actor_on_item_take", actor_on_item_take)
 end

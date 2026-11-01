@@ -165,6 +165,9 @@ local function patch()
 	cls.Update = function(self, ...)
 		update(self, ...)
 		if self.coop then
+			-- the character is called by the player's nick, on both pages (the page's own randomizing aside)
+			local nm = self.character_name
+			if nm and nm:GetText() ~= nick() then nm:SetText(nick()) end
 			local ok, err = pcall(on_update, self)
 			if not ok then
 				printf("! coop new game: %s", tostring(err))
@@ -185,8 +188,12 @@ function open(main, guest)
 	xml:ParseFile("ui_coop_menu.xml")
 	page.coop_status = xml:InitTextWnd("ng_status", page)
 	page.coop_players = xml:InitTextWnd("ng_players", page)
-	if guest then
+	-- the name is the player's nick, for the host as well: not to be changed here
+	if page.character_name then
 		page.character_name:SetText(nick())
+		pcall(page.character_name.Enable, page.character_name, false)
+	end
+	if guest then
 		for _, name in ipairs(CONTROLS) do
 			local c = page[name]
 			if c then pcall(c.Enable, c, false) end

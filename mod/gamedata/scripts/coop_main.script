@@ -14,7 +14,7 @@
 	Event types starting with "@" are handled by the bridge itself.
 --]]
 
-VERSION = "2.12"
+VERSION = "2.13"
 debug = false
 local TICK_MS = 100
 local FAST_MS = 50       -- states marked fast (the partner's position) go both ways twice as often
@@ -292,7 +292,9 @@ local function read_in(full)
 		last_in_change = now
 	end
 	-- the bridge rewrites the file at least every 500 ms; stale file = bridge closed
-	bridge_alive = (now - last_in_change) < 3000
+	-- (the link in the engine lives in this very process: what it says goes, even while the partner's frames stand
+	-- still - a partner loading a level sends nothing for a while)
+	bridge_alive = link_on or (now - last_in_change) < 3000
 
 	local was_connected = connected
 	for line in raw:gmatch("[^\n]+") do
@@ -465,8 +467,15 @@ function on_game_start()
 	local dbgf = io.open(getFS():update_path("$app_data_root$", "coop_debug.txt"), "r")
 	debug = dbgf ~= nil
 	if dbgf then dbgf:close() end
-	local f = io.open(getFS():update_path("$app_data_root$", "coop_log.txt"), "w")
-	if f then f:write("Anomaly Co-op " .. VERSION .. " log\n"); f:close() end
+	-- the log goes on over loads (a test is many of them); a big one starts anew
+	local lp = getFS():update_path("$app_data_root$", "coop_log.txt")
+	local f = io.open(lp, "a")
+	local size = f and f:seek("end") or 0
+	if f and size > 2000000 then
+		f:close()
+		f = io.open(lp, "w")
+	end
+	if f then f:write(string.format("\n=== Anomaly Co-op %s, %s ===\n", VERSION, os.date("%H:%M:%S"))); f:close() end
 	math.randomseed(os.time() + math.floor(os.clock() * 1000))
 	sid = tostring(math.random(100000, 999999))
 	out_seq, out_queue, in_sid, in_last = 0, {}, nil, 0

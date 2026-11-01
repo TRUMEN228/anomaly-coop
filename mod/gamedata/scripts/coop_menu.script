@@ -70,6 +70,7 @@ L = { role = "host", world = nil, ready = false, ng_ready = false, ng_open = fal
 	partner_card = nil, partner_lobby = nil, partner_ng = nil }
 local update_checked = false
 local NEW_GAME = "Новая игра"
+local LAST_SAVE = "Последнее сохранение"
 local LOADOUTS = "items\\settings\\new_game_loadouts.ltx"
 
 -- an item's icon on a static (as the game's own windows show it)
@@ -204,6 +205,15 @@ function CoopMenu:FillSaves(last)
 	local pick = nil
 	-- a new game is made through the game's own page once the lobby starts it
 	self.saves:AddItem(NEW_GAME, 0)
+	-- the newest save of all (a quicksave after a death, say) goes on as the last world played
+	self.last_save = nil
+	local newest = flist:Size() > 0 and flist:GetAt(0):NameFull() or nil
+	local last_world = read_settings().world
+	if newest and last_world and last_world ~= "" then
+		self.last_save = newest:sub(1, #newest - #ext)
+		self.last_save_world = last_world
+		self.saves:AddItem(string.format("%s: %s (мир %s)", LAST_SAVE, self.last_save, last_world), -1)
+	end
 	for i = 0, flist:Size() - 1 do
 		local full = flist:GetAt(i):NameFull()
 		local name = full:sub(1, #full - #ext)
@@ -254,6 +264,14 @@ end
 function CoopMenu:StartHost(steam)
 	local save = self.saves:GetText()
 	if not save or save == "" then save = NEW_GAME end
+	if self.last_save and save:find("^" .. LAST_SAVE) then
+		-- the last save becomes the world's save: the lobby then loads it in both games as usual
+		if not coop_session.adopt_save(self.last_save, self.last_save_world) then
+			self.status:SetText("Не удалось подготовить последнее сохранение")
+			return
+		end
+		save = self.last_save_world
+	end
 	local world = save
 	if save == NEW_GAME then
 		-- a new world's name: its saves will be "coop_<name>"
@@ -403,7 +421,9 @@ end
 
 -- out of a game the lobby swaps its state with the partner itself, through the engine link (in a game the mod
 -- does); the new game page calls it too, with its settings (host) for the partner's page
+local exchanged_at = -1e9
 function exchange(extra)
+	exchanged_at = time_global()
 	local lines = { "g|m" .. menu_sid .. "|" .. menu_ack .. "|" .. version(),
 		"s|card|" .. table.concat(coop_session.card_fields(my_card()), "|"),
 		string.format("s|lobby|%d|menu|%d|%s|%s", L.ready and 1 or 0, L.ng_ready and 1 or 0,
@@ -547,7 +567,8 @@ function CoopMenu:LobbyTick()
 	self.btn_ready:Show(not in_game())
 	self.btn_ready:TextControl():SetText(L.ready and "Не готов" or "Готов")
 	-- a kit is chosen here only for a new character in the host's saved world (a new game chooses it on its page)
-	self.btn_loadout:Show(not host and not in_game() and not fresh and not mine)
+	-- (not in the test sandbox: everyone gets its test gear there)
+	self.btn_loadout:Show(not host and not in_game() and not fresh and not mine and host_world() ~= "sandbox")
 	-- the host starts a save once both are ready; a new game opens its page for both by itself
 	self.btn_start:Show(host and (in_game() or not on or not fresh))
 	self.btn_start:TextControl():SetText(in_game() and "В игру" or "Начать")
@@ -750,6 +771,9 @@ poll_link = function(main)
 		open_menu(main)
 		return
 	end
+	-- the main menu without the lobby open (a player who left the world) still tells the partner it is here:
+	-- the host learns the guest has gone, a guest's game ends with the host's
+	if not in_game() and now - exchanged_at > 1000 and connected() then exchange() end
 	if coop_link_take_session() and not in_game() then
 		if menu_wnd and menu_wnd:IsShown() then menu_wnd:Close(true) end
 		pcall(function() coop_newgame.hide() end)
@@ -784,17 +808,37 @@ local function extract_files()
 	for line in f:lines() do
 		line = line:gsub("%s+$", "")
 		local sec = line:match("^visual:(.+)$")
-		local rel = sec and ini_sys:r_string_ex(sec, "visual") or line
+		-- "$game_scripts$:dialogs.script": a file under another of the game's folders
+		local alias, path = line:match("^(%$[%w_]+%$):(.+)$")
+		local rel = path or (sec and ini_sys:r_string_ex(sec, "visual")) or line
 		if rel and rel ~= "" then
 			rel = rel:gsub("/", "\\")
-			if not rel:find("%.%w+$") then rel = rel .. ".ogf" end
-			local src = fs:update_path("$game_meshes$", rel)
+			if not path and not rel:find("%.%w+$") then rel = rel .. ".ogf" end
+			local src = fs:update_path(alias or "$game_meshes$", rel)
 			local dst = fs:update_path("$app_data_root$", "extract\\" .. rel)
 			local ok = fs:exist(src) and pcall(fs.file_copy, fs, src, dst)
 			printf("coop extract %s -> %s", src, ok and dst or "missing")
 		end
 	end
 	f:close()
+end
+
+-- the guest's game was ended by the host's (coop_session.kick): the main menu says so once
+local function show_kicked(owner)
+	local path = getFS():update_path("$app_data_root$", "coop_kicked.txt")
+	local f = io.open(path, "r")
+	if not f then return end
+	local why = f:read("*a")
+	f:close()
+	-- (the main menu's Lua has no os.remove: the note is emptied instead)
+	if why == "" then return end
+	f = io.open(path, "w")
+	if f then f:close() end
+	local box = CUIMessageBoxEx()
+	box:InitMessageBox("message_box_ok")
+	box:SetText(why)
+	box:ShowDialog(true)
+	kicked_box = box
 end
 
 function before_main_menu()
@@ -805,6 +849,8 @@ function before_main_menu()
 	ui_main_menu.main_menu.InitControls = function(self, ...)
 		init(self, ...)
 		local ok, err = pcall(add_entry, self)
+		if not ok then printf("! coop menu: %s", tostring(err)) end
+		ok, err = pcall(show_kicked, self)
 		if not ok then printf("! coop menu: %s", tostring(err)) end
 	end
 	local update = ui_main_menu.main_menu.Update

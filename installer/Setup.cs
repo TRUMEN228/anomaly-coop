@@ -5,7 +5,10 @@ using System.Drawing;
 using System.IO;
 using System.IO.Compression;
 using System.Linq;
+using System.Net;
 using System.Reflection;
+using System.Text.RegularExpressions;
+using System.Threading.Tasks;
 using System.Runtime.InteropServices;
 using System.Windows.Forms;
 
@@ -49,6 +52,8 @@ namespace CoopLauncher
         readonly PdaLog log = new PdaLog { Title = "УСТАНОВКА" };
         readonly ZoneButton install = new ZoneButton("Установить", true);
         readonly ZoneButton restore = new ZoneButton("Вернуть ванильную игру");
+        readonly ZoneButton update = new ZoneButton("Обновить установщик", true) { Visible = false };
+        string updateUrl;
         readonly string version = Assembly.GetExecutingAssembly().GetName().Version.ToString(3);
 
         readonly bool quiet;
@@ -88,7 +93,8 @@ namespace CoopLauncher
             var browse = Add(new ZoneButton("Обзор..."), 520, 82, 96, 30);
             state.BackColor = Color.Transparent;
             state.Font = Theme.Label(9);
-            Add(state, 24, 118, 592, 40);
+            Add(state, 24, 118, 400, 40);
+            Add(update, 432, 120, 184, 30);
             Add(desktop, 24, 160, 280, 24);
             Add(startMenu, 320, 160, 280, 24);
             Add(log, 24, 196, 592, 290);
@@ -105,10 +111,77 @@ namespace CoopLauncher
             install.Click += (s, e) => Run(Install);
             restore.Click += (s, e) => Run(Restore);
             quit.Click += (s, e) => Close();
+            update.Click += (s, e) => UpdateSelf();
 
             gameDir.Text = FindGame() ?? "";
             ShowState();
             Say("Архив внутри установщика: игра ставится без интернета. Кооп работает на DX11.", Theme.TextDim);
+            CheckUpdate();
+        }
+
+        // ------------------------------------------------------------------ a newer setup on GitHub
+        const string Repo = "TRUMEN228/anomaly-coop";
+
+        async void CheckUpdate()
+        {
+            var found = await Task.Run(() =>
+            {
+                try
+                {
+                    ServicePointManager.SecurityProtocol |= SecurityProtocolType.Tls12;
+                    using (var wc = new WebClient())
+                    {
+                        wc.Headers[HttpRequestHeader.UserAgent] = "AnomalyCoopSetup/" + version;
+                        var json = wc.DownloadString($"https://api.github.com/repos/{Repo}/releases/latest");
+                        var tag = Regex.Match(json, "\"tag_name\"\\s*:\\s*\"v?([0-9.]+)\"").Groups[1].Value;
+                        var url = Regex.Match(json, "\"browser_download_url\"\\s*:\\s*\"([^\"]*AnomalyCoopSetup\\.exe)\"").Groups[1].Value;
+                        if (tag == "" || url == "" || !Version.TryParse(tag.Contains(".") ? tag : tag + ".0", out var v)) return null;
+                        var cur = Assembly.GetExecutingAssembly().GetName().Version;
+                        var mine = new Version(cur.Major, cur.Minor, Math.Max(0, cur.Build));
+                        var theirs = new Version(v.Major, v.Minor, Math.Max(0, v.Build));
+                        return theirs > mine ? Tuple.Create(tag, url) : null;
+                    }
+                }
+                catch { return null; } // offline or rate limited: this setup still installs what it carries
+            });
+            if (found == null || IsDisposed) return;
+            updateUrl = found.Item2;
+            update.Text = "Обновить до " + found.Item1;
+            update.Visible = true;
+            Say($"Вышла новая версия {found.Item1}: нажмите «Обновить до {found.Item1}», установщик скачает её и запустится заново.", Theme.Amber);
+        }
+
+        async void UpdateSelf()
+        {
+            update.Enabled = install.Enabled = restore.Enabled = false;
+            Say("Скачиваю новую версию установщика...", Theme.Text);
+            var path = Path.Combine(Path.GetTempPath(), "AnomalyCoopSetup_" + Guid.NewGuid().ToString("N").Substring(0, 8) + ".exe");
+            var error = await Task.Run(() =>
+            {
+                try
+                {
+                    ServicePointManager.SecurityProtocol |= SecurityProtocolType.Tls12;
+                    using (var wc = new WebClient())
+                    {
+                        wc.Headers[HttpRequestHeader.UserAgent] = "AnomalyCoopSetup/" + version;
+                        wc.DownloadFile(updateUrl, path);
+                    }
+                    var head = new byte[2];
+                    using (var f = File.OpenRead(path)) f.Read(head, 0, 2);
+                    if (head[0] != 'M' || head[1] != 'Z' || new FileInfo(path).Length < 1024 * 1024)
+                        return "скачанный файл повреждён";
+                    return null;
+                }
+                catch (Exception ex) { return ex.Message; }
+            });
+            if (error != null)
+            {
+                Say("Не удалось обновиться: " + error, Theme.Danger);
+                update.Enabled = install.Enabled = restore.Enabled = true;
+                return;
+            }
+            Process.Start(new ProcessStartInfo(path) { UseShellExecute = true });
+            Close();
         }
 
         // ------------------------------------------------------------------ the game folder

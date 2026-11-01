@@ -1,25 +1,157 @@
 --[[
-	Anomaly Co-op: a conversation with an NPC is seen by both players.
-	The co-op engine (r10) calls on_line for every line of a talk window as it appears: the NPC's and the talker's.
-	The line goes to the partner, whose game shows the conversation on screen like subtitles: who talks to whom,
-	then the last lines with their speakers. They stay while the talk window is open on the talker's side and for
-	a while after; the whole last conversation comes back with Num5.
+	Anomaly Co-op: a conversation with an NPC is shared by both players.
+	The talk runs in the game of the one who started it (the NPC's dialog actions, tasks and rewards happen there
+	once). The co-op engine (r10/r11) hands every line (on_line) and every set of answers (on_options) to this
+	script; they go to the partner, whose game opens a copy of the talk window: the same lines, the same answers.
+	An answer chosen in the copy goes back and is said in the starter's window as if clicked there (r11).
+	Trade, upgrades and repairs stay each player's own; either one may close the window - the starter's closing
+	ends the talk for both, the partner's only its copy.
+	A partner who cannot take the copy (busy in a window of its own) sees the talk as subtitles; Num5 shows the
+	last one again.
 --]]
 
+local ENGINE = rawget(_G, "coop_engine_version") and coop_engine_version() or 0
 local MAX_LINES = 7
 local HISTORY_LINES = 14
-local AFTER_MS = 15000  -- the lines stay this long after the talker closed the talk window
+local AFTER_MS = 15000  -- the subtitles stay this long after the talker closed the talk window
 local PANEL = nil
-local lines = {}        -- { text, until }: on screen
+local lines = {}        -- { text, until }: subtitles on screen
 local history = {}      -- the last conversation, all of it
 local last_other = nil
+local declined = false  -- the partner's talk copy was closed here: no new one until that talk ends
 local talking = false   -- this player's own talk window
 
+------------------------------------------------------------------ the starter's side
 function on_line(speaker, text, other)
 	if not (coop_main.connected and db.actor) or not text or text == "" then return end
 	coop_main.send("dlg", db.actor:character_name(), speaker or "", text, other or "")
 end
 
+-- the answers the talk window offers now: "id\ttext\n..." from the engine, and the NPC talked to
+function on_options(other, list, npc_id)
+	if coop_main.debug then
+		coop_main.log(string.format("talk options here: %s, npc %s, connected %s", tostring(other), tostring(npc_id),
+			tostring(coop_main.connected)))
+	end
+	if not (coop_main.connected and db.actor) then return end
+	local args = { db.actor:character_name(), other or "", tostring(npc_id and coop_spawn.R(npc_id) or "") }
+	for id, text in (list or ""):gmatch("([^\t\n]+)\t([^\n]*)\n") do
+		args[#args + 1] = id
+		args[#args + 1] = text
+	end
+	coop_main.send("dlg_opts", unpack(args))
+end
+
+coop_main.on_event("dlg_pick", function(a)
+	if not (db.actor and db.actor:is_talking() and a[1]) then return end
+	if rawget(_G, "coop_dialog_pick") then coop_dialog_pick(a[1]) end
+end)
+
+------------------------------------------------------------------ the partner's copy of the talk window
+-- the game's own talk window with the same NPC here, run by the partner's game (r11)
+local function mirror_shown() return rawget(_G, "coop_talk_mirror_shown") and coop_talk_mirror_shown() end
+
+-- a copy opens only over the plain game view: not over this player's own talk, inventory, PDA and the like
+local function can_open()
+	return ENGINE >= 11 and db.actor and db.actor:alive() and not db.actor:is_talking() and main_hud_shown()
+end
+
+-- the engine: an answer was chosen in the copy, or the copy closed (or went on to its own trade)
+function on_mirror_pick(id)
+	coop_main.send("dlg_pick", id)
+end
+
+function on_mirror_closed(how)
+	if how ~= "switch" then declined = true end
+end
+
+-- the engine: an answer the partner chose here opens a trade or upgrades - they open in the partner's game
+function on_partner_switch(kind)
+	coop_main.send("dlg_switch", kind)
+end
+
+coop_main.on_event("dlg_switch", function(a)
+	if mirror_shown() then coop_talk_mirror_switch(a[1] or "trade") end
+end)
+
+------------------------------------------------------------------ the partner's lines and answers arrive
+local said = {}          -- the current talk's lines as said: { speaker, text, npc } (a copy opened late shows them)
+
+local function add_subtitle(text)
+	lines[#lines + 1] = { text, math.huge }
+	while #lines > MAX_LINES do table.remove(lines, 1) end
+end
+
+local function add(text)
+	history[#history + 1] = text
+	while #history > HISTORY_LINES do table.remove(history, 1) end
+	if not mirror_shown() then add_subtitle(text) end
+end
+
+local function new_talk(who, other)
+	if other == last_other and (#lines > 0 or mirror_shown()) then return end
+	last_other = other
+	history = {}
+	said = {}
+	add(string.format("%%c[255,240,200,120]%s говорит с %s%%c[default]", who, other))
+end
+
+coop_main.on_event("dlg", function(a)
+	if not db.actor then return end
+	local who, speaker, text, other = a[1] or "", a[2] or "", a[3] or "", a[4] or ""
+	if #text > 400 then text = text:sub(1, 397) .. "..." end
+	new_talk(who, other)
+	local color = speaker == other and "%c[255,200,200,190]" or "%c[255,150,210,255]"
+	add(string.format("%s%s:%%c[default] %s", color, speaker, text))
+	said[#said + 1] = { speaker, text, other }
+	-- in the copy the partner's lines stand on this player's side, as in the partner's own window
+	if mirror_shown() then coop_talk_mirror_line(speaker, text, speaker ~= other) end
+end)
+
+coop_main.on_event("dlg_opts", function(a)
+	if coop_main.debug then coop_main.log("talk options from the partner: " .. tostring(a[2]) .. ", npc " .. tostring(a[3])) end
+	if not db.actor then return end
+	local who, other, npc = a[1] or "", a[2] or "", coop_spawn.L(a[3])
+	new_talk(who, other)
+	local list = {}
+	for i = 4, #a - 1, 2 do list[#list + 1] = a[i] .. "\t" .. (a[i + 1] or "") .. "\n" end
+	if not mirror_shown() and not declined then
+		local obj = npc and level.object_by_id(npc)
+		coop_main.log(string.format("talk copy: npc %s -> %s (%s), engine %d, talking %s, hud %s", tostring(a[3]),
+			tostring(npc), obj and obj:section() or "not here", ENGINE, tostring(db.actor:is_talking()),
+			tostring(main_hud_shown())))
+	end
+	if not mirror_shown() and not declined and npc and can_open() and coop_talk_mirror_open(npc) then
+		coop_main.log("talk copy opened")
+		-- the copy starts with what was said so far
+		lines = {}
+		for _, l in ipairs(said) do coop_talk_mirror_line(l[1], l[2], l[1] ~= l[3]) end
+	end
+	if mirror_shown() then coop_talk_mirror_options(table.concat(list)) end
+end)
+
+-- the starter closed its talk window: the copy closes, the subtitles go after a while
+coop_main.on_event("dlg_end", function()
+	if mirror_shown() then coop_talk_mirror_close() end
+	declined = false
+	local at = time_global() + AFTER_MS
+	for _, l in ipairs(lines) do
+		if l[2] > at then l[2] = at end
+	end
+end)
+
+-- Num5: the whole last conversation again, for a while
+coop_main.on_event("_cmd_talk", function()
+	if #history == 0 then
+		coop_main.msg("Разговоров напарника пока не было")
+		return
+	end
+	lines = {}
+	local at = time_global() + 30000
+	for _, text in ipairs(history) do lines[#lines + 1] = { text, at } end
+end)
+
+------------------------------------------------------------------ subtitles
 class "UICoopTalk" (CUIScriptWnd)
 
 function UICoopTalk:__init() super()
@@ -57,50 +189,10 @@ function UICoopTalk:Update()
 	end
 end
 
--- a line stays until the talk is over (math.huge), then AFTER_MS more
-local function add(text)
-	lines[#lines + 1] = { text, math.huge }
-	while #lines > MAX_LINES do table.remove(lines, 1) end
-	history[#history + 1] = text
-	while #history > HISTORY_LINES do table.remove(history, 1) end
-end
-
-coop_main.on_event("dlg", function(a)
-	if not db.actor then return end
-	local who, speaker, text, other = a[1] or "", a[2] or "", a[3] or "", a[4] or ""
-	if #text > 260 then text = text:sub(1, 257) .. "..." end
-	-- a new conversation (or the same NPC after a pause) starts with who talks to whom
-	if other ~= last_other or #lines == 0 then
-		last_other = other
-		history = {}
-		add(string.format("%%c[255,240,200,120]%s говорит с %s%%c[default]", who, other))
-	end
-	local color = speaker == other and "%c[255,200,200,190]" or "%c[255,150,210,255]"
-	add(string.format("%s%s:%%c[default] %s", color, speaker, text))
-end)
-
--- the talker closed its talk window: the lines go after a while
-coop_main.on_event("dlg_end", function()
-	local at = time_global() + AFTER_MS
-	for _, l in ipairs(lines) do
-		if l[2] > at then l[2] = at end
-	end
-end)
-
--- Num5: the whole last conversation again, for a while
-coop_main.on_event("_cmd_talk", function()
-	if #history == 0 then
-		coop_main.msg("Разговоров напарника пока не было")
-		return
-	end
-	lines = {}
-	local at = time_global() + 30000
-	for _, text in ipairs(history) do lines[#lines + 1] = { text, at } end
-end)
-
+------------------------------------------------------------------ callbacks
 -- this player's talk window closing tells the partner the conversation is over
 local function actor_on_update()
-	local now_talking = db.actor:is_talking()
+	local now_talking = db.actor:is_talking() and not mirror_shown()
 	if talking and not now_talking and coop_main.connected then coop_main.send("dlg_end") end
 	talking = now_talking
 end

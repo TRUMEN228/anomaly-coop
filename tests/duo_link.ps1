@@ -42,7 +42,7 @@ Start-Process python -ArgumentList "-u", "$r\tests\lag_relay.py", 27016, 27015, 
     -RedirectStandardOutput "$r\local\relay.log" -RedirectStandardError "$r\local\relay_err.log" | Out-Null
 if ($Lobby) {
     foreach ($n in 'A', 'B') {
-        Start-Process "$r\local\test$n\bin\AnomalyDX11AVX_coop.exe" -WorkingDirectory "$r\local\test$n" -ArgumentList "-fsltx fsgame_coop.ltx -nointro" | Out-Null
+        Start-Process "$r\local\test$n\bin\AnomalyDX11AVX_coop.exe" -WorkingDirectory "$r\local\test$n" -ArgumentList "-fsltx fsgame_coop.ltx -nointro -dbg" | Out-Null
         Start-Sleep 20
     }
     "both in the main menu: host -> Network game -> by IP 27015, guest -> IP 127.0.0.1:27016"
@@ -61,7 +61,7 @@ if ($h) { & "$r\tests\wake_game.ps1" -ProcId $h.Id }
 Start-Process powershell -ArgumentList "-NoProfile", "-File", "$r\tests\wake_game.ps1", "-Dir", "$r\local\testB" -WindowStyle Hidden | Out-Null
 if ($NoLauncher) {
     # into the main menu: the link starts there and the host's world loads when it comes
-    Start-Process "$r\local\testB\bin\AnomalyDX11AVX_coop.exe" -WorkingDirectory "$r\local\testB" -ArgumentList "-fsltx fsgame_coop.ltx -nointro" | Out-Null
+    Start-Process "$r\local\testB\bin\AnomalyDX11AVX_coop.exe" -WorkingDirectory "$r\local\testB" -ArgumentList "-fsltx fsgame_coop.ltx -nointro -dbg" | Out-Null
 } else {
     Start-Process "$r\local\launcherB\CoopLauncher.exe" -ArgumentList "--auto", "--no-upnp" -WorkingDirectory "$r\local\launcherB" | Out-Null
 }

@@ -45,6 +45,33 @@ function session_save()
 	return w and ("coop_" .. w) or SESSION_SAVE
 end
 
+-- the newest save of this game (any name: a quicksave, an autosave, the world's own), or nil
+function latest_save()
+	local flist = getFS():file_list_open_ex("$game_saves$", bit_or(FS.FS_ListFiles, FS.FS_RootOnly), "*.scop")
+	if not flist or flist:Size() == 0 then return nil end
+	flist:Sort(FS.FS_sort_by_modif_down)
+	local full = flist:GetAt(0):NameFull()
+	return full:sub(1, #full - 5)
+end
+
+-- makes a save the world's session save (what goes to the guest and what both load); true when done
+function adopt_save(name, world)
+	local target = world and ("coop_" .. world) or session_save()
+	if not name or name == target then return true end
+	local fs = getFS()
+	local ok = true
+	for _, ext in ipairs({ ".scop", ".scoc", ".dds" }) do
+		local src = fs:update_path("$game_saves$", name .. ext)
+		if fs:exist(src) then
+			local dst = fs:update_path("$game_saves$", target .. ext)
+			pcall(os.remove, dst)
+			ok = pcall(fs.file_copy, fs, src, dst) and ok
+		end
+	end
+	if FS.rescan_path then pcall(fs.rescan_path, fs, fs:update_path("$game_saves$", "")) end
+	return ok
+end
+
 local player_id = nil
 local session_owner = nil      -- player id stored in the loaded save
 local char_ready = false       -- false until the actor really is our character
@@ -340,7 +367,38 @@ coop_main.on_state("card", function(t)
 	if not partner_card then partner_card = false end
 end)
 coop_main.on_state("lobby", function(t)
+	local was = partner_lobby and partner_lobby.where
 	partner_lobby = { ready = t[1] == "1", where = t[2], ng_ready = t[3] == "1", world = t[4], name = t[5] or "" }
+	-- the partner left the world for the main menu
+	if was == "game" and partner_lobby.where == "menu" and db.actor then
+		if coop_main.role == "host" then
+			coop_main.msg(string.format("%s вышел в главное меню", coop_main.peer_name))
+		else
+			kick("Хост вышел в главное меню")
+		end
+	end
+end)
+
+-- the guest's game ends with the host's: back to the main menu, which says why (coop_menu shows it)
+function kick(why)
+	if kick_done then return end
+	kick_done = true
+	coop_main.log("kicked: " .. why)
+	local f = io.open(app_path("coop_kicked.txt"), "w")
+	if f then f:write(why) f:close() end
+	pcall(export_character)
+	-- (a world the host sent while both played is no news for the main menu: it must not load it)
+	if rawget(_G, "coop_link_take_session") then pcall(coop_link_take_session) end
+	-- the link is broken off too: the guest joins again from the menu when the host is back
+	if rawget(_G, "coop_link_stop") then pcall(coop_link_stop) end
+	exec_console_cmd("disconnect")
+end
+kick_done = false
+
+-- the host's game gone: a few seconds for a hiccup, then out
+local lost_at = nil
+coop_main.on_event("_connection", function(a)
+	lost_at = (a[1] == "0" and coop_main.role == "client" and is_guest_session()) and time_global() + 8000 or nil
 end)
 function partner() return partner_card, partner_lobby end
 
@@ -397,7 +455,7 @@ local function finish_import()
 			if obj then
 				local it = e.it
 				for _, u in ipairs(it.upg) do pcall(obj.install_upgrade, obj, u) end
-				if it.cond and obj.set_condition then obj:set_condition(it.cond) end
+				if it.cond and obj.set_condition then pcall(obj.set_condition, obj, it.cond) end
 				if IsWeapon(obj) and not IsAmmo(obj) and it.extra >= 0 and obj.set_ammo_elapsed then
 					obj:set_ammo_elapsed(it.extra)
 				elseif obj.set_remaining_uses and it.extra > 0 and not IsAmmo(obj) then
@@ -440,9 +498,38 @@ local function send_session()
 	coop_main.msg("Сессия сохранена, отправляю напарнику...")
 end
 
+-- a few values that outlive a level change or a load (the scripts start anew with each): appdata\coop_runtime.txt
+local function runtime_get(key)
+	local f = io.open(app_path("coop_runtime.txt"), "r")
+	if not f then return nil end
+	local v = nil
+	for line in f:lines() do
+		local k, val = line:match("^([%w_]+)=(.*)$")
+		if k == key then v = val end
+	end
+	f:close()
+	return v
+end
+
+local function runtime_set(key, value)
+	local all, f = {}, io.open(app_path("coop_runtime.txt"), "r")
+	if f then
+		for line in f:lines() do
+			local k, val = line:match("^([%w_]+)=(.*)$")
+			if k and k ~= key then all[#all + 1] = k .. "=" .. val end
+		end
+		f:close()
+	end
+	if value ~= nil then all[#all + 1] = key .. "=" .. tostring(value) end
+	f = io.open(app_path("coop_runtime.txt"), "w")
+	if f then f:write(table.concat(all, "\n") .. "\n") f:close() end
+end
+
 -- Num2 on the host: both games go back to this moment together - the world is saved and sent, the guest loads
 -- it as soon as it has it and says so, and then the host loads the same save
-local function reload_both()
+-- guest_only (after a travel): the host's game goes on, the guest's loads the world as the host has it now
+local guest_only_until = 0
+local function reload_both(guest_only)
 	if coop_main.role ~= "host" then
 		coop_main.msg("Перезагрузить мир у обоих может только хост")
 		return
@@ -451,16 +538,77 @@ local function reload_both()
 		coop_main.msg("Напарник не подключён")
 		return
 	end
+	-- the guest loads what comes next only because it is asked to (a world sent on a reconnect is not loaded)
+	coop_main.send("reload_req")
 	send_session()
-	coop_main.msg("Перезагрузка мира у обоих: ждём, пока напарник получит сейв...")
+	if guest_only == true then
+		guest_only_until = time_global() + 120000
+		coop_main.msg("Напарник загружает мир в том виде, как у вас")
+	else
+		guest_only_until = 0
+		coop_main.msg("Перезагрузка мира у обоих: ждём, пока напарник получит сейв...")
+	end
 end
-coop_main.on_event("_cmd_sync", reload_both)
+coop_main.on_event("_cmd_sync", function() reload_both(false) end)
 
 coop_main.on_event("reloading", function()
 	if coop_main.role ~= "host" or not db.actor then return end
+	if time_global() < guest_only_until then
+		guest_only_until = 0
+		coop_main.msg(string.format("%s загружается рядом с вами", coop_main.peer_name))
+		return
+	end
 	coop_main.msg("Напарник загружается, загружаем тот же сейв")
+	-- the world this load brings is the shared one already: no sync after it
+	runtime_set("after_reload", 1)
 	exec_console_cmd("load " .. session_save())
 end)
+
+-- after the two travelled together (another level, fast travel) each game made up the new place on its own:
+-- other people, elsewhere, otherwise. The host reloads both games there once both have arrived.
+local auto_sync_at, auto_sync_until = nil, 0
+local alive_next, alive_pos = 0, nil
+
+-- where and when this game was last: a travel's arrival is told from a load by it. A jump on this level (the
+-- PDA's travel to a place in sight) is a travel as well
+function alive_write(first)
+	if coop_main.role ~= "host" or not db.actor then return end
+	local pos = db.actor:position()
+	if not first and alive_pos and alive_pos:distance_to(pos) > 60 then request_auto_sync("fast travel on this level") end
+	alive_pos = vector():set(pos)
+	alive_next = time_global() + 1000
+	runtime_set("last_level", level.name())
+	runtime_set("last_pos", string.format("%.1f,%.1f,%.1f", pos.x, pos.y, pos.z))
+	runtime_set("alive_at", os.time())
+end
+function request_auto_sync(why)
+	-- (the link may not have said "connected" yet in the first moments after a load: it is asked when it is time)
+	if coop_main.role == "client" or is_guest_session() then return end
+	local now = time_global()
+	auto_sync_at, auto_sync_until = now + 5000, now + 90000
+	coop_main.log("auto sync wanted: " .. tostring(why))
+end
+
+local function update_auto_sync(now)
+	if not auto_sync_at or now < auto_sync_at then return end
+	if now > auto_sync_until then
+		auto_sync_at = nil
+		return
+	end
+	if not coop_main.connected or coop_main.role ~= "host" then
+		auto_sync_at = now + 2000
+		return
+	end
+	-- the guest in a game (its load puts it next to the host), and neither busy with a talk or a menu
+	local _, pl = partner()
+	local in_game = pl and pl.where == "game"
+	if not in_game or db.actor:is_talking() or not main_hud_shown() then
+		auto_sync_at = now + 2000
+		return
+	end
+	auto_sync_at = nil
+	reload_both(true)
+end
 
 -- a guest waiting ready in its lobby gets the world once this game is up (the lobby's own requests are lost in
 -- the main menu); once per wait: it is sent again only after the guest has been in a game or gone
@@ -477,13 +625,23 @@ local function send_to_waiting_guest(now)
 	end
 	if pl.ready and not world_sent and not save_pending and level_up_at and now > level_up_at then
 		world_sent = true
+		-- the guest gets the world as it is now: a sync wanted before is done by this
+		auto_sync_at = nil
 		send_session()
 	end
 end
 
--- in a game the host's world comes only when the host reloads both games: it is loaded at once
+-- the host asked both games to reload: the world that comes next is loaded at once
+local reload_expected = nil
+coop_main.on_event("reload_req", function()
+	reload_expected = time_global() + 120000
+end)
+
 coop_main.on_event("session_ready", function()
 	if coop_main.role == "host" or not db.actor then return end
+	-- a world sent again on a reconnect: this game is in it already
+	if not (reload_expected and time_global() < reload_expected) then return end
+	reload_expected = nil
 	coop_main.msg("Хост перезагружает мир у обоих")
 	export_character()
 	coop_main.send("reloading")
@@ -492,8 +650,20 @@ coop_main.on_event("session_ready", function()
 end)
 
 coop_main.on_event("_cmd_load", function()
+	-- the host: both games go back to the last save made (a quicksave too), as with Num2 but without a new one
 	if coop_main.role == "host" then
-		coop_main.msg("Вы хост")
+		if not coop_main.connected then
+			coop_main.msg("Напарник не подключён")
+			return
+		end
+		local last = latest_save()
+		if not (last and adopt_save(last)) then
+			coop_main.msg("Сохранений нет")
+			return
+		end
+		coop_main.send("reload_req")
+		coop_main.send("@saved", session_save())
+		coop_main.msg(string.format("Загрузка сохранения «%s» у обоих: ждём, пока напарник получит его...", last))
 		return
 	end
 	export_character()
@@ -515,6 +685,20 @@ end
 
 local function actor_on_first_update()
 	level_up_at = time_global() + 5000
+	-- the host came to another level: once the guest is here too, both games load the host's world
+	-- (a travel: a moment ago this game was elsewhere - on another level, or far away on this one after a
+	-- fast travel that loads the level anew; a game loaded from the menu a while later is no travel)
+	local here, pos = level.name(), db.actor:position()
+	local last, at = runtime_get("last_level"), tonumber(runtime_get("alive_at") or "")
+	local lx, ly, lz = (runtime_get("last_pos") or ""):match("^([-%d.]+),([-%d.]+),([-%d.]+)$")
+	local far = lx and pos:distance_to(vector():set(tonumber(lx), tonumber(ly), tonumber(lz))) > 100
+	if runtime_get("after_reload") then
+		runtime_set("after_reload", nil)
+	-- (a new game starts on "fake_start": no travel)
+	elseif at and os.time() - at < 120 and last and last ~= "fake_start" and (last ~= here or far) then
+		request_auto_sync(string.format("travel %s -> %s", last, here))
+	end
+	alive_write(true)
 	if is_guest_session() then
 		char_ready = false
 		import_character()
@@ -533,6 +717,18 @@ local function actor_on_update()
 		end
 	end
 	send_to_waiting_guest(now)
+	update_auto_sync(now)
+	if now > alive_next then
+		alive_next = now + 1000
+		alive_write(false)
+		-- in a game the host's worlds are taken by the events (session_ready); the engine's note that one came
+		-- is for the main menu, which would load it on the way out
+		if coop_main.role == "client" and rawget(_G, "coop_link_take_session") then coop_link_take_session() end
+	end
+	if lost_at and now > lost_at then
+		lost_at = nil
+		if not coop_main.connected then kick("Хост разорвал соединение") end
+	end
 	if reload_at and now > reload_at then
 		reload_at = nil
 		exec_console_cmd("load " .. session_save())
@@ -575,6 +771,7 @@ function on_game_start()
 	pcall(hook_saves)
 	player_id = load_player_id()
 	session_owner, char_ready, import_step = nil, false, nil
+	kick_done = false
 	RegisterScriptCallback("save_state", save_state)
 	RegisterScriptCallback("load_state", load_state)
 	RegisterScriptCallback("actor_on_first_update", actor_on_first_update)

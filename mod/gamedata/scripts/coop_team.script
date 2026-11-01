@@ -21,6 +21,7 @@ local host_opt = { ff = false, money = false, revive = true }
 local money_last = nil
 local applying_money = false
 local near_at = 0            -- last time the partner was near on this level
+local last_partner_pos = nil -- where the partner was at the last tick (a long jump = fast travel on this level)
 local partner_level = nil
 local follow_at = nil
 local next_down_note = 0
@@ -211,22 +212,37 @@ coop_main.on_event("sleep", function(a)
 	coop_main.msg(string.format("%s поспал %d ч, время идёт для обоих", coop_main.peer_name, h))
 end)
 
------------------------------------------------------------------- follow to another level
+------------------------------------------------------------------ travelling together
+-- The host brings the pair together: when the host itself travels (fast travel, another level) its game reloads
+-- both worlds once it is there (coop_session), which puts the guest next to it in the host's world - the people
+-- and creatures of the new place included. When the guest travels while the two were together, the host goes
+-- after it first. The guest never follows on its own.
 local function update_follow(now)
+	if not coop_main.is_host() then return end
 	local r = coop_player.get_remote()
-	if not (r and coop_main.connected) then partner_level = nil return end
+	-- while the partner's game loads nothing comes from it: what was known stays
+	if not (r and coop_main.connected and r.pos) then return end
 	local here = level.name()
-	if r.level == here then
-		if r.pos:distance_to(db.actor:position()) < FOLLOW_DIST then near_at = now end
-		follow_at = nil
-	elseif partner_level == here and now - near_at < 15000 and not downed_until and coop_main.option("follow", true) then
-		follow_at = now + 4000
-		coop_main.msg(string.format("%s ушёл на локацию %s, переход через 4 с", r.name, game.translate_string(r.level)))
+	local together = now - near_at < 60000 and not downed_until and coop_main.option("follow", true)
+	local moved = (partner_level and r.level ~= partner_level) or
+		(last_partner_pos and r.level == here and partner_level == here and last_partner_pos:distance_to(r.pos) > 60)
+	if moved then
+		coop_main.log(string.format("partner travelled to %s (was %s, here %s), together=%s", r.level,
+			tostring(partner_level), here, tostring(together)))
 	end
 	partner_level = r.level
-	if follow_at and now > follow_at then
-		follow_at = nil
-		dbg("following to " .. r.level)
+	last_partner_pos = vector():set(r.pos)
+	-- (a partner who came to this player - a reload of both puts the guest here - is not followed)
+	local near = r.level == here and r.pos:distance_to(db.actor:position()) < FOLLOW_DIST
+	if near then near_at = now end
+	if not (moved and together) or near then return end
+	near_at = now
+	if r.level == here then
+		coop_main.msg(string.format("%s переместился: идём за ним", r.name))
+		db.actor:set_actor_position(r.pos)
+		coop_session.request_auto_sync("went after the partner's fast travel")
+	else
+		coop_main.msg(string.format("%s ушёл на локацию %s: идём за ним", r.name, game.translate_string(r.level)))
 		ChangeLevel(r.pos, r.lvid, r.gvid, VEC_ZERO, true)
 	end
 end

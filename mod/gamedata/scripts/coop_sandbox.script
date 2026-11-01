@@ -1,0 +1,162 @@
+--[[
+	Anomaly Co-op: a test world for finding bugs together (the "sandbox").
+	On a test install (appdata\coop_debug.txt) the host creates a new co-op world named "sandbox" from the lobby.
+	Its first start fills it once: a stash next to the players, a few creatures nearby (for corpses and alert
+	NPCs); then the world is saved, so every test can start from it (the lobby lists it as "sandbox", with no kit
+	to choose). Every time either player is in it: top gear and a million (whatever is missing), god mode,
+	unlimited ammo (both need the game started with -dbg, as the test scripts do), no weight limit, fast travel
+	to every place on the PDA map without conditions. The game's own debug menu (-dbg) works there as well.
+--]]
+
+local WORLD = "sandbox"
+local BUILT = "coop_sandbox_built"
+local MONEY = 1000000
+
+local GEAR = {
+	"exo_outfit", "helm_battle", "device_flashlight", "detector_scientific", "device_torch", "device_pda_3",
+	"wpn_groza", "ammo_9x39_ap", "ammo_9x39_ap", "ammo_9x39_ap", "wpn_svd", "ammo_7.62x54_7h14", "ammo_7.62x54_7h14",
+	"wpn_pb", "ammo_9x18_pmm", "wpn_knife",
+	"medkit_scientic", "medkit_scientic", "medkit_army", "bandage", "bandage", "stimpack_army",
+	"bread", "conserva", "mineral_water", "vodka",
+}
+local STASH = { "medkit_army", "bandage", "bandage", "ammo_9x18_fmj", "conserva", "af_medusa", "wpn_toz34", "ammo_12x70_buck" }
+local STASH_BOX = { "inv_backpack", "inventory_box" }
+local CREATURES = { "boar_normal", "flesh_01a_weak", "flesh_03a_strong", "boar_normal" }
+
+local step, step_at, stash_id = nil, 0, nil
+
+local function say(text) coop_main.msg(text, "Песочница") end
+local function log(text) coop_main.log("sandbox: " .. text) end
+
+-- a point some metres ahead of the actor on the AI's grid
+local function ahead(dist, side)
+	local a = db.actor
+	local dir = a:direction()
+	local p = vector():set(a:position()):add(vector():set(dir.x * dist + dir.z * (side or 0), 0, dir.z * dist - dir.x * (side or 0)))
+	local lvid = level.vertex_id(p)
+	if lvid >= 4294967295 then lvid = a:level_vertex_id() end
+	return level.vertex_position(lvid), lvid, a:game_vertex_id()
+end
+
+local function fast_travel_everywhere()
+	if not (ui_options and ui_options.set) then return end
+	pcall(ui_options.set, "gameplay/fast_travel/state", 2)
+	for _, o in ipairs({ "on_combat", "on_overweight", "on_damage", "on_emission" }) do
+		pcall(ui_options.set, "gameplay/fast_travel/" .. o, true)
+	end
+	if ui_options.save then pcall(ui_options.save) end
+	if game_fast_travel and game_fast_travel.update_settings then pcall(game_fast_travel.update_settings) end
+end
+
+-- god mode, unlimited ammo, no weight limit: on in the sandbox, off anywhere else (the flags outlive a world)
+local function cheats(on)
+	exec_console_cmd("g_god " .. (on and "on" or "off"))
+	exec_console_cmd("g_unlimitedammo " .. (on and "on" or "off"))
+	if on then
+		pcall(db.actor.set_actor_max_weight, db.actor, 100000)
+		pcall(db.actor.set_actor_max_walk_weight, db.actor, 100000)
+	end
+end
+
+-- top gear and money, once per player in this world (the exoskeleton tells it is there already)
+local function gear_up()
+	local have_exo = false
+	db.actor:iterate_inventory(function(_, o)
+		if o and o:section() == GEAR[1] then have_exo = true end
+	end, db.actor)
+	if have_exo then
+		log("gear: already there")
+	else
+		local given, missing = 0, {}
+		for _, sec in ipairs(GEAR) do
+			if ini_sys:section_exist(sec) then
+				alife_create_item(sec, db.actor)
+				given = given + 1
+			else
+				missing[#missing + 1] = sec
+			end
+		end
+		log(string.format("gear: %d items given, not in this game: %s", given, table.concat(missing, ", ")))
+	end
+	if db.actor:money() < MONEY then db.actor:give_money(MONEY - db.actor:money()) end
+end
+
+local function build_world()
+	local pos, lvid, gvid = ahead(3, 1.5)
+	for _, sec in ipairs(STASH_BOX) do
+		if ini_sys:section_exist(sec) then
+			local box = alife_create(sec, pos, lvid, gvid)
+			stash_id = box and box.id
+			log("stash " .. sec .. " " .. tostring(stash_id))
+			break
+		end
+	end
+	for i, sec in ipairs(CREATURES) do
+		if ini_sys:section_exist(sec) then
+			local p, lv, gv = ahead(45 + i * 4, (i % 2 == 0 and 1 or -1) * 12)
+			alife_create(sec, p, lv, gv)
+		end
+	end
+end
+
+local function steps()
+	if step == "start" then
+		cheats(true)
+		fast_travel_everywhere()
+		-- a guest's own character comes in first (coop_session's import): the gear goes on top of it
+		step, step_at = "gear", time_global() + (coop_session.is_guest_session() and 6000 or 1000)
+	elseif step == "gear" then
+		gear_up()
+		local guest, built = coop_session.is_guest_session(), load_var(db.actor, BUILT, false)
+		log(string.format("guest %s, built before %s", tostring(guest), tostring(built)))
+		if guest or built then
+			step = nil
+			say("Песочница: режим бога, бесконечные патроны, без ограничения веса, топовое снаряжение")
+			return
+		end
+		build_world()
+		step, step_at = "stash", time_global() + 2000
+	elseif step == "stash" then
+		local box = stash_id and level.object_by_id(stash_id)
+		if box then
+			for _, sec in ipairs(STASH) do
+				if ini_sys:section_exist(sec) then alife_create_item(sec, box) end
+			end
+		else
+			log("stash not online")
+		end
+		step, step_at = "save", time_global() + 2000
+	elseif step == "save" then
+		step = nil
+		save_var(db.actor, BUILT, true)
+		exec_console_cmd("save coop_" .. WORLD)
+		say("Песочница готова и сохранена (в лобби это мир «sandbox»): рядом тайник-рюкзак, впереди мутанты, " ..
+			"режим бога, бесконечные патроны, быстрое перемещение во все места на карте КПК")
+	end
+end
+
+local function actor_on_first_update()
+	if not coop_main.debug then return end
+	if coop_session.world_name() ~= WORLD then
+		-- the flags outlive the sandbox: a test install's next world starts without them
+		cheats(false)
+		return
+	end
+	step, step_at = "start", time_global() + 1000
+end
+
+local function actor_on_update()
+	if step and time_global() > step_at then
+		local ok, err = pcall(steps)
+		if not ok then
+			log("failed: " .. tostring(err))
+			step = nil
+		end
+	end
+end
+
+function on_game_start()
+	step, stash_id = nil, nil
+	RegisterScriptCallback("actor_on_first_update", actor_on_first_update)
+	RegisterScriptCallback("actor_on_update", actor_on_update)
+end

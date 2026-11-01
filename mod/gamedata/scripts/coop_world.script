@@ -107,7 +107,9 @@ coop_main.add_state_provider("n", function()
 				if IsStalker(obj) then
 					if obj:body_state() == move.crouch then crouched[#crouched+1] = tostring(id) end
 					local m = tonumber(obj:mental_state())
-					if m then mental[#mental+1] = id .. ":" .. m end
+					-- and whether its weapon is on its back (r11): the guest's AI would ready it at its own sounds
+					local strapped = obj:weapon_strapped() and 1 or 0
+					if m then mental[#mental+1] = id .. ":" .. m .. ":" .. strapped end
 				end
 				local last = npc_sent[id]
 				local rel_now = IsStalker(obj) and obj:relation(db.actor) or 2
@@ -143,7 +145,8 @@ coop_main.on_state("nb", function(t)
 	end
 end)
 
--- how calm the host's stalkers are: the guest's own AI would show them alert at whatever it hears (r7)
+-- how calm the host's stalkers are and where their weapons are: the guest's own AI would show them alert at
+-- whatever it hears (r7, the weapon r11)
 coop_main.add_state_provider("nm", function()
 	if not coop_main.is_host() then return end
 	return { table.concat(npc_mental, ",") }
@@ -151,14 +154,21 @@ end)
 
 coop_main.on_state("nm", function(t)
 	if ENGINE < 7 or not coop_main.is_client() then return end
-	local mental = {}
-	for hid, m in (t[1] or ""):gmatch("(%d+):(%d+)") do
-		local id = coop_spawn.L(hid)
-		if id then mental[id] = tonumber(m) end
+	local mental, strap = {}, {}
+	for entry in (t[1] or ""):gmatch("[^,]+") do
+		local hid, m, s = entry:match("^(%d+):(%d+):?(%d?)$")
+		local id = hid and coop_spawn.L(hid)
+		if id then
+			mental[id] = tonumber(m)
+			strap[id] = tonumber(s)
+		end
 	end
 	for id in pairs(npc_puppets) do
 		local obj = level.object_by_id(id)
-		if obj and IsStalker(obj) then obj:net_puppet_mental(mental[id] or 255) end
+		if obj and IsStalker(obj) then
+			obj:net_puppet_mental(mental[id] or 255)
+			if ENGINE >= 11 then obj:net_puppet_strap(strap[id] or 255) end
+		end
 	end
 end)
 
@@ -259,10 +269,38 @@ end)
 
 ------------------------------------------------------------------ deaths
 local pending_loot = {}      -- host: corpse id -> time to send its inventory (after death_manager filled it)
+local pending_corpse = {}    -- host: corpse id -> time to send where the body came to rest
+local refresh = {}           -- { box, at }: show the open box again once the partner's item is in it
+-- (twice: the item comes a few frames after the word, sometimes later)
+local function want_refresh(id)
+	local now = time_global()
+	refresh[#refresh + 1] = { id, now + 400 }
+	refresh[#refresh + 1] = { id, now + 1500 }
+end
+local pending_corpse2 = {}   -- host: the same once more, for a body still sliding at the first
+
+-- A box holds what the host's box holds: after every change there the host sends the whole list ("bset") and
+-- the guest's box is made the same. The guest's own changes go to the host first, numbered: a list that does
+-- not have the guest's last change yet is not applied (the next one will have it).
+local box_seq = 0            -- guest: its last change to a box sent to the host
+local box_acked = 0          -- host: the guest's last change applied here
+local snap_at = {}           -- host: box id -> when to send what it holds
+local function want_snapshot(id)
+	if id and coop_main.is_host() then snap_at[id] = time_global() + 300 end
+end
+local function next_box_seq()
+	if coop_main.is_host() then return 0 end
+	box_seq = box_seq + 1
+	return box_seq
+end
 
 local function on_death(victim, who)
+	-- a dead body falls by itself: the host's moves no longer drive it
+	if victim and npc_puppets[victim:id()] then release_npc_puppet(victim:id()) end
 	if victim and coop_main.is_host() and coop_main.connected and is_creature(victim) and not coop_player.is_puppet(victim) then
 		pending_loot[victim:id()] = time_global() + 3000
+		pending_corpse[victim:id()] = time_global() + 3000
+		pending_corpse2[victim:id()] = time_global() + 12000
 	end
 	if applying or not coop_main.connected or not victim then return end
 	if coop_player.is_puppet(victim) or victim:id() == AC_ID then return end
@@ -320,7 +358,7 @@ local function flush_loot()
 		if now >= at then
 			pending_loot[id] = nil
 			local npc = level.object_by_id(id)
-			if npc and not npc:alive() then
+			if npc and not npc:alive() and IsStalker(npc) then
 				local list = {}
 				npc:iterate_inventory(function(_, o)
 					if o and o:section() then
@@ -332,7 +370,42 @@ local function flush_loot()
 			end
 		end
 	end
+	-- a body falls its own way in each game: the guest's is put where the host's came to rest
+	for id, at in pairs(pending_corpse2) do
+		if now >= at then
+			pending_corpse2[id] = nil
+			pending_corpse[id] = now
+		end
+	end
+	for id, at in pairs(pending_corpse) do
+		if now >= at then
+			pending_corpse[id] = nil
+			local npc = level.object_by_id(id)
+			if npc and not npc:alive() then
+				local p = npc:position()
+				coop_main.send("corpse", coop_spawn.R(id), npc:section(), f2(p.x), f2(p.y), f2(p.z))
+			end
+		end
+	end
 end
+
+coop_main.on_event("corpse", function(a)
+	if coop_main.is_host() then return end
+	local npc = level.object_by_id(coop_spawn.L(a[1]) or -1)
+	if not (same(npc, a[2]) and not npc:alive() and npc.force_set_position) then
+		dbg(string.format("corpse %s %s: %s", tostring(a[1]), tostring(a[2]),
+			not npc and "not here" or (npc:alive() and "alive here" or "other section")))
+		return
+	end
+	-- a creature the host's moves were still driving here
+	release_npc_puppet(npc:id())
+	local pos = vec(a[3], a[4], a[5])
+	local off = npc:position():distance_to(pos)
+	if off > 1 then
+		npc:force_set_position(pos, false)
+	end
+	dbg(string.format("corpse %s: %.1f m off the host's", npc:section(), off))
+end)
 
 local function flush_items()
 	for id, t in pairs(pending_take) do
@@ -340,7 +413,8 @@ local function flush_items()
 		if box and coop_trade.is_exchange_box(box) then
 			-- taken back from the exchange box: not a world event
 		elseif box then
-			coop_main.send("btake", coop_spawn.R(box), coop_spawn.R(id), t[1])
+			coop_main.send("btake", coop_spawn.R(box), coop_spawn.R(id), t[1], next_box_seq())
+			want_snapshot(box)
 		else
 			coop_main.send("take", coop_spawn.R(id), t[1], f2(t[2].x), f2(t[2].y), f2(t[2].z))
 		end
@@ -356,7 +430,8 @@ local function flush_items()
 				local p = obj:position()
 				coop_main.send("drop", id, sec, cond, ammo, f2(p.x), f2(p.y), f2(p.z), obj:level_vertex_id(), obj:game_vertex_id())
 			elseif parent:id() ~= AC_ID and IsInvbox(parent) and not coop_trade.is_exchange_box(parent:id()) then
-				coop_main.send("bput", coop_spawn.R(parent:id()), sec, cond, ammo)
+				coop_main.send("bput", coop_spawn.R(parent:id()), sec, cond, ammo, next_box_seq())
+				want_snapshot(parent:id())
 			end
 		end
 	end
@@ -398,10 +473,48 @@ coop_main.on_event("take", function(a)
 	end
 end)
 
+-- a box or body open here shows what the partner just took or put (r11)
+local function refresh_open_box(box)
+	if not box or ENGINE < 11 then return true end
+	local menu = ActorMenu and ActorMenu.get_actor_menu and ActorMenu.get_actor_menu()
+	if not (menu and menu.coop_refresh_box) then return true end
+	local ok, done = pcall(menu.coop_refresh_box, menu, box:id())
+	-- (false: the player is dragging an item just now)
+	return not ok or done ~= false
+end
+
+-- both took the same thing at once: it stays with the host, the guest gives its copy up
+coop_main.on_event("bdeny", function(a)
+	local id, sec = coop_spawn.L(a[1]), a[2]
+	local item = id and level.object_by_id(id)
+	if same(item, sec) and item:parent() and item:parent():id() == AC_ID then
+		applying = true
+		release_obj(item)
+		applying = false
+		coop_main.msg(string.format("%s забрал это раньше вас", coop_main.peer_name))
+	end
+end)
+
 coop_main.on_event("btake", function(a)
 	local box = level.object_by_id(coop_spawn.L(a[1]) or -1)
 	local id, sec = coop_spawn.L(a[2]), a[3]
 	local item = id and level.object_by_id(id)
+	if coop_main.is_host() then
+		box_acked = math.max(box_acked, tonumber(a[4]) or 0)
+		want_snapshot(box and box:id())
+	end
+	-- this player took the same item a moment before the word came
+	if same(item, sec) and item:parent() and item:parent():id() == AC_ID then
+		if coop_main.is_host() then
+			coop_main.send("bdeny", a[2], sec)
+		else
+			applying = true
+			release_obj(item)
+			applying = false
+			coop_main.msg(string.format("%s забрал это раньше вас", coop_main.peer_name))
+		end
+		return
+	end
 	if not (same(item, sec) and item:parent() and box and item:parent():id() == box:id()) then
 		item = nil
 		if box then
@@ -419,6 +532,11 @@ coop_main.on_event("btake", function(a)
 		applying = true
 		release_obj(item)
 		applying = false
+		-- the item goes a few frames later
+		want_refresh(box and box:id() or item:id())
+	elseif box and coop_main.is_host() then
+		-- the guest took what is no longer there (the host had it a moment before): the guest gives it up
+		coop_main.send("bdeny", a[2], sec)
 	end
 end)
 
@@ -455,6 +573,7 @@ coop_main.on_event("loot", function(a)
 		end
 	end
 	applying = false
+	want_refresh(npc:id())
 	if coop_main.debug then coop_main.log("loot " .. npc:section() .. ": " .. n .. " items from host, replaced " .. #old) end
 end)
 
@@ -470,7 +589,78 @@ end)
 
 coop_main.on_event("bput", function(a)
 	local box = level.object_by_id(coop_spawn.L(a[1]) or -1)
-	if box then spawn_item(a[2], box, a[3], a[4]) end
+	if coop_main.is_host() then
+		box_acked = math.max(box_acked, tonumber(a[5]) or 0)
+		want_snapshot(box and box:id())
+	end
+	if box then
+		spawn_item(a[2], box, a[3], a[4])
+		-- the new item comes into the box a moment later
+		want_refresh(box:id())
+	end
+end)
+
+local function box_items(box)
+	local list = {}
+	box:iterate_inventory_box(function(_, o) list[#list + 1] = o end, box)
+	return list
+end
+
+local function flush_snapshots(now)
+	for id, at in pairs(snap_at) do
+		if now >= at then
+			snap_at[id] = nil
+			local box = level.object_by_id(id)
+			if box and IsInvbox(box) and not coop_trade.is_exchange_box(id) then
+				local list = {}
+				for _, o in ipairs(box_items(box)) do
+					local cond, ammo = item_props(o)
+					list[#list + 1] = string.format("%s:%s:%s", o:section(), cond, ammo)
+				end
+				coop_main.send("bset", coop_spawn.R(id), box_acked, table.concat(list, ";"))
+			end
+		end
+	end
+end
+
+coop_main.on_event("bset", function(a)
+	if coop_main.is_host() then return end
+	-- a change of this player's own is still on its way to the host: the next list has it
+	if (tonumber(a[2]) or 0) < box_seq then return end
+	local box = level.object_by_id(coop_spawn.L(a[1]) or -1)
+	if not (box and IsInvbox(box)) then return end
+	local want, have = {}, {}
+	for entry in (a[3] or ""):gmatch("[^;]+") do
+		local sec, cond, ammo = entry:match("^([^:]+):([^:]*):(%d*)$")
+		if sec and ini_sys:section_exist(sec) then
+			want[sec] = want[sec] or {}
+			want[sec][#want[sec] + 1] = { cond, ammo }
+		end
+	end
+	for _, o in ipairs(box_items(box)) do
+		local sec = o:section()
+		have[sec] = have[sec] or {}
+		have[sec][#have[sec] + 1] = o
+	end
+	local gone, added = 0, 0
+	applying = true
+	for sec, list in pairs(have) do
+		for i = #(want[sec] or {}) + 1, #list do
+			release_obj(list[i])
+			gone = gone + 1
+		end
+	end
+	applying = false
+	for sec, list in pairs(want) do
+		for i = #(have[sec] or {}) + 1, #list do
+			spawn_item(sec, box, list[i][1], list[i][2])
+			added = added + 1
+		end
+	end
+	if gone + added > 0 then
+		want_refresh(box:id())
+		dbg(string.format("box %s made as the host's: -%d +%d", box:section(), gone, added))
+	end
 end)
 
 ------------------------------------------------------------------ main loop
@@ -479,9 +669,21 @@ local function actor_on_update()
 	local now = time_global()
 	if now < next_flush then return end
 	next_flush = now + 100
+	if #refresh > 0 then
+		local keep = {}
+		for _, r in ipairs(refresh) do
+			if now < r[2] then
+				keep[#keep + 1] = r
+			elseif not refresh_open_box(level.object_by_id(r[1])) then
+				keep[#keep + 1] = { r[1], now + 200 }
+			end
+		end
+		refresh = keep
+	end
 	local ok, err = pcall(function()
 		flush_hits()
 		flush_items()
+		flush_snapshots(now)
 		flush_loot()
 	end)
 	if not ok then coop_main.log("world flush failed: " .. tostring(err)) end
