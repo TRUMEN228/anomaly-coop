@@ -132,12 +132,20 @@ local function create(fn)
 	return ok and res or nil
 end
 
-coop_main.on_event("sqm", function(a)
-	if host() then return end
-	local sq_h, sq_sec, npc_h, npc_sec = tonumber(a[1]), a[2], tonumber(a[3]), a[4]
-	local pos, lvid, gvid, smart = vec(a[5], a[6], a[7]), tonumber(a[8]), tonumber(a[9]), tonumber(a[10])
-	if not (sq_h and npc_h and ini_sys:section_exist(sq_sec) and ini_sys:section_exist(npc_sec)) then return end
-	if h2g[npc_h] and alife_object(h2g[npc_h]) then return end -- already have it
+-- the host's creature npc_h of squad sq_h made here (a new member, or one the mirror found missing); a creature
+-- without a squad (sq_h nil) is made alone. Returns the local id
+function make_creature(sq_h, sq_sec, npc_h, npc_sec, pos, lvid, gvid, smart)
+	if not (npc_h and lvid and gvid and ini_sys:section_exist(npc_sec)) then return end
+	local have = h2g[npc_h] and alife_object(h2g[npc_h])
+	if have and have:section_name() == npc_sec then return have.id end -- already have it
+	if not (sq_h and sq_sec and ini_sys:section_exist(sq_sec)) then
+		local se = create(function() return alife_create(npc_sec, pos, lvid, gvid) end)
+		if not se then return end
+		map(npc_h, se.id)
+		stats.made = stats.made + 1
+		dbg(string.format("creature %s host=%d guest=%d", npc_sec, npc_h, se.id))
+		return se.id
+	end
 
 	local squad = h2g[sq_h] and alife_object(h2g[sq_h])
 	if not squad then
@@ -160,7 +168,21 @@ coop_main.on_event("sqm", function(a)
 		stats.made = stats.made + 1
 		dbg(string.format("squad %s member %s host=%d guest=%d", sq_sec, npc_sec, npc_h, gid))
 	end
+	return gid
+end
+
+coop_main.on_event("sqm", function(a)
+	if host() then return end
+	make_creature(tonumber(a[1]), a[2], tonumber(a[3]), a[4], vec(a[5], a[6], a[7]), tonumber(a[8]), tonumber(a[9]),
+		tonumber(a[10]))
 end)
+
+-- a creature of this game the host does not have: gone (no echo to the host)
+function release_creature(id)
+	local se = alife_object(id)
+	if not se then return end
+	create(function() alife_release(se) end)
+end
 
 coop_main.on_event("art", function(a)
 	if host() then return end
