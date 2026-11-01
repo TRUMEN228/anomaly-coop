@@ -166,6 +166,8 @@ coop_main.on_event("treq", function(a)
 	if not host() then return end
 	local npc = level.object_by_id(L(a[1]) or -1)
 	if not (npc and npc:section() == a[2] and npc:alive()) then return end
+	-- a trader stocks up when someone trades with it: the host's may never have (its goods would be none)
+	if trade_manager and trade_manager.update then pcall(trade_manager.update, npc) end
 	coop_main.send("tstock", a[1], a[2], npc:money(), table.concat(goods(npc), ";"))
 end)
 
@@ -194,13 +196,21 @@ coop_main.on_event("tstock", function(a)
 	if not ok then coop_main.log("tstock failed: " .. tostring(err)) end
 end)
 
--- the guest's traders restock only from the host
+-- the guest's traders restock only from the host. Their update still runs: it also sets what the trader buys and
+-- sells, without which the trade window shows nothing - it is told the trader has just restocked
 local function hook_trade_restock()
 	if not (trade_manager and trade_manager.update) or rawget(_G, "coop_trade_hooked") then return end
 	_G.coop_trade_hooked = true
 	local update = trade_manager.update
 	trade_manager.update = function(npc, force_refresh)
-		if guest() then return end
+		if guest() and npc and trade_manager.get_trade_profile then
+			local p = trade_manager.get_trade_profile(npc:id())
+			if p then
+				local Y, M, D, h, m, sec, ms = game.get_game_time():get(0, 0, 0, 0, 0, 0, 0)
+				p.resupply_time = { Y = Y, M = M, D = D, h = h, m = m, s = sec, ms = ms }
+			end
+			return update(npc, false)
+		end
 		return update(npc, force_refresh)
 	end
 end

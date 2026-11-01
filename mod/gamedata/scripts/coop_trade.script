@@ -1,8 +1,10 @@
 --[[
-	Anomaly Co-op: giving items to the partner (v2.2).
+	Anomaly Co-op: giving items and money to the partner (v2.2, money v2.14).
 	The "give" key opens a temporary box next to the actor in the inventory window. Whatever is left
-	in it when the window closes goes straight into the partner's inventory.
+	in it when the window closes goes straight into the partner's inventory. The "money" key asks how much
+	and the sum leaves this player's wallet for the partner's.
 	  both ways:      "gift"   a list of items: section:condition:ammo:uses:upgrades (upgrades joined by "+")
+	                  "mgive"  a sum of money
 --]]
 
 local BOX_SECTION = "inv_backpack"
@@ -80,8 +82,13 @@ local function close_box(box)
 	release_box()
 end
 
+local receiving_until = 0
+-- the partner's items are coming in: they are not this player's own finds (coop_quests does not pass them on)
+function is_receiving() return time_global() < receiving_until end
+
 coop_main.on_event("gift", function(a)
 	if not db.actor then return end
+	receiving_until = time_global() + 3000
 	local secs = {}
 	coop_world.suppress(2000) -- these are not pickups from the ground
 	for e in (a[1] or ""):gmatch("[^;]+") do
@@ -103,6 +110,75 @@ coop_main.on_event("gift", function(a)
 		coop_main.msg(string.format("%s передал вам: %s", coop_main.peer_name, names(secs)))
 		xr_sound.set_sound_play(AC_ID, "pda_tips")
 	end
+end)
+
+------------------------------------------------------------------ money
+class "UICoopMoney" (CUIScriptWnd)
+
+function UICoopMoney:__init() super()
+	self:SetWndRect(Frect():set(0, 0, 1024, 768))
+	local xml = CScriptXmlInit()
+	xml:ParseFile("ui_coop_money.xml")
+	local dlg = xml:InitStatic("dialog", self)
+	xml:InitStatic("dialog:background", dlg)
+	xml:InitStatic("dialog:caption", dlg)
+	xml:InitTextWnd("dialog:have", dlg):SetText(string.format("У вас %d руб. Сколько передать %s?", db.actor:money(),
+		coop_main.peer_name ~= "" and coop_main.peer_name or "напарнику"))
+	self.amount = xml:InitEditBox("dialog:fld_amount", dlg)
+	self.status = xml:InitTextWnd("dialog:status", dlg)
+	self:Register(xml:Init3tButton("dialog:btn_ok", dlg), "btn_ok")
+	self:Register(xml:Init3tButton("dialog:btn_cancel", dlg), "btn_cancel")
+	self:AddCallback("btn_ok", ui_events.BUTTON_CLICKED, self.OnOk, self)
+	self:AddCallback("btn_cancel", ui_events.BUTTON_CLICKED, self.Close, self)
+end
+
+function UICoopMoney:__finalize() end
+
+function UICoopMoney:Close()
+	if self:IsShown() then self:HideDialog() end
+end
+
+function UICoopMoney:OnOk()
+	local n = math.floor(tonumber((self.amount:GetText() or ""):match("%d+") or "") or 0)
+	if n <= 0 then
+		self.status:SetText("Введите сумму")
+	elseif n > db.actor:money() then
+		self.status:SetText("Столько денег у вас нет")
+	elseif not coop_main.connected then
+		self.status:SetText("Напарник не подключён")
+	else
+		db.actor:give_money(-n)
+		coop_main.send("mgive", n)
+		coop_main.msg(string.format("Передано напарнику: %d руб.", n))
+		self:Close()
+	end
+end
+
+function UICoopMoney:OnKeyboard(dik, action)
+	local res = CUIScriptWnd.OnKeyboard(self, dik, action)
+	if not res and action == ui_events.WINDOW_KEY_PRESSED then
+		if dik == DIK_keys.DIK_ESCAPE then self:Close()
+		elseif dik == DIK_keys.DIK_RETURN or dik == DIK_keys.DIK_NUMPADENTER then self:OnOk() end
+	end
+	return res
+end
+
+local money_wnd = nil
+coop_main.on_event("_cmd_money", function()
+	if not coop_main.connected then coop_main.msg("Напарник не подключён") return end
+	-- with shared money both wallets are one already
+	if coop_team.shared_money() then coop_main.msg("Деньги у вас общие") return end
+	if not (db.actor and db.actor:alive()) or (money_wnd and money_wnd:IsShown()) then return end
+	money_wnd = UICoopMoney()
+	money_wnd:ShowDialog(true)
+end)
+
+coop_main.on_event("mgive", function(a)
+	local n = math.floor(tonumber(a[1]) or 0)
+	if not (db.actor and n > 0) then return end
+	db.actor:give_money(n)
+	coop_main.msg(string.format("%s передал вам %d руб.", coop_main.peer_name, n))
+	xr_sound.set_sound_play(AC_ID, "pda_tips")
 end)
 
 -- upgrades and the loaded magazine need the online object

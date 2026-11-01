@@ -209,6 +209,8 @@ end
 -- own reward effects are skipped then); trade, crafting, boxes and the ground do not count. Items are spawned a
 -- few frames after the script asks, hence the time windows.
 local incoming = {}           -- section -> count of the partner's gifts still to arrive here (not sent back)
+local traded = {}             -- item id -> true: bought or sold in a trade window (never a gift)
+local outgoing = {}           -- { id, sec, reward, at }: decided a moment later, once a trade had its say
 
 local function menu_shown()
 	local m = ActorMenu and ActorMenu.get_actor_menu and ActorMenu.get_actor_menu()
@@ -217,6 +219,8 @@ end
 
 local function actor_on_item_take(item)
 	if not (item and coop_main.connected and ready()) then return end
+	-- the partner's items handed over with the give key
+	if coop_trade.is_receiving() then return end
 	local sec = item:section()
 	if (incoming[sec] or 0) > 0 then
 		incoming[sec] = incoming[sec] - 1
@@ -229,16 +233,35 @@ local function actor_on_item_take(item)
 	if now < reward_until or in_task_end then
 		-- this player's own task paid: the partner gets the same (the host decides whether rewards are shared)
 		if reward_remote or (host() and not share_rewards) then return end
-		coop_main.send("gift", sec, 1, "r")
-		dbg("reward sent " .. sec)
+		outgoing[#outgoing + 1] = { item:id(), sec, true, now + 400 }
 		return
 	end
 	if not (now < gift_until or in_give_task or talking) then return end
-	coop_main.send("gift", sec, 1)
-	dbg("gift sent " .. sec)
+	outgoing[#outgoing + 1] = { item:id(), sec, false, now + 400 }
 end
 
-coop_main.on_event("gift", function(a)
+-- what was bought from a trader (or sold) is this player's alone
+local function actor_on_trade(item, sell_bye, money)
+	if item then traded[item:id()] = true end
+end
+
+local function flush_gifts(now)
+	local keep = {}
+	for _, g in ipairs(outgoing) do
+		if now < g[4] then
+			keep[#keep + 1] = g
+		elseif traded[g[1]] then
+			dbg("bought, not a gift: " .. g[2])
+		else
+			coop_main.send("qgift", g[2], 1, g[3] and "r" or "")
+			dbg((g[3] and "reward" or "gift") .. " sent " .. g[2])
+		end
+	end
+	outgoing = keep
+	if #outgoing == 0 then traded = {} end
+end
+
+coop_main.on_event("qgift", function(a)
 	local sec, n = a[1], tonumber(a[2]) or 1
 	if not (db.actor and sec and ini_sys:section_exist(sec)) then return end
 	-- a reward of the guest's task, and the host does not share rewards
@@ -393,6 +416,7 @@ local next_tick = 0
 local function actor_on_update()
 	local now = time_global()
 	if db.actor:is_talking() and not menu_shown() then talk_until = now + 3000 end
+	if #outgoing > 0 then flush_gifts(now) end
 	if now < next_tick then return end
 	next_tick = now + 500
 	local ok, err = pcall(function()
@@ -420,4 +444,5 @@ function on_game_start()
 	RegisterScriptCallback("actor_on_update", actor_on_update)
 	RegisterScriptCallback("actor_on_info_callback", actor_on_info_callback)
 	RegisterScriptCallback("actor_on_item_take", actor_on_item_take)
+	RegisterScriptCallback("actor_on_trade", actor_on_trade)
 end

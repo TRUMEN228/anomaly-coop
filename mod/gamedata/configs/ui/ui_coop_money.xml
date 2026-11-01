@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="windows-1251"?>
+<!-- Anomaly Co-op: giving money to the partner (coop_trade.script), styled like the "Network game" page -->
+<w>
+	<dialog x="332" y="290" width="360" height="188">
+		<background x="0" y="0" width="360" height="188" stretch="1">
+			<texture>ui_inGame2_opt_main_window</texture>
+		</background>
+		<caption x="16" y="10" width="328" height="30">
+			<text font="graffiti22" r="170" g="170" b="170" align="c" vert_align="c">Передать деньги</text>
+		</caption>
+		<have x="24" y="52" width="312" height="24">
+			<text font="letterica16" r="170" g="170" b="170" align="l" vert_align="c"/>
+		</have>
+		<fld_amount x="24" y="84" width="312" height="30">
+			<text x="3" font="letterica18" complex_mode="0" vert_align="c" align="l"/>
+			<texture>ui_inGame2_edit_box_2</texture>
+		</fld_amount>
+		<status x="24" y="118" width="312" height="22">
+			<text font="letterica16" r="230" g="200" b="120" align="l" vert_align="c"/>
+		</status>
+		<btn_ok x="24" y="146" width="150" height="28">
+			<text font="letterica16" align="c">Передать</text>
+			<texture>ui_button_ordinary</texture>
+			<text_color><e r="210" g="210" b="210"/></text_color>
+		</btn_ok>
+		<btn_cancel x="186" y="146" width="150" height="28">
+			<text font="letterica16" align="c">Отмена</text>
+			<texture>ui_button_ordinary</texture>
+			<text_color><e r="210" g="210" b="210"/></text_color>
+		</btn_cancel>
+	</dialog>
+</w>

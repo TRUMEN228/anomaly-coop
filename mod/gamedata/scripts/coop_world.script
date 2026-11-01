@@ -483,6 +483,17 @@ local function refresh_open_box(box)
 	return not ok or done ~= false
 end
 
+-- the host's state of what the guest took from a box or a body
+coop_main.on_event("bcond", function(a)
+	local item = level.object_by_id(coop_spawn.L(a[1]) or -1)
+	local cond = tonumber(a[3])
+	if not (same(item, a[2]) and cond and item:parent() and item:parent():id() == AC_ID and item.set_condition) then return end
+	if math.abs((item:condition() or 1) - cond) > 0.001 then
+		pcall(item.set_condition, item, cond)
+		dbg(string.format("took %s: condition %.2f as the host's", a[2], cond))
+	end
+end)
+
 -- both took the same thing at once: it stays with the host, the guest gives its copy up
 coop_main.on_event("bdeny", function(a)
 	local id, sec = coop_spawn.L(a[1]), a[2]
@@ -529,6 +540,11 @@ coop_main.on_event("btake", function(a)
 		end
 	end
 	if item then
+		-- the guest's copy may be in another state (a body's loot is rolled in each game): it takes the host's
+		if coop_main.is_host() then
+			local cond = item_props(item)
+			coop_main.send("bcond", a[2], sec, cond)
+		end
 		applying = true
 		release_obj(item)
 		applying = false
