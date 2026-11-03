@@ -114,6 +114,10 @@ end
 
 -- a point both players see: between them, a few metres aside
 local function meeting_point()
+	if ctx.spot then
+		local lv = level.vertex_id(ctx.spot)
+		if lv and lv < 4294967295 then return level.vertex_position(lv), lv end
+	end
 	local a = db.actor:position()
 	local r = coop_player.get_remote()
 	local b = r and r.level == level.name() and r.pos or a
@@ -172,6 +176,25 @@ local function aside(pos, dx, dz)
 	local lv = level.vertex_id(p)
 	if not lv or lv >= 4294967295 then return vector():set(pos), level.vertex_id(pos) end
 	return level.vertex_position(lv), lv
+end
+
+local function walkable(from, dir, len)
+	for d = 1, len, 0.7 do
+		local lv = level.vertex_id(vector():set(from.x + dir.x * d, from.y + 0.5, from.z + dir.z * d))
+		if not lv or lv >= 4294967295 then return false end
+	end
+	return true
+end
+
+-- the first of eight directions with 9 m of open ground ahead and room for the partner beside
+local function open_direction(center)
+	for i = 0, 7 do
+		local a = i * math.pi / 4
+		local dir = vector():set(math.cos(a), 0, math.sin(a))
+		local side = vector():set(-dir.z, 0, dir.x)
+		if walkable(center, dir, 9) and walkable(center, side, 3) then return dir, side end
+	end
+	return vector():set(1, 0, 0), vector():set(0, 0, 1)
 end
 
 -- a jump on the level is a fast travel to the host's sync: this one is the test's own
@@ -315,9 +338,12 @@ local STEPS = {
 	{ 0, function()
 		announce("ТЕСТ КООПЕРАТИВА: 7 шагов, около двух минут.\\nОба игрока переносятся на улицу в деревню новичков, рядом ставится тестовый тайник.", 8)
 		local center, lv, gv = village()
+		local dir, side = open_direction(center)
 		local me = aside(center, 0, 0)
-		local guest_pos = aside(center, 3, 0)
-		local bpos, blv = aside(center, 1.5, 2.5)
+		local guest_pos = aside(center, side.x * 2.5, side.z * 2.5)
+		-- the stash behind them, the creatures 6 m ahead where both look
+		local bpos, blv = aside(center, -dir.x * 1.5 + side.x * 1.2, -dir.z * 1.5 + side.z * 1.2)
+		ctx.spot = vector():set(center.x + dir.x * 6 + side.x * 1.2, center.y, center.z + dir.z * 6 + side.z * 1.2)
 		jump(me)
 		local se = alife_create(BOX, bpos, blv, gv)
 		ctx.box = se and se.id
@@ -328,9 +354,11 @@ local STEPS = {
 			local gx, gy, gz = f(guest_pos)
 			local bx, by, bz = f(bpos)
 			ask("0go", "go", gx, gy, gz, bx, by, bz, blv, gv, se.id)
+			local sx, sy, sz = f(ctx.spot)
+			after(1500, function() ask("0look", "look", sx, sy, sz) end)
 		end
-		-- both face the stash
-		after(1500, function() look_at(bpos) end)
+		-- both face where the creatures will be
+		after(1500, function() look_at(ctx.spot) end)
 	end },
 	{ 12, function()
 		announce("ШАГ 1. Зеркало: у ГОСТЯ в 6 м впереди (правое окно) появится плоть, которой у хоста нет.\\nЧерез 3–6 с она должна у гостя исчезнуть.", 11)
