@@ -783,7 +783,14 @@ poll_link = function(main)
 			local _, pl = coop_session.partner()
 			w = pl and pl.name or ""
 		end
-		load_world(w ~= "" and ("coop_" .. w) or "coop_session")
+		-- (the world may come before its name: then it is the save that just came, the newest one; loading a save that
+		-- is not there ends the game)
+		local name = w ~= "" and ("coop_" .. w) or nil
+		if not (name and getFS():exist(getFS():update_path("$game_saves$", name .. ".scop"))) then
+			name = coop_session.latest_save() or "coop_session"
+		end
+		coop_main.log("loading the host's world " .. name)
+		load_world(name)
 	end
 end
 
