@@ -12,6 +12,7 @@ local NPC_SYNC_RADIUS = 150 -- as far as creatures come online: closer, the gues
 local NPC_SNAP_DIST = 3      -- standing and out of sight
 local NPC_SNAP_MOVING = 10   -- running: the host's position is already behind
 local NPC_SNAP_SEEN = 15     -- in the guest's view: a jump is worse than a small difference
+local NPC_PUPPET_JUMP = 12   -- engine puppets: this far from the host's position it is put there, not walked
 local npc_last_pos = {}      -- host id -> position from the previous update
 local NPC_SEND_MS = 200      -- host: creature positions 5 times per second
 -- co-op engine r2+: on the guest the engine places the host's creatures every frame between these updates
@@ -217,6 +218,13 @@ coop_main.on_state("n", function(t)
 		if same(obj, sec) and obj:alive() then
 			local pos = vec(x, y, z)
 			if ENGINE >= 2 and stamp then
+				-- the engine walks a puppet to the host's positions: one far from it (its own AI took it elsewhere, a
+				-- load, a jump) is put there first, then follows
+				local off = obj:position():distance_to(pos)
+				if off > (npc_puppets[id] and NPC_PUPPET_JUMP or NPC_SNAP_DIST) then
+					obj:set_npc_position(pos)
+					dbg(string.format("puppet %s put back: %.0f m off", sec, off))
+				end
 				if not npc_puppets[id] then obj:net_puppet(true, 0) end
 				npc_puppets[id] = now
 				obj:net_puppet_push(pos, stamp)

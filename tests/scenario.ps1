@@ -36,6 +36,7 @@ public class Win {
   [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr h, IntPtr a, int x, int y, int w, int hh, uint f);
   [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
   [DllImport("user32.dll")] public static extern bool PrintWindow(IntPtr h, IntPtr hdc, uint flags);
+  [DllImport("dwmapi.dll")] public static extern int DwmGetWindowAttribute(IntPtr h, int attr, out RECT r, int size);
   public struct RECT { public int L, T, R, B; } }
 "@
 # real pixels from here on: the window rectangles are what the recording crops
@@ -63,7 +64,9 @@ $recorder = $null
 if ((Test-Path $ffmpeg) -and $win['A'] -and $win['B']) {
     $in = @()
     foreach ($n in 'A', 'B') {
-        $rc = New-Object Win+RECT; [Win]::GetWindowRect($win[$n], [ref]$rc) | Out-Null
+        # the visible frame (the window rectangle also holds an invisible shadow border: a strip of whatever is beside)
+        $rc = New-Object Win+RECT
+        if ([Win]::DwmGetWindowAttribute($win[$n], 9, [ref]$rc, 16) -ne 0) { [Win]::GetWindowRect($win[$n], [ref]$rc) | Out-Null }
         $w = ($rc.R - $rc.L) - (($rc.R - $rc.L) % 2); $h = ($rc.B - $rc.T) - (($rc.B - $rc.T) % 2)
         $in += "-f gdigrab -framerate 15 -offset_x $($rc.L) -offset_y $($rc.T) -video_size ${w}x$h -draw_mouse 0 -i desktop"
     }
