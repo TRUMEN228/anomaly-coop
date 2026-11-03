@@ -90,7 +90,10 @@ coop_main.on_state("w", function(t)
 		-- the first time at once (the world just loaded), later as the host's sky changes: gradually
 		local first = host_weather == nil
 		host_weather = w
-		if level.get_weather() ~= w then level.set_weather(w, first) end
+		local here = level.get_weather()
+		if here ~= w then level.set_weather(w, first) end
+		dbg(string.format("weather: host %s, here %s -> %s%s", w, tostring(here), tostring(level.get_weather()),
+			first and " (at once)" or ""))
 	end
 	local host_surge = t[3] == "1"
 	if host_surge and not surge_manager.is_started() then

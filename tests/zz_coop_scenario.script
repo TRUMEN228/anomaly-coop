@@ -265,6 +265,9 @@ cmd.go = function(a)
 	return true, string.format("here, stash host %s = guest %d", a[11], se.id)
 end
 
+cmd.weather = function() return true, string.format("%s at %02d:%02d", tostring(level.get_weather()),
+	level.get_time_hours(), level.get_time_minutes()) end
+
 cmd.look = function(a)
 	look_at(vector():set(tonumber(a[3]) or 0, tonumber(a[4]) or 0, tonumber(a[5]) or 0))
 	return true, "looking"
@@ -359,6 +362,15 @@ local STEPS = {
 		end
 		-- both face where the creatures will be
 		after(1500, function() look_at(ctx.spot) end)
+	end },
+	{ 10, function()
+		-- the same sky: the weather's name and the hour at both
+		local mine = string.format("%s at %02d:%02d", tostring(level.get_weather()), level.get_time_hours(),
+			level.get_time_minutes())
+		ctx.expect["sky"] = function(ok, detail)
+			return ok and detail:match("^(%S+)") == mine:match("^(%S+)"), "host " .. mine .. ", guest " .. detail
+		end
+		ask("sky", "weather")
 	end },
 	{ 12, function()
 		announce("ШАГ 1. Зеркало: у ГОСТЯ в 6 м впереди (правое окно) появится плоть, которой у хоста нет.\\nЧерез 3–6 с она должна у гостя исчезнуть.", 11)
