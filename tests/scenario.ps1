@@ -1,6 +1,8 @@
 # The co-op test both games play together (zz_coop_scenario.script), watched by a person: two real games in the
 # test sandbox side by side, a banner in each says what each step does and what to look for.
 # Results: local\test{A,B}\appdata\coop_qa.txt, printed at the end; then both games close.
+# The run is recorded (ffmpeg, only the two game windows, side by side): local\qa_rec\run.mp4; frames of both
+# windows every 2 s: local\qa_shots (and run.webp made of them).
 # usage: scenario.ps1 [-Minutes 8]
 param([int]$Minutes = 8)
 $r = 'D:\Projects\stalker_coop'
@@ -25,28 +27,55 @@ foreach ($n in 'A', 'B') {
 
 & "$r\tests\duo_link.ps1" -NoLauncher -Save coop_sandbox
 
-# side by side: the host on the left, the guest on the right
+# side by side: the host on the left, the guest on the right (each on a screen of its own when there are two)
 Add-Type -AssemblyName System.Windows.Forms, System.Drawing
 Add-Type @"
 using System; using System.Runtime.InteropServices;
 public class Win {
+  [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
   [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr h, IntPtr a, int x, int y, int w, int hh, uint f);
   [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
   [DllImport("user32.dll")] public static extern bool PrintWindow(IntPtr h, IntPtr hdc, uint flags);
   public struct RECT { public int L, T, R, B; } }
 "@
-$sw = [System.Windows.Forms.Screen]::PrimaryScreen.WorkingArea.Width
+# real pixels from here on: the window rectangles are what the recording crops
+[Win]::SetProcessDPIAware() | Out-Null
+$screens = [System.Windows.Forms.Screen]::AllScreens | Sort-Object { $_.Bounds.X }
+$left = $screens[0].Bounds
+$right = $screens[-1].Bounds
 $win = @{}
 foreach ($n in 'A', 'B') {
     $p = Get-Process AnomalyDX11AVX* -ErrorAction SilentlyContinue | ? { $_.Path -like "$r\local\test$n\*" } | Select -First 1
     if ($p -and $p.MainWindowHandle -ne 0) {
         $win[$n] = $p.MainWindowHandle
-        $x = if ($n -eq 'A') { 0 } else { [Math]::Max(0, $sw - 1280) }
-        [Win]::SetWindowPos($p.MainWindowHandle, [IntPtr]::Zero, $x, 0, 0, 0, 0x0001 -bor 0x0004) | Out-Null
+        $x = if ($n -eq 'A') { $left.X } elseif ($screens.Count -gt 1) { $right.X } else { [Math]::Max(0, $right.Right - 1300) }
+        [Win]::SetWindowPos($p.MainWindowHandle, [IntPtr]::Zero, $x, $right.Y, 0, 0, 0x0001 -bor 0x0004) | Out-Null
     }
 }
+Start-Sleep 1
 
-# what each window shows, every few seconds (even when covered): local\qa_shots\<seconds>_<step>_<A|B>.png
+# the recording: just the two windows' rectangles (nothing else of the desktop), side by side
+$ffmpeg = 'S:\Tools\ffmpeg\bin\ffmpeg.exe'
+$rec = "$r\local\qa_rec"
+New-Item -ItemType Directory -Force $rec | Out-Null
+Remove-Item "$rec\run.mp4" -ErrorAction SilentlyContinue
+$recorder = $null
+if ((Test-Path $ffmpeg) -and $win['A'] -and $win['B']) {
+    $in = @()
+    foreach ($n in 'A', 'B') {
+        $rc = New-Object Win+RECT; [Win]::GetWindowRect($win[$n], [ref]$rc) | Out-Null
+        $w = ($rc.R - $rc.L) - (($rc.R - $rc.L) % 2); $h = ($rc.B - $rc.T) - (($rc.B - $rc.T) % 2)
+        $in += "-f gdigrab -framerate 15 -offset_x $($rc.L) -offset_y $($rc.T) -video_size ${w}x$h -draw_mouse 0 -i desktop"
+    }
+    $ffargs = "-hide_banner -loglevel error -y $($in -join ' ') -filter_complex `"[0]scale=1280:-2[a];[1]scale=1280:-2[b];[a][b]hstack`" " +
+        "-c:v libx264 -preset veryfast -crf 26 -pix_fmt yuv420p -movflags +frag_keyframe+empty_moov `"$rec\run.mp4`""
+    $psi = New-Object System.Diagnostics.ProcessStartInfo $ffmpeg, $ffargs
+    $psi.UseShellExecute = $false; $psi.RedirectStandardInput = $true; $psi.CreateNoWindow = $true
+    $recorder = [System.Diagnostics.Process]::Start($psi)
+    "recording both windows: $rec\run.mp4"
+}
+
+# what each window shows, every 2 s (even when covered): local\qa_shots\<seconds>_<step>_<A|B>.png
 $shots = "$r\local\qa_shots"
 Remove-Item $shots -Recurse -Force -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force $shots | Out-Null
@@ -68,7 +97,7 @@ $qa = "$r\local\testA\appdata\coop_qa.txt"
 $seen = 0
 $step = "wait"
 while (((Get-Date) - $t0).TotalMinutes -lt $Minutes) {
-    Start-Sleep 4
+    Start-Sleep 2
     $lines = @(Get-Content $qa -ErrorAction SilentlyContinue)
     for ($i = $seen; $i -lt $lines.Count; $i++) { "  " + $lines[$i] }
     $seen = $lines.Count
@@ -83,6 +112,13 @@ foreach ($n in 'A', 'B') {
     Get-Content "$r\local\test$n\appdata\coop_qa.txt" -ErrorAction SilentlyContinue
     Get-Content "$r\local\test$n\appdata\coop_log.txt" -ErrorAction SilentlyContinue | Select-String "failed|mirror:|not at the host" | Select -Last 12 | % Line
 }
-# both games (and the relay) close when the test is over
+# the recording ends ("q" lets ffmpeg finish the file), then both games (and the relay) close
+if ($recorder) {
+    try { $recorder.StandardInput.Write("q"); $recorder.StandardInput.Close() } catch { }
+    if (-not $recorder.WaitForExit(20000)) { $recorder.Kill() }
+    $f = Get-Item "$rec\run.mp4" -ErrorAction SilentlyContinue
+    if ($f) { "recording: $($f.FullName) ($([int]($f.Length / 1MB)) MB)" }
+}
 & "$r\tests\duo.ps1" -Stop | Out-Null
 "games closed"
+python -I "$r\tests\shots_video.py" $shots "$shots\run.webp" 500
