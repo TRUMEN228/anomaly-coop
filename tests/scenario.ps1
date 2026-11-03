@@ -1,6 +1,6 @@
 # The co-op test both games play together (zz_coop_scenario.script), watched by a person: two real games in the
 # test sandbox side by side, a banner in each says what each step does and what to look for.
-# Results: local\test{A,B}\appdata\coop_qa.txt, printed at the end. The games stay open; duo.ps1 -Stop closes them.
+# Results: local\test{A,B}\appdata\coop_qa.txt, printed at the end; then both games close.
 # usage: scenario.ps1 [-Minutes 8]
 param([int]$Minutes = 8)
 $r = 'D:\Projects\stalker_coop'
@@ -57,3 +57,6 @@ foreach ($n in 'A', 'B') {
     Get-Content "$r\local\test$n\appdata\coop_qa.txt" -ErrorAction SilentlyContinue
     Get-Content "$r\local\test$n\appdata\coop_log.txt" -ErrorAction SilentlyContinue | Select-String "failed|mirror:|not at the host" | Select -Last 12 | % Line
 }
+# both games (and the relay) close when the test is over
+& "$r\tests\duo.ps1" -Stop | Out-Null
+"games closed"

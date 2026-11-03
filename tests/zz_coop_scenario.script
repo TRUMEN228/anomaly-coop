@@ -154,6 +154,32 @@ local function take_from(box, sec)
 	return true
 end
 
+local VILLAGE = "esc_smart_terrain_2_12"
+local BOX = "inv_backpack"
+
+-- a spot of open ground: the village's middle, or where the player stands on another level
+local function village()
+	local smart = SIMBOARD and SIMBOARD.smarts_by_names and SIMBOARD.smarts_by_names[VILLAGE]
+	if smart and level.name() == "l01_escape" then
+		return vector():set(smart.position), smart.m_level_vertex_id, smart.m_game_vertex_id
+	end
+	return vector():set(db.actor:position()), db.actor:level_vertex_id(), db.actor:game_vertex_id()
+end
+
+-- a level vertex near pos, dx/dz metres aside
+local function aside(pos, dx, dz)
+	local p = vector():set(pos.x + dx, pos.y + 0.5, pos.z + dz)
+	local lv = level.vertex_id(p)
+	if not lv or lv >= 4294967295 then return vector():set(pos), level.vertex_id(pos) end
+	return level.vertex_position(lv), lv
+end
+
+-- a jump on the level is a fast travel to the host's sync: this one is the test's own
+local function jump(pos)
+	db.actor:set_actor_position(pos)
+	if coop_session.alive_write then coop_session.alive_write(true) end
+end
+
 local function box_by(id)
 	local o = level.object_by_id(coop_spawn.L(id) or -1)
 	return o and IsInvbox(o) and o or nil
@@ -203,6 +229,18 @@ cmd.take = function(a)
 end
 
 cmd.has = function(a) return true, tostring(#on_actor(a[3])) end
+
+-- next to the host, and the test's stash where the host's is (the same box, by the host's id)
+cmd.go = function(a)
+	local v = function(i) return vector():set(tonumber(a[i]) or 0, tonumber(a[i + 1]) or 0, tonumber(a[i + 2]) or 0) end
+	jump(v(3))
+	local bpos = v(6)
+	local se = alife_create(BOX, bpos, tonumber(a[9]), tonumber(a[10]))
+	if not se then return false, "no stash" end
+	coop_spawn.map_pair(a[11], se.id)
+	ctx.box_g = se.id
+	return true, string.format("here, stash host %s = guest %d", a[11], se.id)
+end
 
 cmd.look = function(a)
 	look_at(vector():set(tonumber(a[3]) or 0, tonumber(a[4]) or 0, tonumber(a[5]) or 0))
@@ -275,18 +313,31 @@ end)
 
 local STEPS = {
 	{ 0, function()
-		announce("ТЕСТ КООПЕРАТИВА: 7 шагов, около двух минут.\\nСмотрите на оба окна; если что-то не так — напишите номер шага.", 6)
-		local box = nearest_box()
-		ctx.box = box and box:id()
-		record("0", box ~= nil, box and ("stash " .. box:section() .. " " .. box:id()) or "no box within 40 m")
+		announce("ТЕСТ КООПЕРАТИВА: 7 шагов, около двух минут.\\nОба игрока переносятся на улицу в деревню новичков, рядом ставится тестовый тайник.", 8)
+		local center, lv, gv = village()
+		local me = aside(center, 0, 0)
+		local guest_pos = aside(center, 3, 0)
+		local bpos, blv = aside(center, 1.5, 2.5)
+		jump(me)
+		local se = alife_create(BOX, bpos, blv, gv)
+		ctx.box = se and se.id
+		record("0", se ~= nil, se and string.format("in %s, stash %d", level.name(), se.id) or "no stash")
 		for _, sec in ipairs({ PUT, PUT, RACE }) do alife_create_item(sec, db.actor) end
+		if se then
+			local f = function(p) return string.format("%.2f", p.x), string.format("%.2f", p.y), string.format("%.2f", p.z) end
+			local gx, gy, gz = f(guest_pos)
+			local bx, by, bz = f(bpos)
+			ask("0go", "go", gx, gy, gz, bx, by, bz, blv, gv, se.id)
+		end
+		-- both face the stash
+		after(1500, function() look_at(bpos) end)
 	end },
-	{ 6, function()
+	{ 12, function()
 		announce("ШАГ 1. Зеркало: у ГОСТЯ в 8 м впереди (правое окно) появится плоть, которой у хоста нет.\\nЧерез 3–6 с она должна у гостя исчезнуть.", 11)
 		ask("1", "extra")
 	end },
-	{ 18, function() ask("1", "extra_check") end },
-	{ 20, function()
+	{ 24, function() ask("1", "extra_check") end },
+	{ 26, function()
 		announce("ШАГ 2. Зеркало: у ХОСТА появится плоть, оба игрока повернутся к ней.\\nЧерез 2–5 с она должна появиться и у гостя, на том же месте.", 11)
 		local pos, lv = meeting_point()
 		look_at(pos)
@@ -295,14 +346,14 @@ local STEPS = {
 		ctx.hid = se and se.id
 		if not se then record("2", false, "not made at the host") end
 	end },
-	{ 32, function() if ctx.hid then ask("2", "made_check", ctx.hid, CREATURE) end end },
-	{ 34, function()
+	{ 38, function() if ctx.hid then ask("2", "made_check", ctx.hid, CREATURE) end end },
+	{ 40, function()
 		announce("ШАГ 3. Хост убивает эту плоть.\\nУ гостя она тоже должна упасть мёртвой.", 8)
 		local o = ctx.hid and level.object_by_id(ctx.hid)
 		if o and o:alive() then o:kill(o) end
 	end },
-	{ 42, function() if ctx.hid then ask("3", "dead_check", ctx.hid) end end },
-	{ 44, function()
+	{ 48, function() if ctx.hid then ask("3", "dead_check", ctx.hid) end end },
+	{ 50, function()
 		if not ctx.box then return end
 		announce("ШАГ 4. Тайник открыт у обоих. Хост кладёт в него 2 колбасы и энергетик.\\nУ гостя (правое окно) они должны появиться в тайнике через 1–2 с.", 10)
 		local box = level.object_by_id(ctx.box)
@@ -319,7 +370,7 @@ local STEPS = {
 			if gui then gui:LMode_RefreshInventories() end
 		end)
 	end },
-	{ 54, function()
+	{ 60, function()
 		local box = ctx.box and level.object_by_id(ctx.box)
 		if not box then return end
 		ctx.expect["4"] = function(ok, detail)
@@ -328,14 +379,14 @@ local STEPS = {
 		end
 		ask("4", "box_count", ctx.box, PUT)
 	end },
-	{ 56, function()
+	{ 62, function()
 		local box = ctx.box and level.object_by_id(ctx.box)
 		if not box then return end
 		announce("ШАГ 5. ГОСТЬ берёт из тайника одну колбасу.\\nУ хоста (левое окно) в тайнике должна остаться одна.", 10)
 		ctx.before5 = #in_box(box, PUT)
 		ask("5", "take", ctx.box, PUT)
 	end },
-	{ 67, function()
+	{ 73, function()
 		local box = ctx.box and level.object_by_id(ctx.box)
 		if not box then return end
 		local now5 = #in_box(box, PUT)
@@ -346,7 +397,7 @@ local STEPS = {
 		end
 		ask("6a", "has", RACE)
 	end },
-	{ 69, function()
+	{ 75, function()
 		local box = ctx.box and level.object_by_id(ctx.box)
 		if not box then return end
 		announce("ШАГ 6. Хост и гость ОДНОВРЕМЕННО берут энергетик из тайника.\\nОн должен остаться только у хоста, у гостя — сообщение «забрал раньше вас».", 12)
@@ -354,7 +405,7 @@ local STEPS = {
 		ask("6", "take", ctx.box, RACE)
 		take_from(box, RACE)
 	end },
-	{ 82, function()
+	{ 88, function()
 		if not ctx.box then return end
 		ctx.expect["6b"] = function(ok, detail)
 			local hg = #on_actor(RACE) - (ctx.host_race0 or 0)
@@ -363,7 +414,7 @@ local STEPS = {
 		end
 		ask("6b", "has", RACE)
 	end },
-	{ 84, function()
+	{ 90, function()
 		close_box()
 		ask("7close", "close_box")
 		announce("ШАГ 7. Деньги: у ГОСТЯ открывается окно передачи денег, вводится 500 и нажимается «Передать».\\nУ хоста должно прийти «передал вам 500 руб.».", 12)
@@ -371,13 +422,13 @@ local STEPS = {
 		if coop_team.shared_money() then record("7", false, "shared money is on: nothing to give") return end
 		ask("7", "money_open")
 	end },
-	{ 89, function() if not coop_team.shared_money() then ask("7s", "money_send", 500) end end },
-	{ 95, function()
+	{ 95, function() if not coop_team.shared_money() then ask("7s", "money_send", 500) end end },
+	{ 101, function()
 		if coop_team.shared_money() then return end
 		local got = db.actor:money() - ctx.money0
 		record("7", got == 500, string.format("host money +%d", got))
 	end },
-	{ 98, function()
+	{ 104, function()
 		announce("ТЕСТ ЗАКОНЧЕН. Итоги — в coop_qa.txt обеих игр.", 15)
 		record("end", true, "done")
 	end },
