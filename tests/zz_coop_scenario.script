@@ -548,6 +548,8 @@ local function actor_on_update()
 			level.change_game_time(0, (12 - h - 1) % 24, 60 - m)
 		end
 		level.set_weather("w_clear1", true)
+		-- a jump: the guest's sky follows at once
+		if coop_world.weather_jumped then coop_world.weather_jumped() end
 		coop_main.log(string.format("QA day: %02d:%02d -> %02d:%02d, clear", h, m, level.get_time_hours(),
 			level.get_time_minutes()))
 	end

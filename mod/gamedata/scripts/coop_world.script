@@ -52,13 +52,18 @@ local function game_minutes()
 	return (level.get_time_days() * 24 + level.get_time_hours()) * 60 + level.get_time_minutes()
 end
 
+local weather_jumps = 0        -- host: changes of the sky made at once so far (below)
 coop_main.add_state_provider("w", function()
 	if not coop_main.is_host() then return end
-	return { game_minutes(), level.get_weather() or "", surge_manager.is_started() and 1 or 0 }
+	return { game_minutes(), level.get_weather() or "", surge_manager.is_started() and 1 or 0, weather_jumps }
 end)
 
--- Each game's weather manager (level_weathers) picks a preset at random every hour: on the guest it puts the host's
+-- Each game's weather manager (level_weathers) picks a preset at random every hour: on the guest it puts the host's.
+-- The host's sky changes gradually (both games change it together) or at once (a load, a forced change): such a
+-- jump is counted and sent, and the guest's sky jumps too
 local host_weather = nil
+local host_jumps = nil         -- guest: the host's count it followed
+function weather_jumped() weather_jumps = weather_jumps + 1 end
 local function hook_weather()
 	local cls = level_weathers and level_weathers.WeatherManager
 	if not cls or rawget(_G, "coop_weather_hooked") then return end
@@ -69,6 +74,7 @@ local function hook_weather()
 			if not weather.is_paused() then level.set_weather(host_weather, now) end
 			return
 		end
+		if now then weather_jumped() end
 		return select(self, now)
 	end
 end
@@ -86,10 +92,12 @@ coop_main.on_state("w", function(t)
 		level.change_game_time(0, math.floor(diff / 60), diff % 60)
 	end
 	local w = t[2]
-	if w and w ~= "" and w ~= host_weather then
-		-- the first time at once (the world just loaded), later as the host's sky changes: gradually
-		local first = host_weather == nil
-		host_weather = w
+	local jumps = t[4]
+	if w and w ~= "" and (w ~= host_weather or jumps ~= host_jumps) then
+		-- at once the first time (this world just loaded) and when the host's own sky jumped; otherwise gradually,
+		-- as the host's changes
+		local first = host_weather == nil or (jumps ~= host_jumps and host_jumps ~= nil)
+		host_weather, host_jumps = w, jumps
 		local here = level.get_weather()
 		if here ~= w then level.set_weather(w, first) end
 		dbg(string.format("weather: host %s, here %s -> %s%s", w, tostring(here), tostring(level.get_weather()),
