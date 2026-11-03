@@ -8,7 +8,8 @@
 	  - one the host has dead and the guest alive: killed;
 	  - one of the guest's own the host has not: gone (only where the host surely has its world online - near
 	    both players - and never a story character).
-	Positions, poses and health of those it has are set by coop_world ("n") as before.
+	Positions, poses and health of those it has are set by coop_world ("n") as before. Away from the players the
+	guest's squads stop choosing new targets (they would choose differently from the host's).
 	  host -> guest:  "wm"  stamp, level, host position, then id:section:x:y:z:lvid:gvid:alive:squad:squad section:smart
 --]]
 
@@ -28,7 +29,10 @@ local made_at = {}           -- guest: local id -> when the mirror made or moved
 local stats = { made = 0, moved = 0, killed = 0, removed = 0 }
 
 local function dbg(s) if coop_main.debug then coop_main.log("mirror: " .. s) end end
-local function is_creature(obj) return obj and (IsStalker(obj) or IsMonster(obj)) end
+-- (a psy dog's phantoms live seconds and each game makes its own)
+local function is_creature(obj)
+	return obj and (IsStalker(obj) or IsMonster(obj)) and obj:clsid() ~= clsid.psy_dog_phantom_s
+end
 local function f1(n) return string.format("%.1f", n) end
 
 function get_stats() return stats end
@@ -90,9 +94,15 @@ local function apply(t)
 			elseif alive == "1" and pos:distance_to(here) < NEAR_GUEST then
 				local se = id and alife_object(id)
 				if se and se:section_name() == sec then
-					-- the guest's simulation has it elsewhere (offline): back to where the host has it
+					-- the guest's simulation has it elsewhere (offline): back to where the host has it, with its squad
+					-- (a squad comes online by where the squad is)
 					if not made_at[id] or now - made_at[id] > 10000 then
-						TeleportObject(id, pos, tonumber(lvid), tonumber(gvid))
+						local squad = get_object_squad(se)
+						if squad then
+							TeleportSquad(squad, pos, tonumber(lvid), tonumber(gvid))
+						else
+							TeleportObject(id, pos, tonumber(lvid), tonumber(gvid))
+						end
 						made_at[id] = now
 						moved = moved + 1
 					end
@@ -109,8 +119,7 @@ local function apply(t)
 	end
 
 	-- the guest's own: what the host does not have, near both players
-	local released = 0
-	local seen = {}
+	local seen, gone = {}, {}
 	for id, st in pairs(db.storage) do
 		local obj = st.object
 		if obj and id ~= AC_ID and is_creature(obj) and obj:alive() and not coop_player.is_puppet(id) then
@@ -120,14 +129,19 @@ local function apply(t)
 				and not (made_at[id] and now - made_at[id] < 10000) then
 				seen[id] = true
 				missing[id] = (missing[id] or 0) + 1
-				if missing[id] >= MISSES and released < RELEASE_PER_TICK then
+				if missing[id] >= MISSES and #gone < RELEASE_PER_TICK then
 					dbg(string.format("not at the host: %s %d", obj:section(), id))
-					coop_spawn.release_creature(id)
-					released = released + 1
+					gone[#gone + 1] = id
 				end
 			end
 		end
 	end
+	-- (released after the walk over db.storage, which the releases change)
+	for _, id in ipairs(gone) do
+		coop_spawn.release_creature(id)
+		missing[id] = nil
+	end
+	local released = #gone
 	for id in pairs(missing) do
 		if not seen[id] then missing[id] = nil end
 	end
@@ -150,6 +164,29 @@ coop_main.on_state("wm", function(t)
 	if not ok then coop_main.log("mirror failed: " .. tostring(err)) end
 end)
 
+------------------------------------------------------------------ guest: its own simulation holds still
+-- Squads choose where to go next (generic_update, specific_update) each in its own game, with its own dice: the
+-- guest's squads stop choosing. They go on to the targets they had in the host's save; near the players the host
+-- places everyone anyway. The guest's companions still follow it.
+local function frozen(squad)
+	if not (coop_main.connected and coop_session.is_guest_session()) then return false end
+	local leader = squad.commander_id and squad:commander_id()
+	return not (leader and alife():has_info(leader, "npcx_is_companion"))
+end
+
+local function hook_squads()
+	local cls = sim_squad_scripted and sim_squad_scripted.sim_squad_scripted
+	if not cls or rawget(_G, "coop_mirror_squads_hooked") then return end
+	_G.coop_mirror_squads_hooked = true
+	for _, name in ipairs({ "generic_update", "specific_update" }) do
+		local orig = cls[name]
+		cls[name] = function(self, ...)
+			if frozen(self) then return end
+			return orig(self, ...)
+		end
+	end
+end
+
 local function actor_on_first_update()
 	-- the guest's character and the host's spawns settle first
 	ready_at = time_global() + 10000
@@ -157,5 +194,7 @@ end
 
 function on_game_start()
 	ready_at, last_stamp, missing, made_at = nil, nil, {}, {}
+	local ok, err = pcall(hook_squads)
+	if not ok then coop_main.log("mirror: squads not hooked: " .. tostring(err)) end
 	RegisterScriptCallback("actor_on_first_update", actor_on_first_update)
 end
