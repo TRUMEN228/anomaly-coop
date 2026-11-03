@@ -25,9 +25,10 @@ local npc_mental = {}        -- host: "id:state" of the stalkers in the last "n"
 local applying = false         -- true while we apply a remote event, to avoid echoing it back
 function is_applying() return applying end
 local pending_hits = {}        -- id -> health before the actor's hit
-local pending_take = {}        -- id -> { sec, pos }
+local pending_take = {}        -- id -> { sec, pos, time }
 local pending_drop = {}        -- id -> sec
-local box_take = {}            -- item id -> box id (filled by actor_on_item_take_from_box)
+local box_take = {}            -- item id -> { box id, time } (filled by actor_on_item_take_from_box)
+local TAKE_WAIT = 1000         -- a take waits this long for the loot window to say it came from a box
 
 local function puppet_obj()
 	local id = coop_player.get_puppet_id()
@@ -333,12 +334,12 @@ local function suppressed() return applying or time_global() < suppress_until en
 
 local function actor_on_item_take(item)
 	if suppressed() or not coop_main.connected then return end
-	pending_take[item:id()] = { item:section(), vector():set(db.actor:position()) }
+	pending_take[item:id()] = { item:section(), vector():set(db.actor:position()), time_global() }
 end
 
 local function actor_on_item_take_from_box(box, item)
 	if suppressed() or not coop_main.connected or not box or not item then return end
-	box_take[item:id()] = box:id()
+	box_take[item:id()] = { box:id(), time_global() }
 end
 
 local function actor_on_item_drop(item)
@@ -407,19 +408,28 @@ coop_main.on_event("corpse", function(a)
 	dbg(string.format("corpse %s: %.1f m off the host's", npc:section(), off))
 end)
 
+-- Anomaly's loot window says an item came from a box (actor_on_item_take_from_box) only when it reads its lists
+-- again, a moment after the item is in the inventory: a take is a ground take only when no such word came in time
 local function flush_items()
+	local now = time_global()
 	for id, t in pairs(pending_take) do
-		local box = box_take[id]
+		local box = box_take[id] and box_take[id][1]
 		if box and coop_trade.is_exchange_box(box) then
 			-- taken back from the exchange box: not a world event
+			pending_take[id], box_take[id] = nil, nil
 		elseif box then
 			coop_main.send("btake", coop_spawn.R(box), coop_spawn.R(id), t[1], next_box_seq())
 			want_snapshot(box)
-		else
+			pending_take[id], box_take[id] = nil, nil
+		elseif now - t[3] > TAKE_WAIT then
 			coop_main.send("take", coop_spawn.R(id), t[1], f2(t[2].x), f2(t[2].y), f2(t[2].z))
+			pending_take[id] = nil
 		end
 	end
-	pending_take, box_take = {}, {}
+	-- a word from the window for an item whose take was already sent (or never came)
+	for id, b in pairs(box_take) do
+		if not pending_take[id] and now - b[2] > 3000 then box_take[id] = nil end
+	end
 
 	for id, sec in pairs(pending_drop) do
 		local obj = level.object_by_id(id)

@@ -18,7 +18,7 @@ local ctx = { expect = {} }   -- what the steps share
 local banner = { text = "", until_t = 0 }
 local PANEL = nil
 
-local CREATURE = "tushkano_weak"
+local CREATURE = "flesh_weak"      -- big and slow: easy to see
 local PUT = "kolbasa"         -- not in the sandbox gear: counts start from what the test puts in
 local RACE = "energy_drink"
 
@@ -106,19 +106,50 @@ local function on_actor(sec)
 	return list
 end
 
+-- the player turns to face a point
+local function look_at(pos)
+	local dir = vector():set(pos):sub(db.actor:position())
+	db.actor:set_actor_direction(-dir:getH())
+end
+
+-- a point both players see: between them, a few metres aside
+local function meeting_point()
+	local a = db.actor:position()
+	local r = coop_player.get_remote()
+	local b = r and r.level == level.name() and r.pos or a
+	local mid = vector():set((a.x + b.x) / 2, a.y + 0.5, (a.z + b.z) / 2)
+	local side = vector():set(b.z - a.z, 0, a.x - b.x)
+	if side:magnitude() < 0.5 then side = device().cam_dir end
+	side:normalize()
+	local pos = vector():set(mid.x + side.x * 8, mid.y, mid.z + side.z * 8)
+	local lv = level.vertex_id(pos)
+	if not lv or lv >= 4294967295 then return ahead(8) end
+	return level.vertex_position(lv), lv
+end
+
+local function loot_gui(box)
+	local gui = ui_inventory.GUI
+	return gui and gui:IsShown() and gui.mode == "loot" and gui.npc_id == box:id() and gui or nil
+end
+
+local function open_box(box)
+	if not loot_gui(box) then ui_inventory.start("loot", box) end
+end
+
+local function close_box()
+	local gui = ui_inventory.GUI
+	if gui and gui:IsShown() then gui:Close() end
+end
+
 -- as a player does it: the loot window open, the item moved, the window read again (which reports the take)
 local function take_from(box, sec)
 	local item = in_box(box, sec)[1]
 	if not item then return false end
-	ui_inventory.start("loot", box)
+	open_box(box)
 	box:transfer_item(item, db.actor)
-	after(600, function()
-		local gui = ui_inventory.GUI
-		if gui and gui:IsShown() then gui:LMode_RefreshInventories() end
-	end)
-	after(4000, function()
-		local gui = ui_inventory.GUI
-		if gui and gui:IsShown() then gui:Close() end
+	after(500, function()
+		local gui = loot_gui(box)
+		if gui then gui:LMode_RefreshInventories() end
 	end)
 	return true
 end
@@ -132,7 +163,7 @@ end
 local cmd = {}
 
 cmd.extra = function()
-	local pos, lv = ahead(12)
+	local pos, lv = ahead(8)
 	local se = alife_create(CREATURE, pos, lv, db.actor:game_vertex_id())
 	ctx.extra = se and se.id
 	return se ~= nil, se and ("made " .. se.id) or "not made"
@@ -172,6 +203,23 @@ cmd.take = function(a)
 end
 
 cmd.has = function(a) return true, tostring(#on_actor(a[3])) end
+
+cmd.look = function(a)
+	look_at(vector():set(tonumber(a[3]) or 0, tonumber(a[4]) or 0, tonumber(a[5]) or 0))
+	return true, "looking"
+end
+
+cmd.open_box = function(a)
+	local box = box_by(a[3])
+	if not box then return false, "no box" end
+	open_box(box)
+	return true, "stash window open"
+end
+
+cmd.close_box = function()
+	close_box()
+	return true, "closed"
+end
 
 cmd.money_open = function()
 	ctx.money_wnd = coop_trade.UICoopMoney()
@@ -234,34 +282,42 @@ local STEPS = {
 		for _, sec in ipairs({ PUT, PUT, RACE }) do alife_create_item(sec, db.actor) end
 	end },
 	{ 6, function()
-		announce("ШАГ 1. Зеркало: у ГОСТЯ в 12 м впереди появится тушкан, которого у хоста нет.\\nЧерез 3–6 с он должен у гостя исчезнуть.", 11)
+		announce("ШАГ 1. Зеркало: у ГОСТЯ в 8 м впереди (правое окно) появится плоть, которой у хоста нет.\\nЧерез 3–6 с она должна у гостя исчезнуть.", 11)
 		ask("1", "extra")
 	end },
 	{ 18, function() ask("1", "extra_check") end },
 	{ 20, function()
-		announce("ШАГ 2. Зеркало: у ХОСТА в 10 м впереди появится тушкан.\\nЧерез 2–5 с он должен появиться и у гостя, на том же месте.", 11)
-		local pos, lv = ahead(10)
+		announce("ШАГ 2. Зеркало: у ХОСТА появится плоть, оба игрока повернутся к ней.\\nЧерез 2–5 с она должна появиться и у гостя, на том же месте.", 11)
+		local pos, lv = meeting_point()
+		look_at(pos)
+		ask("2look", "look", string.format("%.2f", pos.x), string.format("%.2f", pos.y), string.format("%.2f", pos.z))
 		local se = alife_create(CREATURE, pos, lv, db.actor:game_vertex_id())
 		ctx.hid = se and se.id
 		if not se then record("2", false, "not made at the host") end
 	end },
 	{ 32, function() if ctx.hid then ask("2", "made_check", ctx.hid, CREATURE) end end },
 	{ 34, function()
-		announce("ШАГ 3. Хост убивает этого тушкана.\\nУ гостя он тоже должен упасть мёртвым.", 8)
+		announce("ШАГ 3. Хост убивает эту плоть.\\nУ гостя она тоже должна упасть мёртвой.", 8)
 		local o = ctx.hid and level.object_by_id(ctx.hid)
 		if o and o:alive() then o:kill(o) end
 	end },
 	{ 42, function() if ctx.hid then ask("3", "dead_check", ctx.hid) end end },
 	{ 44, function()
 		if not ctx.box then return end
-		announce("ШАГ 4. Тайник: хост кладёт в тайник 2 колбасы и энергетик.\\nЕсли у гостя открыт тайник — они должны там появиться.", 10)
+		announce("ШАГ 4. Тайник открыт у обоих. Хост кладёт в него 2 колбасы и энергетик.\\nУ гостя (правое окно) они должны появиться в тайнике через 1–2 с.", 10)
 		local box = level.object_by_id(ctx.box)
+		open_box(box)
+		ask("4open", "open_box", ctx.box)
 		-- (the moves take a frame or two: the items are picked first, each once)
 		local items = on_actor(PUT)
 		items = { items[1], items[2], on_actor(RACE)[1] }
 		for _, item in pairs(items) do
 			if box then db.actor:transfer_item(item, box) end
 		end
+		after(1500, function()
+			local gui = box and loot_gui(box)
+			if gui then gui:LMode_RefreshInventories() end
+		end)
 	end },
 	{ 54, function()
 		local box = ctx.box and level.object_by_id(ctx.box)
@@ -275,7 +331,7 @@ local STEPS = {
 	{ 56, function()
 		local box = ctx.box and level.object_by_id(ctx.box)
 		if not box then return end
-		announce("ШАГ 5. ГОСТЬ открывает тайник и берёт одну колбасу.\\nУ хоста в тайнике должна остаться одна.", 10)
+		announce("ШАГ 5. ГОСТЬ берёт из тайника одну колбасу.\\nУ хоста (левое окно) в тайнике должна остаться одна.", 10)
 		ctx.before5 = #in_box(box, PUT)
 		ask("5", "take", ctx.box, PUT)
 	end },
@@ -308,6 +364,8 @@ local STEPS = {
 		ask("6b", "has", RACE)
 	end },
 	{ 84, function()
+		close_box()
+		ask("7close", "close_box")
 		announce("ШАГ 7. Деньги: у ГОСТЯ открывается окно передачи денег, вводится 500 и нажимается «Передать».\\nУ хоста должно прийти «передал вам 500 руб.».", 12)
 		ctx.money0 = db.actor:money()
 		if coop_team.shared_money() then record("7", false, "shared money is on: nothing to give") return end
@@ -334,6 +392,17 @@ local function actor_on_update()
 		if now >= l[1] then pcall(l[2]) else keep[#keep + 1] = l end
 	end
 	later = keep
+	-- the host makes it noon and clear, so the steps can be seen (the guest follows the host's time and weather)
+	if not ctx.day_set and ctx.first_at and now > ctx.first_at + 3000 and coop_main.role == "host" then
+		ctx.day_set = true
+		local h, m = level.get_time_hours(), level.get_time_minutes()
+		if h >= 19 or h < 7 then
+			level.change_game_time(0, (12 - h - 1) % 24, 60 - m)
+		end
+		level.set_weather("w_clear1", true)
+		coop_main.log(string.format("QA day: %02d:%02d -> %02d:%02d, clear", h, m, level.get_time_hours(),
+			level.get_time_minutes()))
+	end
 	if not (ready_at and now > ready_at and coop_main.connected) then return end
 	is_host = coop_main.role == "host"
 	if not is_host then
@@ -359,6 +428,7 @@ local function actor_on_update()
 end
 
 local function actor_on_first_update()
+	ctx.first_at = time_global()
 	-- the guest's character, the host's spawns and the mirror settle first
 	ready_at = time_global() + 20000
 	if not PANEL and get_hud() then

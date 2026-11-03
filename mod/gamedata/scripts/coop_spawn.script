@@ -181,7 +181,11 @@ end)
 function release_creature(id)
 	local se = alife_object(id)
 	if not se then return end
-	create(function() alife_release(se) end)
+	create(function()
+		-- (alife_release takes a creature out through its squad only: one without a squad it leaves alone)
+		local squad = se.group_id and se.group_id ~= 65535 and alife_object(se.group_id)
+		if squad then squad:remove_npc(se.id, true) else alife():release(se, true) end
+	end)
 end
 
 coop_main.on_event("art", function(a)
