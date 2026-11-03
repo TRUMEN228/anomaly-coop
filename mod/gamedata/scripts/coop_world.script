@@ -475,7 +475,16 @@ end)
 
 -- a box or body open here shows what the partner just took or put (r11)
 local function refresh_open_box(box)
-	if not box or ENGINE < 11 then return true end
+	if not box then return true end
+	-- Anomaly loots in its own window (ui_inventory): it reads both lists again (moves between the player and
+	-- the box it reports itself; the partner's changes are in the box alone)
+	local gui = ui_inventory and ui_inventory.GUI
+	if gui and gui:IsShown() and gui.mode == "loot" and gui.npc_id == box:id() then
+		local ok, err = pcall(gui.LMode_RefreshInventories, gui)
+		if not ok then dbg("loot window refresh failed: " .. tostring(err)) end
+		return true
+	end
+	if ENGINE < 11 then return true end
 	local menu = ActorMenu and ActorMenu.get_actor_menu and ActorMenu.get_actor_menu()
 	if not (menu and menu.coop_refresh_box) then return true end
 	local ok, done = pcall(menu.coop_refresh_box, menu, box:id())

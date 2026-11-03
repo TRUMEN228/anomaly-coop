@@ -1,0 +1,383 @@
+--[[
+	dev only: a test both games play together, step by step (active when appdata\coop_scenario.txt exists).
+	Before each step a banner in both games says what is about to happen and what to look for, so a person can
+	watch along. The host leads: "qa" events tell the guest what to do or to look, "qa_r" brings its answers back.
+	Results: "QA <step> PASS|FAIL <detail>" in coop_log.txt and appdata\coop_qa.txt of each game.
+	The runner (tests\scenario.ps1) copies this file in, converted to cp1251.
+--]]
+
+local active = false
+local is_host = false
+local ready_at = nil          -- this game's own wait after the first update
+local guest_ready = false     -- host: the guest said it is up
+local go_sent = false
+local started_at = nil        -- host: the scenario's clock
+local next_step = 1
+local later = {}              -- { at, fn }: things to do a moment later
+local ctx = { expect = {} }   -- what the steps share
+local banner = { text = "", until_t = 0 }
+local PANEL = nil
+
+local CREATURE = "tushkano_weak"
+local PUT = "kolbasa"         -- not in the sandbox gear: counts start from what the test puts in
+local RACE = "energy_drink"
+
+local function app(name) return getFS():update_path("$app_data_root$", name) end
+
+local function record(step, ok, detail)
+	local line = string.format("QA %s %s %s", step, ok and "PASS" or "FAIL", detail or "")
+	coop_main.log(line)
+	local f = io.open(app("coop_qa.txt"), "a")
+	if f then f:write(line .. "\n") f:close() end
+end
+
+local function after(ms, fn) later[#later + 1] = { time_global() + ms, fn } end
+
+------------------------------------------------------------------ the banner
+local function show(text, secs)
+	banner.text, banner.until_t = text, time_global() + (secs or 12) * 1000
+end
+
+-- on both screens
+local function announce(text, secs)
+	show(text, secs)
+	coop_main.send("qa_show", text, secs or 12)
+end
+
+class "UICoopQa" (CUIScriptWnd)
+
+function UICoopQa:__init() super()
+	local xml = utils_xml.get_hud_xml()
+	self.text = xml:InitTextWnd("companion_list:slot:distance", self)
+	local ok, font = pcall(function() return GetFontGraffiti22Russian() end)
+	self.text:SetFont(ok and font or GetFontMedium())
+	self.text:SetTextComplexMode(true)
+	self.text:SetWndPos(vector2():set(112, 30))
+	self.text:SetWndSize(vector2():set(800, 180))
+	self.text:SetTextAlignment(2)
+	self.text:SetVTextAlignment(0)
+	self.text:SetTextColor(GetARGB(255, 255, 220, 120))
+	self.shown_text = nil
+end
+
+function UICoopQa:__finalize() end
+
+function UICoopQa:Update()
+	CUIScriptWnd.Update(self)
+	local text = time_global() < banner.until_t and banner.text or ""
+	if text ~= self.shown_text then
+		self.shown_text = text
+		self.text:SetText(text)
+	end
+end
+
+------------------------------------------------------------------ helpers
+local function ahead(dist)
+	local dir = device().cam_dir
+	local p = db.actor:position()
+	local pos = vector():set(p.x + dir.x * dist, p.y + 0.5, p.z + dir.z * dist)
+	local lv = level.vertex_id(pos)
+	if not lv or lv >= 4294967295 then return vector():set(p), db.actor:level_vertex_id() end
+	return level.vertex_position(lv), lv
+end
+
+local function nearest_box()
+	local best, bd = nil, 40
+	local here = db.actor:position()
+	for id = 1, 65534 do
+		local o = level.object_by_id(id)
+		if o and IsInvbox(o) and not coop_trade.is_exchange_box(id) then
+			local d = o:position():distance_to(here)
+			if d < bd then best, bd = o, d end
+		end
+	end
+	return best
+end
+
+local function in_box(box, sec)
+	local list = {}
+	box:iterate_inventory_box(function(_, o) if o:section() == sec then list[#list + 1] = o end end, box)
+	return list
+end
+
+local function on_actor(sec)
+	local list = {}
+	db.actor:iterate_inventory(function(_, o) if o:section() == sec then list[#list + 1] = o end end, nil)
+	return list
+end
+
+-- as a player does it: the loot window open, the item moved, the window read again (which reports the take)
+local function take_from(box, sec)
+	local item = in_box(box, sec)[1]
+	if not item then return false end
+	ui_inventory.start("loot", box)
+	box:transfer_item(item, db.actor)
+	after(600, function()
+		local gui = ui_inventory.GUI
+		if gui and gui:IsShown() then gui:LMode_RefreshInventories() end
+	end)
+	after(4000, function()
+		local gui = ui_inventory.GUI
+		if gui and gui:IsShown() then gui:Close() end
+	end)
+	return true
+end
+
+local function box_by(id)
+	local o = level.object_by_id(coop_spawn.L(id) or -1)
+	return o and IsInvbox(o) and o or nil
+end
+
+------------------------------------------------------------------ the guest's part
+local cmd = {}
+
+cmd.extra = function()
+	local pos, lv = ahead(12)
+	local se = alife_create(CREATURE, pos, lv, db.actor:game_vertex_id())
+	ctx.extra = se and se.id
+	return se ~= nil, se and ("made " .. se.id) or "not made"
+end
+
+cmd.extra_check = function()
+	if not ctx.extra then return false, "never made" end
+	local gone = not level.object_by_id(ctx.extra) and not alife_object(ctx.extra)
+	return gone, gone and "gone" or "still here"
+end
+
+cmd.made_check = function(a)
+	local id = coop_spawn.L(a[3])
+	local o = id and level.object_by_id(id)
+	local ok = o ~= nil and o:section() == a[4]
+	return ok, ok and string.format("host %s = guest %d", a[3], id) or "not here"
+end
+
+cmd.dead_check = function(a)
+	local id = coop_spawn.L(a[3])
+	local o = id and level.object_by_id(id)
+	if not o then return false, "not here" end
+	return not o:alive(), o:alive() and "alive" or "dead"
+end
+
+cmd.box_count = function(a)
+	local box = box_by(a[3])
+	if not box then return false, "no box" end
+	return true, tostring(#in_box(box, a[4]))
+end
+
+cmd.take = function(a)
+	local box = box_by(a[3])
+	if not box then return false, "no box" end
+	local ok = take_from(box, a[4])
+	return ok, ok and "taken" or "none in the box"
+end
+
+cmd.has = function(a) return true, tostring(#on_actor(a[3])) end
+
+cmd.money_open = function()
+	ctx.money_wnd = coop_trade.UICoopMoney()
+	ctx.money_wnd:ShowDialog(true)
+	return true, "window open"
+end
+
+cmd.money_send = function(a)
+	local w = ctx.money_wnd
+	if not (w and w:IsShown()) then return false, "no window" end
+	w.amount:SetText(a[3])
+	w:OnOk()
+	return not w:IsShown(), w:IsShown() and "window still open" or ("sent " .. a[3])
+end
+
+coop_main.on_event("qa", function(a)
+	if not active or is_host then return end
+	local fn = cmd[a[2]]
+	local ok, res, detail = pcall(function() if fn then return fn(a) end return false, "unknown " .. tostring(a[2]) end)
+	if not ok then res, detail = false, tostring(res) end
+	record("guest " .. a[1], res, detail)
+	coop_main.send("qa_r", a[1], res and 1 or 0, detail or "")
+end)
+
+coop_main.on_event("qa_show", function(a)
+	if active and not is_host then show(a[1] or "", tonumber(a[2]) or 12) end
+end)
+
+coop_main.on_event("qa_go", function()
+	if active and not is_host then ctx.go = true end
+end)
+
+------------------------------------------------------------------ the host's part
+local function ask(step, name, ...) coop_main.send("qa", step, name, ...) end
+
+-- the guest's answers: kept, and checked against the host where the step says how
+coop_main.on_event("qa_r", function(a)
+	if not active or not is_host then return end
+	local step, ok, detail = a[1], a[2] == "1", a[3] or ""
+	local check = ctx.expect[step]
+	if check then
+		ctx.expect[step] = nil
+		local good, why = check(ok, detail)
+		record(step, good, why)
+	else
+		record(step, ok, "guest: " .. detail)
+	end
+end)
+
+coop_main.on_event("qa_ready", function()
+	if active and is_host then guest_ready = true end
+end)
+
+local STEPS = {
+	{ 0, function()
+		announce("ТЕСТ КООПЕРАТИВА: 7 шагов, около двух минут.\\nСмотрите на оба окна; если что-то не так — напишите номер шага.", 6)
+		local box = nearest_box()
+		ctx.box = box and box:id()
+		record("0", box ~= nil, box and ("stash " .. box:section() .. " " .. box:id()) or "no box within 40 m")
+		for _, sec in ipairs({ PUT, PUT, RACE }) do alife_create_item(sec, db.actor) end
+	end },
+	{ 6, function()
+		announce("ШАГ 1. Зеркало: у ГОСТЯ в 12 м впереди появится тушкан, которого у хоста нет.\\nЧерез 3–6 с он должен у гостя исчезнуть.", 11)
+		ask("1", "extra")
+	end },
+	{ 18, function() ask("1", "extra_check") end },
+	{ 20, function()
+		announce("ШАГ 2. Зеркало: у ХОСТА в 10 м впереди появится тушкан.\\nЧерез 2–5 с он должен появиться и у гостя, на том же месте.", 11)
+		local pos, lv = ahead(10)
+		local se = alife_create(CREATURE, pos, lv, db.actor:game_vertex_id())
+		ctx.hid = se and se.id
+		if not se then record("2", false, "not made at the host") end
+	end },
+	{ 32, function() if ctx.hid then ask("2", "made_check", ctx.hid, CREATURE) end end },
+	{ 34, function()
+		announce("ШАГ 3. Хост убивает этого тушкана.\\nУ гостя он тоже должен упасть мёртвым.", 8)
+		local o = ctx.hid and level.object_by_id(ctx.hid)
+		if o and o:alive() then o:kill(o) end
+	end },
+	{ 42, function() if ctx.hid then ask("3", "dead_check", ctx.hid) end end },
+	{ 44, function()
+		if not ctx.box then return end
+		announce("ШАГ 4. Тайник: хост кладёт в тайник 2 колбасы и энергетик.\\nЕсли у гостя открыт тайник — они должны там появиться.", 10)
+		local box = level.object_by_id(ctx.box)
+		-- (the moves take a frame or two: the items are picked first, each once)
+		local items = on_actor(PUT)
+		items = { items[1], items[2], on_actor(RACE)[1] }
+		for _, item in pairs(items) do
+			if box then db.actor:transfer_item(item, box) end
+		end
+	end },
+	{ 54, function()
+		local box = ctx.box and level.object_by_id(ctx.box)
+		if not box then return end
+		ctx.expect["4"] = function(ok, detail)
+			local h = #in_box(box, PUT)
+			return ok and tonumber(detail) == h, string.format("kolbasa: host %d, guest %s", h, detail)
+		end
+		ask("4", "box_count", ctx.box, PUT)
+	end },
+	{ 56, function()
+		local box = ctx.box and level.object_by_id(ctx.box)
+		if not box then return end
+		announce("ШАГ 5. ГОСТЬ открывает тайник и берёт одну колбасу.\\nУ хоста в тайнике должна остаться одна.", 10)
+		ctx.before5 = #in_box(box, PUT)
+		ask("5", "take", ctx.box, PUT)
+	end },
+	{ 67, function()
+		local box = ctx.box and level.object_by_id(ctx.box)
+		if not box then return end
+		local now5 = #in_box(box, PUT)
+		record("5", now5 == ctx.before5 - 1, string.format("host stash kolbasa %d -> %d", ctx.before5, now5))
+		ctx.expect["6a"] = function(ok, detail)
+			ctx.guest_race0 = tonumber(detail) or 0
+			return ok, "guest has " .. detail .. " energy drinks before"
+		end
+		ask("6a", "has", RACE)
+	end },
+	{ 69, function()
+		local box = ctx.box and level.object_by_id(ctx.box)
+		if not box then return end
+		announce("ШАГ 6. Хост и гость ОДНОВРЕМЕННО берут энергетик из тайника.\\nОн должен остаться только у хоста, у гостя — сообщение «забрал раньше вас».", 12)
+		ctx.host_race0 = #on_actor(RACE)
+		ask("6", "take", ctx.box, RACE)
+		take_from(box, RACE)
+	end },
+	{ 82, function()
+		if not ctx.box then return end
+		ctx.expect["6b"] = function(ok, detail)
+			local hg = #on_actor(RACE) - (ctx.host_race0 or 0)
+			local gg = (tonumber(detail) or 0) - (ctx.guest_race0 or 0)
+			return hg + gg == 1, string.format("got it: host +%d, guest +%d (one in all)", hg, gg)
+		end
+		ask("6b", "has", RACE)
+	end },
+	{ 84, function()
+		announce("ШАГ 7. Деньги: у ГОСТЯ открывается окно передачи денег, вводится 500 и нажимается «Передать».\\nУ хоста должно прийти «передал вам 500 руб.».", 12)
+		ctx.money0 = db.actor:money()
+		if coop_team.shared_money() then record("7", false, "shared money is on: nothing to give") return end
+		ask("7", "money_open")
+	end },
+	{ 89, function() if not coop_team.shared_money() then ask("7s", "money_send", 500) end end },
+	{ 95, function()
+		if coop_team.shared_money() then return end
+		local got = db.actor:money() - ctx.money0
+		record("7", got == 500, string.format("host money +%d", got))
+	end },
+	{ 98, function()
+		announce("ТЕСТ ЗАКОНЧЕН. Итоги — в coop_qa.txt обеих игр.", 15)
+		record("end", true, "done")
+	end },
+}
+
+------------------------------------------------------------------ the clock
+local function actor_on_update()
+	if not active then return end
+	local now = time_global()
+	local keep = {}
+	for _, l in ipairs(later) do
+		if now >= l[1] then pcall(l[2]) else keep[#keep + 1] = l end
+	end
+	later = keep
+	if not (ready_at and now > ready_at and coop_main.connected) then return end
+	is_host = coop_main.role == "host"
+	if not is_host then
+		-- the guest says it is up until the host starts
+		if not ctx.go and (not ctx.ready_sent or now > ctx.ready_sent + 3000) then
+			ctx.ready_sent = now
+			coop_main.send("qa_ready")
+		end
+		return
+	end
+	if not guest_ready then return end
+	if not go_sent then
+		go_sent = true
+		coop_main.send("qa_go")
+		started_at = now
+	end
+	while STEPS[next_step] and now >= started_at + STEPS[next_step][1] * 1000 do
+		local s = STEPS[next_step]
+		next_step = next_step + 1
+		local ok, err = pcall(s[2])
+		if not ok then record("step" .. tostring(next_step - 1), false, "script: " .. tostring(err)) end
+	end
+end
+
+local function actor_on_first_update()
+	-- the guest's character, the host's spawns and the mirror settle first
+	ready_at = time_global() + 20000
+	if not PANEL and get_hud() then
+		PANEL = UICoopQa()
+		get_hud():AddDialogToRender(PANEL)
+	end
+end
+
+local function actor_on_net_destroy()
+	if PANEL and get_hud() then get_hud():RemoveDialogToRender(PANEL) end
+	PANEL = nil
+end
+
+function on_game_start()
+	local f = io.open(app("coop_scenario.txt"), "r")
+	active = f ~= nil
+	if f then f:close() end
+	if not active then return end
+	RegisterScriptCallback("actor_on_first_update", actor_on_first_update)
+	RegisterScriptCallback("actor_on_update", actor_on_update)
+	RegisterScriptCallback("actor_on_net_destroy", actor_on_net_destroy)
+end

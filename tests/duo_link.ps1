@@ -3,8 +3,9 @@
 # from the main menu, which loads the host's world by itself once it arrives.
 # -Lobby: both games just start in the main menu (relay up, no coop_link.txt); the player goes through the lobby:
 # host "Network game" -> by IP (27015), guest -> IP 127.0.0.1:27016.
-# usage: duo_link.ps1 [-NoLauncher | -Lobby] [-MinMs 50 -MaxMs 150]   |   duo.ps1 -Stop closes them
-param([switch]$NoLauncher, [switch]$Lobby, [int]$MinMs = 50, [int]$MaxMs = 150)
+# -Save: the host's save to start from (coop_sandbox for the test sandbox)
+# usage: duo_link.ps1 [-NoLauncher | -Lobby] [-Save aaaaa] [-MinMs 50 -MaxMs 150]   |   duo.ps1 -Stop closes them
+param([switch]$NoLauncher, [switch]$Lobby, [string]$Save = "aaaaa", [int]$MinMs = 50, [int]$MaxMs = 150)
 if ($Lobby) { $NoLauncher = $true }
 $r = 'D:\Projects\stalker_coop'
 $iniB = "$r\local\launcherB\coop_launcher.ini"
@@ -50,7 +51,7 @@ if ($Lobby) {
 }
 Start-Process powershell -ArgumentList "-NoProfile", "-File", "$r\tests\wake_game.ps1", "-Dir", "$r\local\testA" -WindowStyle Hidden | Out-Null
 Start-Process "$r\local\testA\bin\AnomalyDX11AVX_coop.exe" -WorkingDirectory "$r\local\testA" `
-    -ArgumentList "-fsltx fsgame_coop.ltx -nointro -start server(aaaaa/single/alife/load) client(localhost)" | Out-Null
+    -ArgumentList "-fsltx fsgame_coop.ltx -nointro -dbg -start server($Save/single/alife/load) client(localhost)" | Out-Null
 $t0 = Get-Date
 function Logged($d, $what) { (Test-Path "$d\appdata\coop_log.txt") -and (Select-String -Path "$d\appdata\coop_log.txt" -Pattern $what -Quiet) }
 while (-not (Logged "$r\local\testA" "engine link") -and ((Get-Date) - $t0).TotalSeconds -lt 300) { Start-Sleep 2 }
