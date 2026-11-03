@@ -57,6 +57,22 @@ coop_main.add_state_provider("w", function()
 	return { game_minutes(), level.get_weather() or "", surge_manager.is_started() and 1 or 0 }
 end)
 
+-- Each game's weather manager (level_weathers) picks a preset at random every hour: on the guest it puts the host's
+local host_weather = nil
+local function hook_weather()
+	local cls = level_weathers and level_weathers.WeatherManager
+	if not cls or rawget(_G, "coop_weather_hooked") then return end
+	_G.coop_weather_hooked = true
+	local select = cls.select_weather
+	cls.select_weather = function(self, now)
+		if coop_main.is_client() and host_weather then
+			if not weather.is_paused() then level.set_weather(host_weather, now) end
+			return
+		end
+		return select(self, now)
+	end
+end
+
 local next_world_apply = 0
 coop_main.on_state("w", function(t)
 	if not coop_main.is_client() then return end
@@ -70,8 +86,11 @@ coop_main.on_state("w", function(t)
 		level.change_game_time(0, math.floor(diff / 60), diff % 60)
 	end
 	local w = t[2]
-	if w and w ~= "" and level.get_weather() ~= w then
-		level.set_weather(w, false)
+	if w and w ~= "" and w ~= host_weather then
+		-- the first time at once (the world just loaded), later as the host's sky changes: gradually
+		local first = host_weather == nil
+		host_weather = w
+		if level.get_weather() ~= w then level.set_weather(w, first) end
 	end
 	local host_surge = t[3] == "1"
 	if host_surge and not surge_manager.is_started() then
@@ -728,6 +747,8 @@ local function npc_on_before_hit(npc, shit, bone_id, flags) on_before_hit(npc, s
 local function monster_on_before_hit(m, shit, bone_id, flags) on_before_hit(m, shit) end
 
 function on_game_start()
+	host_weather = nil
+	pcall(hook_weather)
 	RegisterScriptCallback("actor_on_update", actor_on_update)
 	RegisterScriptCallback("npc_on_before_hit", npc_on_before_hit)
 	RegisterScriptCallback("monster_on_before_hit", monster_on_before_hit)

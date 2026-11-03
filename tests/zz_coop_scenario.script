@@ -121,9 +121,9 @@ local function meeting_point()
 	local side = vector():set(b.z - a.z, 0, a.x - b.x)
 	if side:magnitude() < 0.5 then side = device().cam_dir end
 	side:normalize()
-	local pos = vector():set(mid.x + side.x * 8, mid.y, mid.z + side.z * 8)
+	local pos = vector():set(mid.x + side.x * 6, mid.y, mid.z + side.z * 6)
 	local lv = level.vertex_id(pos)
-	if not lv or lv >= 4294967295 then return ahead(8) end
+	if not lv or lv >= 4294967295 then return ahead(6) end
 	return level.vertex_position(lv), lv
 end
 
@@ -189,7 +189,7 @@ end
 local cmd = {}
 
 cmd.extra = function()
-	local pos, lv = ahead(8)
+	local pos, lv = ahead(6)
 	local se = alife_create(CREATURE, pos, lv, db.actor:game_vertex_id())
 	ctx.extra = se and se.id
 	return se ~= nil, se and ("made " .. se.id) or "not made"
@@ -333,7 +333,7 @@ local STEPS = {
 		after(1500, function() look_at(bpos) end)
 	end },
 	{ 12, function()
-		announce("ШАГ 1. Зеркало: у ГОСТЯ в 8 м впереди (правое окно) появится плоть, которой у хоста нет.\\nЧерез 3–6 с она должна у гостя исчезнуть.", 11)
+		announce("ШАГ 1. Зеркало: у ГОСТЯ в 6 м впереди (правое окно) появится плоть, которой у хоста нет.\\nЧерез 3–6 с она должна у гостя исчезнуть.", 11)
 		ask("1", "extra")
 	end },
 	{ 24, function() ask("1", "extra_check") end },
