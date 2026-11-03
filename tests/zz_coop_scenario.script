@@ -265,6 +265,50 @@ cmd.go = function(a)
 	return true, string.format("here, stash host %s = guest %d", a[11], se.id)
 end
 
+-- every creature near the host, compared with this game: missing, extra, elsewhere, alive at one only
+local CENSUS_RADIUS = 50
+local function creatures_near(pos, radius)
+	local list = {}
+	for id, st in pairs(db.storage) do
+		local o = st.object
+		if o and id ~= AC_ID and (IsStalker(o) or IsMonster(o)) and not coop_player.is_puppet(id)
+			and o:position():distance_to(pos) < radius then
+			list[#list + 1] = o
+		end
+	end
+	return list
+end
+
+cmd.census = function(a)
+	local center = vector():set(tonumber(a[3]) or 0, tonumber(a[4]) or 0, tonumber(a[5]) or 0)
+	local listed, missing, off, life, far = {}, {}, {}, {}, 0
+	for e in (a[6] or ""):gmatch("[^;]+") do
+		local hid, sec, x, z, alive = e:match("^(%d+),([^,]+),([^,]+),([^,]+),(%d)$")
+		hid = tonumber(hid)
+		if hid then
+			local id = coop_spawn.L(hid)
+			local o = id and level.object_by_id(id)
+			if id then listed[id] = true end
+			if not (o and o:section() == sec) then
+				missing[#missing + 1] = sec .. "#" .. hid
+			else
+				local p = o:position()
+				local d = math.sqrt((p.x - tonumber(x)) ^ 2 + (p.z - tonumber(z)) ^ 2)
+				if (alive == "1") ~= o:alive() then life[#life + 1] = string.format("%s#%d %s here", sec, hid, o:alive() and "alive" or "dead") end
+				if d > 4 then off[#off + 1] = string.format("%s#%d %.0fm", sec, hid, d) end
+				far = math.max(far, d)
+			end
+		end
+	end
+	local extra = {}
+	for _, o in ipairs(creatures_near(center, CENSUS_RADIUS - 5)) do
+		if not listed[o:id()] then extra[#extra + 1] = o:section() .. "#" .. o:id() .. (o:alive() and "" or "(dead)") end
+	end
+	local ok = #missing == 0 and #extra == 0 and #off == 0 and #life == 0
+	return ok, string.format("missing %d [%s]; extra %d [%s]; elsewhere %d [%s]; life %d [%s]", #missing,
+		table.concat(missing, " "), #extra, table.concat(extra, " "), #off, table.concat(off, " "), #life, table.concat(life, " "))
+end
+
 cmd.weather = function() return true, string.format("%s at %02d:%02d", tostring(level.get_weather()),
 	level.get_time_hours(), level.get_time_minutes()) end
 
@@ -319,6 +363,17 @@ end)
 ------------------------------------------------------------------ the host's part
 local function ask(step, name, ...) coop_main.send("qa", step, name, ...) end
 
+local function census(step)
+	local c = db.actor:position()
+	local list = {}
+	for _, o in ipairs(creatures_near(c, CENSUS_RADIUS)) do
+		local p = o:position()
+		list[#list + 1] = string.format("%d,%s,%.1f,%.1f,%d", o:id(), o:section(), p.x, p.z, o:alive() and 1 or 0)
+	end
+	record(step .. "host", true, #list .. " creatures within " .. CENSUS_RADIUS .. " m of the host")
+	ask(step, "census", string.format("%.1f", c.x), string.format("%.1f", c.y), string.format("%.1f", c.z), table.concat(list, ";"))
+end
+
 -- the guest's answers: kept, and checked against the host where the step says how
 coop_main.on_event("qa_r", function(a)
 	if not active or not is_host then return end
@@ -363,6 +418,7 @@ local STEPS = {
 		-- both face where the creatures will be
 		after(1500, function() look_at(ctx.spot) end)
 	end },
+	{ 9, function() census("census1") end },
 	{ 10, function()
 		-- the same sky: the weather's name and the hour at both
 		local mine = string.format("%s at %02d:%02d", tostring(level.get_weather()), level.get_time_hours(),
@@ -468,6 +524,7 @@ local STEPS = {
 		local got = db.actor:money() - ctx.money0
 		record("7", got == 500, string.format("host money +%d", got))
 	end },
+	{ 103, function() census("census2") end },
 	{ 104, function()
 		announce("ТЕСТ ЗАКОНЧЕН. Итоги — в coop_qa.txt обеих игр.", 15)
 		record("end", true, "done")
