@@ -914,8 +914,7 @@ local function trace_stop_talk()
 		if not orig or rawget(_G, "coop_qa_stop_traced") then return end
 		coop_qa_stop_traced = true
 		game_object.stop_talk = function(self, ...)
-			coop_main.log("QA trace: stop_talk on " .. tostring(self:section()) .. "
-" .. debug.traceback("", 2))
+			coop_main.log("QA trace: stop_talk on " .. tostring(self:section()) .. " | " .. debug.traceback("", 2))
 			return orig(self, ...)
 		end
 	end)

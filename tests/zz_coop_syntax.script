@@ -1,9 +1,12 @@
--- dev only: compile every coop_*.script with the game's own Lua and write errors to coop_syntax.txt
+-- dev only: compile every coop_*.script (and the test scenario) with the game's own Lua and write errors to
+-- coop_syntax.txt
 function on_game_start()
 	local out = io.open(getFS():update_path("$app_data_root$", "coop_syntax.txt"), "w")
+	local names = {}
 	local flist = getFS():file_list_open_ex("$game_scripts$", bit_or(FS.FS_ListFiles, FS.FS_RootOnly), "coop_*.script")
-	for i = 0, flist:Size() - 1 do
-		local name = flist:GetAt(i):NameShort()
+	for i = 0, flist:Size() - 1 do names[#names + 1] = flist:GetAt(i):NameShort() end
+	if getFS():exist("$game_scripts$", "zz_coop_scenario.script") then names[#names + 1] = "zz_coop_scenario.script" end
+	for _, name in ipairs(names) do
 		local f = io.open(getFS():update_path("$game_scripts$", name), "rb")
 		local src = f and f:read("*a"); if f then f:close() end
 		local fn, err = loadstring(src or "", name)
