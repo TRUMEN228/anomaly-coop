@@ -163,7 +163,6 @@ end)
 
 ------------------------------------------------------------------ deaths
 local pending_loot = {}      -- host: corpse id -> time to send its inventory (after death_manager filled it)
-local pending_corpse = {}    -- host: corpse id -> time to send where the body came to rest
 local refresh = {}           -- { box, at }: show the open box again once the partner's item is in it
 -- (twice: the item comes a few frames after the word, sometimes later)
 local function want_refresh(id)
@@ -171,7 +170,6 @@ local function want_refresh(id)
 	refresh[#refresh + 1] = { id, now + 400 }
 	refresh[#refresh + 1] = { id, now + 1500 }
 end
-local pending_corpse2 = {}   -- host: the same once more, for a body still sliding at the first
 
 -- A box holds what the host's box holds: after every change there the host sends the whole list ("bset") and
 -- the guest's box is made the same. The guest's own changes go to the host first, numbered: a list that does
@@ -188,16 +186,24 @@ local function next_box_seq()
 	return box_seq
 end
 
+local DEATH_NEAR = 150 -- as far as the engine sends the host's creatures
+
+local function far_from_players(obj)
+	local p = obj:position()
+	if p:distance_to(db.actor:position()) < DEATH_NEAR then return false end
+	local remote = coop_player.get_remote()
+	return not (remote and remote.level == level.name() and p:distance_to(remote.pos) < DEATH_NEAR)
+end
+
 local function on_death(victim, who)
 	if victim and coop_main.is_host() and coop_main.connected and is_creature(victim) and not coop_player.is_puppet(victim) then
 		pending_loot[victim:id()] = time_global() + 3000
-		pending_corpse[victim:id()] = time_global() + 3000
-		pending_corpse2[victim:id()] = time_global() + 12000
 	end
 	if applying or not coop_main.connected or not victim then return end
 	if coop_player.is_puppet(victim) or victim:id() == AC_ID then return end
-	-- the host reports every death it sees, the client only kills made by the actor
-	if coop_main.is_host() or (who and who:id() == AC_ID) then
+	-- the client reports its own kills; the host only deaths far from both players (the engine brings the near ones
+	-- with the creatures, and the bodies' places, r12)
+	if (coop_main.is_host() and far_from_players(victim)) or (not coop_main.is_host() and who and who:id() == AC_ID) then
 		coop_main.send("die", coop_spawn.R(victim:id()), victim:section())
 	end
 end
@@ -262,42 +268,7 @@ local function flush_loot()
 			end
 		end
 	end
-	-- a body falls its own way in each game: the guest's is put where the host's came to rest
-	for id, at in pairs(pending_corpse2) do
-		if now >= at then
-			pending_corpse2[id] = nil
-			pending_corpse[id] = now
-		end
-	end
-	for id, at in pairs(pending_corpse) do
-		if now >= at then
-			pending_corpse[id] = nil
-			local npc = level.object_by_id(id)
-			if npc and not npc:alive() then
-				local p = npc:position()
-				coop_main.send("corpse", coop_spawn.R(id), npc:section(), f2(p.x), f2(p.y), f2(p.z))
-			end
-		end
-	end
 end
-
-coop_main.on_event("corpse", function(a)
-	if coop_main.is_host() then return end
-	local npc = level.object_by_id(coop_spawn.L(a[1]) or -1)
-	if not (same(npc, a[2]) and not npc:alive() and npc.force_set_position) then
-		dbg(string.format("corpse %s %s: %s", tostring(a[1]), tostring(a[2]),
-			not npc and "not here" or (npc:alive() and "alive here" or "other section")))
-		return
-	end
-	-- a creature the host's moves were still driving here (the engine lets a dead one go too)
-	if npc.net_puppet then npc:net_puppet(false, 0) end
-	local pos = vec(a[3], a[4], a[5])
-	local off = npc:position():distance_to(pos)
-	if off > 1 then
-		npc:force_set_position(pos, false)
-	end
-	dbg(string.format("corpse %s: %.1f m off the host's", npc:section(), off))
-end)
 
 -- Anomaly's loot window says an item came from a box (actor_on_item_take_from_box) only when it reads its lists
 -- again, a moment after the item is in the inventory: a take is a ground take only when no such word came in time
