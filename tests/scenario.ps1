@@ -29,6 +29,10 @@ foreach ($n in 'A', 'B') {
     Remove-Item "$a\coop_scenario.txt", "$a\coop_travel.txt", "$a\coop_qt_phase.txt", "$a\coop_qt_loads.txt" -ErrorAction SilentlyContinue
     "1" | Set-Content "$a\$flag"
     Remove-Item "$a\coop_qa.txt", "$a\coop_qa_steps.txt" -ErrorAction SilentlyContinue
+    # every run starts from the same sandbox (a run saves the world it leaves under the sandbox's name)
+    if (Test-Path "$r\local\sandbox_base\coop_sandbox.scop") {
+        Copy-Item "$r\local\sandbox_base\coop_sandbox.*" "$a\savedgames\" -Force
+    }
 }
 
 & "$r\tests\duo_link.ps1" -NoLauncher -Save coop_sandbox

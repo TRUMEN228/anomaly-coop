@@ -1,6 +1,6 @@
 --[[
 	dev only: the travel test (active when appdata\coop_travel.txt exists), run by tests\scenario.ps1 -Mode travel.
-	1. The host goes to another level: its game loads once (the travel), the guest's once (the host's world, next
+	1. The host goes to another level (Garbage, or Cordon from Garbage): its game loads once (the travel), the guest's once (the host's world, next
 	   to the host); the host's must not load again.
 	2. The host leaves for the main menu: the guest's game ends with a window saying why and loads nothing of its
 	   own (the runner checks this in the guest's log: the host's scripts are gone by then).
@@ -15,7 +15,8 @@ local ctx = {}
 local banner = { text = "", until_t = 0 }
 local PANEL = nil
 
-local TARGET = "l02_garbage"
+-- the other of two levels: Garbage from Cordon, Cordon from Garbage (the sandbox may have been left on either)
+local function target() return level.name() == "l02_garbage" and "l01_escape" or "l02_garbage" end
 local GUEST_WAIT = 150000    -- ms the host waits for the guest on the new level
 local HOST_QUIET = 30000     -- ms after the guest's arrival the host's game must not load again
 
@@ -107,11 +108,11 @@ end)
 
 ------------------------------------------------------------------ the host's part
 -- a place on the target level to travel to: one of its smart terrains
-local function destination()
+local function destination(where)
 	local list = {}
 	for name, se in pairs(SIMBOARD and SIMBOARD.smarts_by_names or {}) do
 		local gv = game_graph():vertex(se.m_game_vertex_id)
-		if gv and alife():level_name(gv:level_id()) == TARGET then list[#list + 1] = { name, se } end
+		if gv and alife():level_name(gv:level_id()) == where then list[#list + 1] = { name, se } end
 	end
 	table.sort(list, function(x, y) return x[1] < y[1] end)
 	local pick = list[1]
@@ -137,26 +138,27 @@ coop_main.on_event("qt_here", function(a)
 end)
 
 local function host_start()
-	announce("ТЕСТ ПЕРЕХОДА, шаг 1: хост уходит на Свалку.\\nХост загружается один раз. Гость — тоже один раз, и оказывается рядом с хостом.", 10)
+	local where = target()
+	announce("ТЕСТ ПЕРЕХОДА, шаг 1: хост уходит на " .. (where == "l02_garbage" and "Свалку" or "Кордон") .. ".\\nХост загружается один раз. Гость — тоже один раз, и оказывается рядом с хостом.", 10)
 	after(8000, function()
-		local se, name = destination()
+		local se, name = destination(where)
 		if not se then
-			record("t0", false, "no place on " .. TARGET)
+			record("t0", false, "no place on " .. where)
 			return
 		end
 		local g = ctx.guest and ctx.guest.loads or -1
-		write_file("coop_qt_phase.txt", string.format("travelled|%d;%d;%d", loads(), g, time_global()))
-		record("t0", true, string.format("leaving %s for %s (%s); loads so far: host %d, guest %d", level.name(), TARGET,
+		write_file("coop_qt_phase.txt", string.format("travelled|%d;%d;%s", loads(), g, where))
+		record("t0", true, string.format("leaving %s for %s (%s); loads so far: host %d, guest %d", level.name(), where,
 			name, loads(), g))
 		ChangeLevel(se.position, se.m_level_vertex_id, se.m_game_vertex_id, vector():set(0, 0, 0), false)
 	end)
 end
 
 local function host_travelled(arg)
-	local h0, g0 = arg:match("^(%-?%d+);(%-?%d+)")
+	local h0, g0, where = arg:match("^(%-?%d+);(%-?%d+);(.*)$")
 	ctx.host_before, ctx.guest_before = tonumber(h0) or -1, tonumber(g0) or -1
-	record("t_host_level", level.name() == TARGET, "host on " .. level.name())
-	announce("Хост на Свалке. Ждём гостя: он должен загрузиться рядом.", 10)
+	record("t_host_level", level.name() == where, string.format("host on %s (%s wanted)", level.name(), tostring(where)))
+	announce("Хост перешёл. Ждём гостя: он должен загрузиться рядом.", 10)
 	ctx.wait_until = time_global() + GUEST_WAIT
 	ctx.waiting = true
 end
