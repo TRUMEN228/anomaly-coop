@@ -529,6 +529,7 @@ end
 -- it as soon as it has it and says so, and then the host loads the same save
 -- guest_only (after a travel): the host's game goes on, the guest's loads the world as the host has it now
 local guest_only_until = 0
+local world_sent, level_up_at, reload_at = false, nil, nil -- (world_sent: send_to_waiting_guest, below)
 local function reload_both(guest_only)
 	if coop_main.role ~= "host" then
 		coop_main.msg("Перезагрузить мир у обоих может только хост")
@@ -557,6 +558,11 @@ coop_main.on_event("_cmd_sync", function(a)
 	if a and a.outside then
 		local _, pl = partner()
 		coop_main.log("sync from outside: the guest's game is " .. tostring(pl and pl.where or "not up"))
+		-- (a guest in its menu is sent the world now, without a reload here; it loads it from the menu)
+		if pl and pl.where == "menu" and not world_sent and not save_pending then
+			world_sent = true
+			send_session()
+		end
 		if pl then return end
 	end
 	reload_both(false)
@@ -624,7 +630,6 @@ end
 
 -- a guest waiting ready in its lobby gets the world once this game is up (the lobby's own requests are lost in
 -- the main menu); once per wait: it is sent again only after the guest has been in a game or gone
-local world_sent, level_up_at, reload_at = false, nil, nil
 local function send_to_waiting_guest(now)
 	if coop_main.role ~= "host" or not coop_main.connected then
 		world_sent = false

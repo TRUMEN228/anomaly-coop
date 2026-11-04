@@ -699,6 +699,13 @@ local STEPS = {
 			db.actor:activate_slot(0)
 			npc:enable_talk()
 			db.actor:run_talk_dialog(npc, false)
+			for _, ms in ipairs({ 0, 100, 300, 600 }) do
+				after(ms, function()
+					coop_main.log(string.format("QA trace: %d ms: host talking %s, %s talking %s, use %s", ms,
+						tostring(db.actor:is_talking()), npc:section(), tostring(npc:is_talking()),
+						tostring(db.storage[npc:id()] and db.storage[npc:id()].meet and db.storage[npc:id()].meet.meet_manager.use)))
+				end)
+			end
 			after(1200, function()
 				local enemy = npc:best_enemy()
 				local st = db.storage[npc:id()]
@@ -900,11 +907,27 @@ local function actor_on_net_destroy()
 	PANEL = nil
 end
 
+-- who ends a talk: every stop_talk from a script is logged with its caller
+local function trace_stop_talk()
+	local ok, err = pcall(function()
+		local orig = game_object.stop_talk
+		if not orig or rawget(_G, "coop_qa_stop_traced") then return end
+		coop_qa_stop_traced = true
+		game_object.stop_talk = function(self, ...)
+			coop_main.log("QA trace: stop_talk on " .. tostring(self:section()) .. "
+" .. debug.traceback("", 2))
+			return orig(self, ...)
+		end
+	end)
+	coop_main.log("QA trace: stop_talk " .. (ok and "wrapped" or ("not wrapped: " .. tostring(err))))
+end
+
 function on_game_start()
 	local f = io.open(app("coop_scenario.txt"), "r")
 	active = f ~= nil
 	if f then f:close() end
 	if not active then return end
+	trace_stop_talk()
 	RegisterScriptCallback("actor_on_first_update", actor_on_first_update)
 	RegisterScriptCallback("actor_on_update", actor_on_update)
 	RegisterScriptCallback("actor_on_net_destroy", actor_on_net_destroy)
