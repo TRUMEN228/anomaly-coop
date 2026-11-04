@@ -857,8 +857,20 @@ local STEPS = {
 		ask("clock", "weather")
 	end },
 	{ 182, function()
-		announce("ШАГ 14. Бой: в 20 м появляются бандиты, враги обоим.\\nУ ХОСТА они стреляют и по гостю (модели напарника). У ГОСТЯ — тоже по гостю; урон гостю приходит от хоста.", 14)
-		local pos, lv = ahead(20)
+		announce("ШАГ 14. Бой: в 15 м появляются бандиты, враги обоим.\\nУ ХОСТА они стреляют и по гостю (модели напарника). У ГОСТЯ — тоже по гостю; урон гостю приходит от хоста.", 14)
+		-- in the open, where both see them (behind a barn they would see no one and fire at no one)
+		local me = db.actor:position()
+		local pos, lv = ahead(15)
+		for i = 0, 15 do
+			local a = i * math.pi / 8
+			local dir = vector():set(math.cos(a), 0, math.sin(a))
+			if walkable(me, dir, 16) then
+				pos, lv = aside(me, dir.x * 15, dir.z * 15)
+				break
+			end
+		end
+		look_at(pos)
+		ask("14look", "look", string.format("%.2f", pos.x), string.format("%.2f", pos.y), string.format("%.2f", pos.z))
 		local gv = db.actor:game_vertex_id()
 		local sq = alife_create("bandit_sim_squad_novice", pos, lv, gv)
 		if sq then
@@ -868,7 +880,7 @@ local STEPS = {
 		end
 		record("14spawn", sq ~= nil, sq and ("bandits " .. sq.id) or "no squad")
 	end },
-	{ 198, function()
+	{ 204, function()
 		-- the host: someone fights the guest's puppet, and its hits went to the guest
 		local pid = coop_player.get_puppet_id()
 		local n, on_guest = 0, 0
@@ -885,11 +897,11 @@ local STEPS = {
 		record("14sent", sent > 0, string.format("%d hits on the guest's puppet sent to the guest", sent))
 		ask("14", "combat")
 	end },
-	{ 202, function()
+	{ 208, function()
 		local sq = ctx.bandits and alife_object(ctx.bandits)
 		if sq then pcall(sq.remove_squad, sq) end
 	end },
-	{ 205, function()
+	{ 211, function()
 		announce("ТЕСТ ЗАКОНЧЕН. Итоги — в coop_qa.txt обеих игр.", 15)
 		record("end", true, "done")
 	end },
