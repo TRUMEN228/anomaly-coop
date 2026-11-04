@@ -157,11 +157,15 @@ end
 local function take_from(box, sec)
 	local item = in_box(box, sec)[1]
 	if not item then return false end
+	local open = loot_gui(box) ~= nil
 	open_box(box)
-	box:transfer_item(item, db.actor)
-	after(500, function()
-		local gui = loot_gui(box)
-		if gui then gui:LMode_RefreshInventories() end
+	-- (a window that has just opened reads its lists on its own: the item moves once it has)
+	after(open and 0 or 1000, function()
+		if item:parent() and item:parent():id() == box:id() then box:transfer_item(item, db.actor) end
+		after(500, function()
+			local gui = loot_gui(box)
+			if gui then gui:LMode_RefreshInventories() end
+		end)
 	end)
 	return true
 end
@@ -357,7 +361,7 @@ cmd.trader_check = function()
 	if not npc then return false, "no trader here" end
 	pcall(trade_manager.update, npc)
 	local p = trade_manager.get_trade_profile and trade_manager.get_trade_profile(npc:id())
-	return true, string.format("%d|%s", goods_count(npc), tostring(p and p.current_sell_condition))
+	return true, string.format("%d;%s", goods_count(npc), tostring(p and p.current_sell_condition))
 end
 
 -- the guest's copy of the pistol as new (its own roll), then taken: the host's state must come
@@ -649,12 +653,25 @@ local STEPS = {
 	end },
 	{ 104, function()
 		announce("ШАГ 9. Разговор: хост заговаривает с Волком.\\nУ ГОСТЯ должно открыться такое же окно разговора с теми же репликами.", 10)
-		local wolf = get_story_object("esc_2_12_stalker_wolf")
-		ctx.talk_npc = wolf
-		if not wolf then record("9", false, "no Wolf here") return end
-		look_at(wolf:position())
-		db.actor:run_talk_dialog(wolf, false)
-		record("9host", db.actor:is_talking(), db.actor:is_talking() and "talking to Wolf" or "the talk did not start")
+		-- Wolf, or else the nearest loner who is not hostile
+		local npc = get_story_object("esc_2_12_stalker_wolf")
+		if not (npc and npc:alive()) then
+			local best = 40
+			for id, st in pairs(db.storage) do
+				local o = st.object
+				if o and IsStalker(o) and o:alive() and id ~= AC_ID and not coop_player.is_puppet(id)
+					and o:relation(db.actor) ~= game_object.enemy and o:position():distance_to(db.actor:position()) < best then
+					npc, best = o, o:position():distance_to(db.actor:position())
+				end
+			end
+		end
+		ctx.talk_npc = npc
+		if not npc then record("9host", false, "no one to talk to") return end
+		look_at(npc:position())
+		npc:enable_talk()
+		db.actor:run_talk_dialog(npc, false)
+		record("9host", db.actor:is_talking(), string.format("%s with %s (talk enabled %s)",
+			db.actor:is_talking() and "talking" or "the talk did not start", npc:section(), tostring(npc:is_talk_enabled())))
 	end },
 	{ 107, function()
 		ctx.expect["9"] = function(ok, detail) return ok and detail == "shown", "guest's talk window copy: " .. detail end
@@ -712,7 +729,7 @@ local STEPS = {
 		if npc then pcall(trade_manager.update, npc) end
 		local mine = npc and goods_count(npc) or -1
 		ctx.expect["12"] = function(ok, detail)
-			local n, cond = detail:match("^(%d+)|(.*)$")
+			local n, cond = detail:match("^(%d+);(.*)$")
 			n = tonumber(n)
 			return ok and n == mine and mine > 0 and cond ~= "nil",
 				string.format("Sidorovich's goods: host %d, guest %s; guest sells by %s", mine, tostring(n), tostring(cond))
