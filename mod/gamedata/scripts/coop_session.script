@@ -553,11 +553,11 @@ end
 coop_main.on_event("_cmd_sync", function(a)
 	-- the engine's link (and the launcher) ask for the world once both are up, as a reload of both: a guest in a
 	-- game or loading one has the world (the host's game would restart for nothing), a guest waiting in its menu
-	-- gets it from send_to_waiting_guest. Only the key reloads both
+	-- gets it from send_to_waiting_guest. (A guest with no game running yet - its launcher waits - is sent it here)
 	if a and a.outside then
 		local _, pl = partner()
-		coop_main.log("sync from outside skipped (the guest is " .. tostring(pl and pl.where) .. ")")
-		return
+		coop_main.log("sync from outside: the guest's game is " .. tostring(pl and pl.where or "not up"))
+		if pl then return end
 	end
 	reload_both(false)
 end)
