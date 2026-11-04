@@ -684,6 +684,19 @@ local STEPS = {
 	end },
 	{ 104, function()
 		announce("ШАГ 9. Разговор: хост заговаривает с Волком.\\nУ ГОСТЯ должно открыться такое же окно разговора с теми же репликами.", 10)
+		-- zombies and mutants wander into the village: one that comes at the talk partner ends the talk (one who
+		-- fights does not talk). The test sends them away first
+		local cleared = 0
+		for id, st in pairs(db.storage) do
+			local o = st.object
+			if o and id ~= AC_ID and o:alive() and not coop_player.is_puppet(id)
+				and (IsMonster(o) or character_community(o) == "zombied")
+				and o:position():distance_to(db.actor:position()) < 80 then
+				coop_spawn.release_creature(id)
+				cleared = cleared + 1
+			end
+		end
+		coop_main.log("QA talk: " .. cleared .. " zombies and mutants sent away")
 		-- the nearest loner who is no story character (their first words may end the talk at once) and not
 		-- hostile; Wolf when there is no one else
 		local list = {}
