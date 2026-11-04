@@ -550,7 +550,18 @@ local function reload_both(guest_only)
 		coop_main.msg("Перезагрузка мира у обоих: ждём, пока напарник получит сейв...")
 	end
 end
-coop_main.on_event("_cmd_sync", function() reload_both(false) end)
+coop_main.on_event("_cmd_sync", function(a)
+	-- the engine's link (and the launcher) ask for the world once both are up: a guest already in this world has it
+	-- (reloading both would restart the host's game for nothing); a waiting guest gets it from send_to_waiting_guest
+	if a and a.outside then
+		local _, pl = partner()
+		if (pl and pl.where == "game") or world_was_sent() then
+			coop_main.log("sync from outside skipped: the guest has the world already")
+			return
+		end
+	end
+	reload_both(false)
+end)
 
 coop_main.on_event("reloading", function()
 	if coop_main.role ~= "host" or not db.actor then return end
@@ -615,6 +626,7 @@ end
 -- a guest waiting ready in its lobby gets the world once this game is up (the lobby's own requests are lost in
 -- the main menu); once per wait: it is sent again only after the guest has been in a game or gone
 local world_sent, level_up_at, reload_at = false, nil, nil
+function world_was_sent() return world_sent end
 local function send_to_waiting_guest(now)
 	if coop_main.role ~= "host" or not coop_main.connected then
 		world_sent = false

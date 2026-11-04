@@ -688,12 +688,19 @@ local STEPS = {
 			if d:magnitude() > 0.1 then d:normalize() else d = vector():set(1, 0, 0) end
 			jump(aside(np, d.x * 1.5, d.z * 1.5))
 			look_at(np)
+			-- (a raised gun makes them raise theirs)
+			db.actor:activate_slot(0)
 			npc:enable_talk()
 			db.actor:run_talk_dialog(npc, false)
 			after(1200, function()
 				local enemy = npc:best_enemy()
-				tried[#tried + 1] = string.format("%s %s%s", npc:section(), db.actor:is_talking() and "talks" or "ended",
-					enemy and (" (fights " .. enemy:section() .. ")") or "")
+				local st = db.storage[npc:id()]
+				local mm = st and st.meet and st.meet.meet_manager
+				local sq = get_object_squad(npc)
+				tried[#tried + 1] = string.format("%s %s (meet use %s, leader %s, %.1f m%s)", npc:section(),
+					db.actor:is_talking() and "talks" or "ended", tostring(mm and mm.use),
+					tostring(not sq or sq:commander_id() == npc:id()), npc:position():distance_to(db.actor:position()),
+					enemy and (", fights " .. enemy:section()) or "")
 				if db.actor:is_talking() then
 					record("9host", true, "talking: " .. table.concat(tried, ", "))
 					after(1500, function() ask("9", "mirror_shown") end)

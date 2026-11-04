@@ -433,7 +433,8 @@ end
 on_event("note", function(a) msg(a[1] or "") end)
 
 -- commands typed into the bridge window arrive as "cmd" events
-on_event("cmd", function(a) dispatch_event("_cmd_" .. (a[1] or ""), { a[2], a[3], a[4] }) end)
+-- (a command from outside the game: the launcher, or the engine's link once both are up)
+on_event("cmd", function(a) dispatch_event("_cmd_" .. (a[1] or ""), { a[2], a[3], a[4], outside = true }) end)
 on_event("chat", function(a) msg(a[1] or "", a[2] or peer_name, "ui_inGame2_PD_Lider") end)
 on_event("info", function(a) msg(a[1] or "") end)
 
