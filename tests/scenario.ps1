@@ -36,6 +36,7 @@ public class Win {
   [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr h, IntPtr a, int x, int y, int w, int hh, uint f);
   [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
   [DllImport("user32.dll")] public static extern bool PrintWindow(IntPtr h, IntPtr hdc, uint flags);
+  [DllImport("user32.dll")] public static extern void SwitchToThisWindow(IntPtr h, bool a);
   [DllImport("dwmapi.dll")] public static extern int DwmGetWindowAttribute(IntPtr h, int attr, out RECT r, int size);
   public struct RECT { public int L, T, R, B; } }
 "@
@@ -100,8 +101,14 @@ $t0 = Get-Date
 $qa = "$r\local\testA\appdata\coop_qa.txt"
 $seen = 0
 $step = "wait"
+$focusFile = "$r\local	estAppdata\coop_qa_focus.txt"
+Remove-Item $focusFile -ErrorAction SilentlyContinue
+$focused = ""
 while (((Get-Date) - $t0).TotalMinutes -lt $Minutes) {
     Start-Sleep 2
+    # the scenario asks for a game's window to be the active one (a game without it closes a talk as it opens)
+    $want = (Get-Content $focusFile -ErrorAction SilentlyContinue | Select -First 1)
+    if ($want -and $want -ne $focused -and $win[$want]) { [Win]::SwitchToThisWindow($win[$want], $true); $focused = $want }
     $lines = @(Get-Content $qa -ErrorAction SilentlyContinue)
     for ($i = $seen; $i -lt $lines.Count; $i++) { "  " + $lines[$i] }
     $seen = $lines.Count
