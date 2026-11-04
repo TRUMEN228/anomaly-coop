@@ -390,6 +390,19 @@ cmd.cond = function(a)
 	return true, string.format("%.2f", item:condition())
 end
 
+-- the guest in the fight: who fights it here, the host's hits it took, its creatures' own hits on it undone
+cmd.combat = function()
+	local on_me = 0
+	for _, st in pairs(db.storage) do
+		local o = st.object
+		local e = o and o:alive() and IsStalker(o) and o:best_enemy()
+		if e and e:id() == AC_ID then on_me = on_me + 1 end
+	end
+	local _, got, blocked = coop_combat.counts()
+	return on_me > 0 and got > 0, string.format("%d here fight me, %d hits from the host taken, %d own blocked", on_me,
+		got, blocked)
+end
+
 cmd.weather = function() return true, string.format("%s at %02d:%02d", tostring(level.get_weather()),
 	level.get_time_hours(), level.get_time_minutes()) end
 
@@ -530,7 +543,7 @@ end)
 
 local STEPS = {
 	{ 0, function()
-		announce("ТЕСТ КООПЕРАТИВА: 13 шагов, около трёх с половиной минут.\\nОба игрока переносятся на улицу в деревню новичков, рядом ставится тестовый тайник.", 8)
+		announce("ТЕСТ КООПЕРАТИВА: 14 шагов, около трёх с половиной минут.\\nОба игрока переносятся на улицу в деревню новичков, рядом ставится тестовый тайник.", 8)
 		local center, lv, gv = village()
 		local dir, side = open_direction(center)
 		local me = aside(center, 0, 0)
@@ -843,7 +856,40 @@ local STEPS = {
 		end
 		ask("clock", "weather")
 	end },
-	{ 180, function()
+	{ 182, function()
+		announce("ШАГ 14. Бой: в 20 м появляются бандиты, враги обоим.\\nУ ХОСТА они стреляют и по гостю (модели напарника). У ГОСТЯ — тоже по гостю; урон гостю приходит от хоста.", 14)
+		local pos, lv = ahead(20)
+		local gv = db.actor:game_vertex_id()
+		local sq = alife_create("bandit_sim_squad_novice", pos, lv, gv)
+		if sq then
+			sq:create_npc(nil, pos, lv, gv)
+			sq:set_squad_relation()
+			ctx.bandits = sq.id
+		end
+		record("14spawn", sq ~= nil, sq and ("bandits " .. sq.id) or "no squad")
+	end },
+	{ 198, function()
+		-- the host: someone fights the guest's puppet, and its hits went to the guest
+		local pid = coop_player.get_puppet_id()
+		local n, on_guest = 0, 0
+		for _, st in pairs(db.storage) do
+			local o = st.object
+			local e = o and o:alive() and IsStalker(o) and o:best_enemy()
+			if e then
+				n = n + 1
+				if e:id() == pid then on_guest = on_guest + 1 end
+			end
+		end
+		record("14host", on_guest > 0, string.format("%d fighting, %d of them the guest", n, on_guest))
+		local sent = coop_combat.counts()
+		record("14sent", sent > 0, string.format("%d hits on the guest's puppet sent to the guest", sent))
+		ask("14", "combat")
+	end },
+	{ 202, function()
+		local sq = ctx.bandits and alife_object(ctx.bandits)
+		if sq then pcall(sq.remove_squad, sq) end
+	end },
+	{ 205, function()
 		announce("ТЕСТ ЗАКОНЧЕН. Итоги — в coop_qa.txt обеих игр.", 15)
 		record("end", true, "done")
 	end },

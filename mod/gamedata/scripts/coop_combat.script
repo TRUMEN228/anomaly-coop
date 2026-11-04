@@ -1,0 +1,128 @@
+--[[
+	Anomaly Co-op: fights as on the host.
+	- The host's creatures fight the guest's puppet as they fight the host (whoever is hostile to one of the team is
+	  hostile to both). A hit on the puppet hurts nothing there: the engine (r12) hands it to partner_hit and it goes
+	  to the guest's game, where it hurts the guest.
+	- The guest's creatures fight whom theirs fight on the host ("ne": each one's enemy), so they aim and shoot as
+	  there. Their own hits on the guest do nothing: the host's hits are the ones that count.
+	Anomaly asks on_enemy_eval whether a creature takes another for an enemy: the answer comes from here.
+--]]
+
+local targets = {}            -- guest: creature id -> the id of whom it fights on the host, as an id here
+local applying = false        -- guest: a hit from the host is being applied
+local stats = { sent = 0, got = 0, blocked = 0 }
+local next_stats = 0
+
+local function creature(o) return o and (IsStalker(o) or IsMonster(o)) end
+
+local function guest() return coop_main.is_client() and coop_session.is_guest_session() end
+
+------------------------------------------------------------------ whom each one fights
+local next_send = 0
+coop_main.add_state_provider("ne", function()
+	if not coop_main.is_host() then return end
+	local now = time_global()
+	if now < next_send then return end -- nil = keep the last value on the link
+	next_send = now + 300
+	local list = {}
+	for id, st in pairs(db.storage) do
+		local o = st.object
+		if o and id ~= AC_ID and not coop_player.is_puppet(id) and creature(o) and o:alive() then
+			local e = o:best_enemy()
+			if e then
+				-- the host is "a", the guest's puppet "p" (the guest's own actor there)
+				local t = e:id() == AC_ID and "a" or (coop_player.is_puppet(e:id()) and "p" or tostring(e:id()))
+				list[#list + 1] = id .. ":" .. t
+			end
+		end
+	end
+	return { table.concat(list, ",") }
+end)
+
+coop_main.on_state("ne", function(t)
+	if not coop_main.is_client() then return end
+	local now = {}
+	for hid, tid in (t[1] or ""):gmatch("(%d+):(%w+)") do
+		local id = coop_spawn.L(hid)
+		local target = tid == "a" and coop_player.get_puppet_id() or (tid == "p" and AC_ID or coop_spawn.L(tid))
+		if id and target then now[id] = target end
+	end
+	targets = now
+end)
+
+-- Anomaly's question: does obj take enemy for an enemy?
+local function on_enemy_eval(obj, enemy, flags)
+	if not (coop_main.connected and obj and enemy) then return end
+	if coop_main.is_host() then
+		if coop_player.is_puppet(enemy) and not coop_player.is_puppet(obj) then
+			-- as it would take the host (a monster with no relations takes anyone)
+			local ok, rel = pcall(obj.relation, obj, db.actor)
+			flags.override = true
+			flags.result = obj:alive() and enemy:alive() and ((not ok) or rel == game_object.enemy)
+		end
+	elseif guest() and not coop_player.is_puppet(obj) then
+		flags.override = true
+		flags.result = targets[obj:id()] == enemy:id()
+	end
+end
+
+------------------------------------------------------------------ hits
+-- the host: the engine hands a hit on the guest's puppet here (r12)
+function partner_hit(power, htype, bone, who_id, dx, dy, dz, impulse)
+	if not (coop_main.is_host() and coop_main.connected) or (power or 0) <= 0 then return end
+	-- (the host's own shots are friendly fire: coop_team; an anomaly or a fall hurts the guest in its own game)
+	if who_id == AC_ID then return end
+	local who = who_id and who_id >= 0 and level.object_by_id(who_id)
+	if not creature(who) then return end
+	stats.sent = stats.sent + 1
+	coop_main.send("phit", string.format("%.4f", power), tostring(htype), bone or "", tostring(who_id),
+		string.format("%.3f", dx or 0), string.format("%.3f", dy or 0), string.format("%.3f", dz or 1),
+		string.format("%.3f", impulse or 0))
+end
+
+coop_main.on_event("phit", function(a)
+	if not (db.actor and guest()) then return end
+	local h = hit()
+	h.power = tonumber(a[1]) or 0
+	h.type = tonumber(a[2]) or hit.fire_wound
+	if a[3] and a[3] ~= "" then pcall(h.bone, h, a[3]) end
+	local who = coop_spawn.L(a[4])
+	h.draftsman = who and level.object_by_id(who) or db.actor
+	h.direction = vector():set(tonumber(a[5]) or 0, tonumber(a[6]) or 0, tonumber(a[7]) or 1)
+	h.impulse = tonumber(a[8]) or 0
+	stats.got = stats.got + 1
+	applying = true
+	local ok, err = pcall(db.actor.hit, db.actor, h)
+	applying = false
+	if not ok then coop_main.log("combat: a hit from the host failed: " .. tostring(err)) end
+end)
+
+-- the guest: the creatures' own hits on this player do nothing (the host's come as "phit")
+local function actor_on_before_hit(shit, bone_id, flags)
+	if applying or not (coop_main.connected and guest()) then return end
+	local who = shit.draftsman
+	if who and who:id() ~= AC_ID and creature(who) and not coop_player.is_puppet(who) then
+		flags.ret_value = false
+		stats.blocked = stats.blocked + 1
+	end
+end
+
+local function actor_on_update()
+	local now = time_global()
+	if now < next_stats then return end
+	next_stats = now + 10000
+	if stats.sent + stats.got + stats.blocked > 0 then
+		coop_main.log(string.format("combat: hits sent %d, taken from the host %d, own blocked %d", stats.sent,
+			stats.got, stats.blocked))
+	end
+end
+
+-- for the scenario
+function counts() return stats.sent, stats.got, stats.blocked end
+function target_of(id) return targets[id] end
+
+function on_game_start()
+	RegisterScriptCallback("on_enemy_eval", on_enemy_eval)
+	RegisterScriptCallback("actor_on_before_hit", actor_on_before_hit)
+	RegisterScriptCallback("actor_on_update", actor_on_update)
+end
