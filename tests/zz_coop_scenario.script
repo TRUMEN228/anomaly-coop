@@ -607,7 +607,17 @@ local STEPS = {
 	end },
 	{ 122, function() census("census3") end },
 	{ 123, function() ask("jumps", "jumps") end },
-	{ 125, function()
+	{ 124, function()
+		-- the same clock (the guest's runs at real speed while it is ahead)
+		local hm = level.get_time_hours() * 60 + level.get_time_minutes()
+		ctx.expect["clock"] = function(ok, detail)
+			local h, m = detail:match(" at (%d+):(%d+)")
+			local d = h and math.abs((tonumber(h) * 60 + tonumber(m)) - hm) or 999
+			return ok and d <= 2, string.format("host %02d:%02d, guest %s (%d min apart)", math.floor(hm / 60), hm % 60, detail, d)
+		end
+		ask("clock", "weather")
+	end },
+	{ 126, function()
 		announce("ТЕСТ ЗАКОНЧЕН. Итоги — в coop_qa.txt обеих игр.", 15)
 		record("end", true, "done")
 	end },

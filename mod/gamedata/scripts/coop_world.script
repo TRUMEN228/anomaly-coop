@@ -56,7 +56,8 @@ end
 local weather_jumps = 0        -- host: changes of the sky made at once so far (below)
 coop_main.add_state_provider("w", function()
 	if not coop_main.is_host() then return end
-	return { game_minutes(), level.get_weather() or "", surge_manager.is_started() and 1 or 0, weather_jumps }
+	return { game_minutes(), level.get_weather() or "", surge_manager.is_started() and 1 or 0, weather_jumps,
+		string.format("%.2f", level.get_time_factor()) }
 end)
 
 -- Each game's weather manager (level_weathers) picks a preset at random every hour: on the guest it puts the host's.
@@ -87,10 +88,19 @@ coop_main.on_state("w", function(t)
 	if now < next_world_apply then return end
 	next_world_apply = now + 2000
 
+	-- the guest's clock is the host's: behind, it jumps forward; ahead (the engine cannot turn it back), it runs at
+	-- real speed until the host's catches up; otherwise at the host's pace
 	local diff = (tonumber(t[1]) or 0) - game_minutes()
+	local host_factor = tonumber(t[5])
+	-- (the minutes count from the day of the month: across a month's end the difference means nothing)
+	if math.abs(diff) > 20 * 24 * 60 then diff = 0 end
 	if diff > 2 then
-		-- only forward: the engine cannot rewind time
 		level.change_game_time(0, math.floor(diff / 60), diff % 60)
+	end
+	local factor = (diff < -1) and 1 or host_factor
+	if factor and factor > 0 and math.abs(level.get_time_factor() - factor) > 0.01 then
+		if diff < -1 then dbg(string.format("clock %d min ahead of the host: real time until it catches up", -diff)) end
+		level.set_time_factor(factor)
 	end
 	local w = t[2]
 	local jumps = t[4]
