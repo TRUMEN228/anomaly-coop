@@ -390,6 +390,15 @@ cmd.cond = function(a)
 	return true, string.format("%.2f", item:condition())
 end
 
+-- step 14: the bandits leave the host alone, so it is the guest's puppet they shoot at (with the host there too
+-- they may fight only it, or the farm's people, and the step shows nothing)
+local function bandits_ignore_host(obj, enemy, flags)
+	if ctx.bandit_ids and ctx.bandit_ids[obj:id()] and enemy:id() == AC_ID then
+		flags.override = true
+		flags.result = false
+	end
+end
+
 -- the guest in the fight: who fights it here, the host's hits it took, its creatures' own hits on it undone
 cmd.combat = function()
 	local on_me = 0
@@ -857,15 +866,15 @@ local STEPS = {
 		ask("clock", "weather")
 	end },
 	{ 182, function()
-		announce("ШАГ 14. Бой: в 15 м появляются бандиты, враги обоим.\\nУ ХОСТА они стреляют и по гостю (модели напарника). У ГОСТЯ — тоже по гостю; урон гостю приходит от хоста.", 14)
+		announce("ШАГ 14. Бой: в 8 м появляются бандиты и стреляют по гостю.\\nУ ХОСТА они стреляют и по гостю (модели напарника). У ГОСТЯ — тоже по гостю; урон гостю приходит от хоста.", 14)
 		-- in the open, where both see them (behind a barn they would see no one and fire at no one)
 		local me = db.actor:position()
 		local pos, lv = ahead(15)
 		for i = 0, 15 do
 			local a = i * math.pi / 8
 			local dir = vector():set(math.cos(a), 0, math.sin(a))
-			if walkable(me, dir, 16) then
-				pos, lv = aside(me, dir.x * 15, dir.z * 15)
+			if walkable(me, dir, 9) then
+				pos, lv = aside(me, dir.x * 8, dir.z * 8)
 				break
 			end
 		end
@@ -877,6 +886,9 @@ local STEPS = {
 			sq:create_npc(nil, pos, lv, gv)
 			sq:set_squad_relation()
 			ctx.bandits = sq.id
+			ctx.bandit_ids = {}
+			for m in sq:squad_members() do ctx.bandit_ids[m.id] = true end
+			RegisterScriptCallback("on_enemy_eval", bandits_ignore_host)
 		end
 		record("14spawn", sq ~= nil, sq and ("bandits " .. sq.id) or "no squad")
 		-- how the bandits are doing: alive, how far from the host and the guest's puppet, whom they fight
@@ -921,6 +933,8 @@ local STEPS = {
 		ask("14", "combat")
 	end },
 	{ 208, function()
+		UnregisterScriptCallback("on_enemy_eval", bandits_ignore_host)
+		ctx.bandit_ids = nil
 		local sq = ctx.bandits and alife_object(ctx.bandits)
 		if sq then pcall(sq.remove_squad, sq) end
 	end },
