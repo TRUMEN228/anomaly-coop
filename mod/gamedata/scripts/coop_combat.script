@@ -3,14 +3,13 @@
 	- The host's creatures fight the guest's puppet as they fight the host (whoever is hostile to one of the team is
 	  hostile to both). A hit on the puppet hurts nothing there: the engine (r12) hands it to partner_hit and it goes
 	  to the guest's game, where it hurts the guest.
-	- The guest's creatures fight whom theirs fight on the host ("ne": each one's enemy), so they aim and shoot as
+	- The guest's creatures fight whom theirs fight on the host (the engine brings each one's enemy), so they aim and shoot as
 	  there. Their own hits on the guest do nothing: the host's hits are the ones that count.
 	Anomaly asks on_enemy_eval whether a creature takes another for an enemy: the answer comes from here.
 --]]
 
-local targets = {}            -- guest: creature id -> the id of whom it fights on the host, as an id here
 local applying = false        -- guest: a hit from the host is being applied
-local stats = { sent = 0, got = 0, blocked = 0, on_guest = 0 } -- on_guest: lists that had one fighting the guest
+local stats = { sent = 0, got = 0, blocked = 0, on_guest = 0 } -- on_guest: times one was found fighting the guest
 local next_stats = 0
 
 local function creature(o) return o and (IsStalker(o) or IsMonster(o)) end
@@ -18,41 +17,7 @@ local function creature(o) return o and (IsStalker(o) or IsMonster(o)) end
 local function guest() return coop_main.is_client() and coop_session.is_guest_session() end
 
 ------------------------------------------------------------------ whom each one fights
-local next_send = 0
-coop_main.add_state_provider("ne", function()
-	if not coop_main.is_host() then return end
-	local now = time_global()
-	if now < next_send then return end -- nil = keep the last value on the link
-	next_send = now + 300
-	local list, on_guest = {}, false
-	for id, st in pairs(db.storage) do
-		local o = st.object
-		if o and id ~= AC_ID and not coop_player.is_puppet(id) and creature(o) and o:alive() then
-			local e = o:best_enemy()
-			if e then
-				-- the host is "a", the guest's puppet "p" (the guest's own actor there)
-				local t = e:id() == AC_ID and "a" or (coop_player.is_puppet(e:id()) and "p" or tostring(e:id()))
-				list[#list + 1] = id .. ":" .. t
-				if t == "p" then on_guest = true end
-			end
-		end
-	end
-	if on_guest then stats.on_guest = stats.on_guest + 1 end
-	return { table.concat(list, ",") }
-end)
-
-coop_main.on_state("ne", function(t)
-	if not coop_main.is_client() then return end
-	local now, fought_me = {}, false
-	for hid, tid in (t[1] or ""):gmatch("(%d+):(%w+)") do
-		local id = coop_spawn.L(hid)
-		local target = tid == "a" and coop_player.get_puppet_id() or (tid == "p" and AC_ID or coop_spawn.L(tid))
-		if id and target then now[id] = target end
-		if target == AC_ID then fought_me = true end
-	end
-	if fought_me then stats.on_guest = stats.on_guest + 1 end
-	targets = now
-end)
+-- the engine brings each creature's enemy on the host with its position (r12, coop_creatures): coop_net_target
 
 -- Anomaly's question: does obj take enemy for an enemy?
 local function on_enemy_eval(obj, enemy, flags)
@@ -63,10 +28,12 @@ local function on_enemy_eval(obj, enemy, flags)
 			local ok, rel = pcall(obj.relation, obj, db.actor)
 			flags.override = true
 			flags.result = obj:alive() and enemy:alive() and ((not ok) or rel == game_object.enemy)
+			if flags.result then stats.on_guest = stats.on_guest + 1 end
 		end
 	elseif guest() and not coop_player.is_puppet(obj) then
 		flags.override = true
-		flags.result = targets[obj:id()] == enemy:id()
+		flags.result = coop_net_target(obj:id()) == enemy:id()
+		if flags.result and enemy:id() == AC_ID then stats.on_guest = stats.on_guest + 1 end
 	end
 end
 
@@ -123,7 +90,6 @@ end
 
 -- for the scenario
 function counts() return stats.sent, stats.got, stats.blocked, stats.on_guest end
-function target_of(id) return targets[id] end
 
 function on_game_start()
 	RegisterScriptCallback("on_enemy_eval", on_enemy_eval)

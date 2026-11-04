@@ -28,9 +28,16 @@ local function dbg(s) if coop_main.debug then coop_main.log("spawn: " .. s) end 
 function L(hid) hid = tonumber(hid); return hid and (h2g[hid] or hid) end
 function R(gid) gid = tonumber(gid); return gid and (g2h[gid] or gid) end
 
-local function map(hid, gid) h2g[hid] = gid; g2h[gid] = hid end
+-- (the engine drives the host's creatures by these pairs too, r12)
+local function map(hid, gid)
+	h2g[hid] = gid; g2h[gid] = hid
+	if rawget(_G, "coop_net_map") then coop_net_map(hid, gid) end
+end
 function map_pair(hid, gid) map(tonumber(hid), tonumber(gid)) end
-local function unmap(hid) local g = h2g[hid]; if g then g2h[g] = nil end; h2g[hid] = nil end
+local function unmap(hid)
+	local g = h2g[hid]; if g then g2h[g] = nil end; h2g[hid] = nil
+	if rawget(_G, "coop_net_unmap") then coop_net_unmap(hid) end
+end
 
 -- the host arms after it saved the session the guest will load; the guest after its world is ready
 function arm(reason)

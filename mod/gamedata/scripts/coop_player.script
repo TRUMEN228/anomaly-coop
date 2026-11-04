@@ -760,12 +760,23 @@ local function update()
 end
 
 local next_update = 0
+-- the engine's creatures (r12) tell the partner's puppet from the rest
+local told_partner = nil
+local function tell_partner()
+	local id = puppet_id or -1
+	if id ~= told_partner and rawget(_G, "coop_net_set_partner") then
+		coop_net_set_partner(id)
+		told_partner = id
+	end
+end
+
 local function actor_on_update()
 	local now = time_global()
 	if now < next_update then return end
 	next_update = now + 100
 	local ok, err = pcall(update)
 	if not ok then coop_main.log("puppet update failed: " .. tostring(err)) end
+	tell_partner()
 end
 
 ------------------------------------------------------------------ puppet protection
