@@ -398,9 +398,9 @@ cmd.combat = function()
 		local e = o and o:alive() and IsStalker(o) and o:best_enemy()
 		if e and e:id() == AC_ID then on_me = on_me + 1 end
 	end
-	local _, got, blocked = coop_combat.counts()
-	return on_me > 0 and got > 0, string.format("%d here fight me, %d hits from the host taken, %d own blocked", on_me,
-		got, blocked)
+	local _, got, blocked, fought = coop_combat.counts()
+	return fought > 0 and got > 0, string.format("fought here %d times (%d now), %d hits from the host taken, %d own blocked",
+		fought, on_me, got, blocked)
 end
 
 cmd.weather = function() return true, string.format("%s at %02d:%02d", tostring(level.get_weather()),
@@ -892,8 +892,9 @@ local STEPS = {
 				if e:id() == pid then on_guest = on_guest + 1 end
 			end
 		end
-		record("14host", on_guest > 0, string.format("%d fighting, %d of them the guest", n, on_guest))
-		local sent = coop_combat.counts()
+		local sent, _, _, fought = coop_combat.counts()
+		record("14host", fought > 0, string.format("the guest was fought %d times; now %d fighting, %d of them the guest",
+			fought, n, on_guest))
 		record("14sent", sent > 0, string.format("%d hits on the guest's puppet sent to the guest", sent))
 		ask("14", "combat")
 	end },

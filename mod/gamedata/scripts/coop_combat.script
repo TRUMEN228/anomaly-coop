@@ -10,7 +10,7 @@
 
 local targets = {}            -- guest: creature id -> the id of whom it fights on the host, as an id here
 local applying = false        -- guest: a hit from the host is being applied
-local stats = { sent = 0, got = 0, blocked = 0 }
+local stats = { sent = 0, got = 0, blocked = 0, on_guest = 0 } -- on_guest: lists that had one fighting the guest
 local next_stats = 0
 
 local function creature(o) return o and (IsStalker(o) or IsMonster(o)) end
@@ -24,7 +24,7 @@ coop_main.add_state_provider("ne", function()
 	local now = time_global()
 	if now < next_send then return end -- nil = keep the last value on the link
 	next_send = now + 300
-	local list = {}
+	local list, on_guest = {}, false
 	for id, st in pairs(db.storage) do
 		local o = st.object
 		if o and id ~= AC_ID and not coop_player.is_puppet(id) and creature(o) and o:alive() then
@@ -33,20 +33,24 @@ coop_main.add_state_provider("ne", function()
 				-- the host is "a", the guest's puppet "p" (the guest's own actor there)
 				local t = e:id() == AC_ID and "a" or (coop_player.is_puppet(e:id()) and "p" or tostring(e:id()))
 				list[#list + 1] = id .. ":" .. t
+				if t == "p" then on_guest = true end
 			end
 		end
 	end
+	if on_guest then stats.on_guest = stats.on_guest + 1 end
 	return { table.concat(list, ",") }
 end)
 
 coop_main.on_state("ne", function(t)
 	if not coop_main.is_client() then return end
-	local now = {}
+	local now, fought_me = {}, false
 	for hid, tid in (t[1] or ""):gmatch("(%d+):(%w+)") do
 		local id = coop_spawn.L(hid)
 		local target = tid == "a" and coop_player.get_puppet_id() or (tid == "p" and AC_ID or coop_spawn.L(tid))
 		if id and target then now[id] = target end
+		if target == AC_ID then fought_me = true end
 	end
+	if fought_me then stats.on_guest = stats.on_guest + 1 end
 	targets = now
 end)
 
@@ -118,7 +122,7 @@ local function actor_on_update()
 end
 
 -- for the scenario
-function counts() return stats.sent, stats.got, stats.blocked end
+function counts() return stats.sent, stats.got, stats.blocked, stats.on_guest end
 function target_of(id) return targets[id] end
 
 function on_game_start()
