@@ -775,24 +775,13 @@ poll_link = function(main)
 	-- the main menu without the lobby open (a player who left the world) still tells the partner it is here:
 	-- the host learns the guest has gone, a guest's game ends with the host's
 	if not in_game() and now - exchanged_at > 1000 and connected() then exchange() end
-	if coop_link_take_session() and not in_game() then
-		if menu_wnd and menu_wnd:IsShown() then menu_wnd:Close(true) end
-		pcall(function() coop_newgame.hide() end)
-		-- the host's world under its name (an older host: the one session save)
-		local w = L.partner_lobby and L.partner_lobby.name or ""
-		if w == "" and in_game() == false then
-			local _, pl = coop_session.partner()
-			w = pl and pl.name or ""
-		end
-		-- (the world may come before its name: then it is the save that just came, the newest one; loading a save that
-		-- is not there ends the game)
-		local name = w ~= "" and ("coop_" .. w) or nil
-		if not (name and getFS():exist(getFS():update_path("$game_saves$", name .. ".scop"))) then
-			name = coop_session.latest_save() or "coop_session"
-		end
-		coop_main.log("loading the host's world " .. name)
-		load_world(name)
-	end
+end
+
+-- the engine loads the host's world that came (r12): the lobby's windows go first
+function engine_loading()
+	coop_main.log("loading the host's world from the menu")
+	if menu_wnd and menu_wnd:IsShown() then menu_wnd:Close(true) end
+	pcall(function() coop_newgame.hide() end)
 end
 
 -- the entry itself is in the main list (the engine puts it there, named "btn_coop")
@@ -831,7 +820,7 @@ local function extract_files()
 	f:close()
 end
 
--- the guest's game was ended by the host's (coop_session.kick): the main menu says so once. The note is read as
+-- the guest's game was ended by the host's (the engine wrote why): the main menu says so once. The note is read as
 -- the menu is built, the window shown a moment later from its update (one shown while it is built stays under it)
 local kicked_why, kicked_at = nil, nil
 local function read_kicked(owner)
@@ -883,4 +872,6 @@ function before_main_menu()
 	-- a Steam invite ("Join game") or a test's appdata\coop_link.txt: start right away
 	local ok, err = pcall(function() coop_main.start_link_from_menu() end)
 	if not ok then printf("! coop menu: %s", tostring(err)) end
+	-- a test's guest is ready at once: it waits for the host's world
+	if coop_main.test_link == "join" then L.role, L.ready = "client", true end
 end

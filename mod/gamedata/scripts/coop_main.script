@@ -56,6 +56,7 @@ local function start_link()
 	end
 	f:close()
 	name = name or "Stalker"
+	test_link = mode
 	if mode == "host" then link_on = coop_link_host(port or 27015, name, VERSION)
 	elseif mode == "join" and addr then link_on = coop_link_join(addr, port or 27015, name, VERSION) end
 	log("engine link: " .. tostring(mode) .. " " .. tostring(addr or "") .. " " .. tostring(port) .. " -> " .. coop_link_status())

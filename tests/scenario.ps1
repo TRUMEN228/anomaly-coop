@@ -136,7 +136,8 @@ if ($Mode -eq 'travel') {
     # the guest after the host left: its game ended with a window saying why, and nothing loaded after
     $gl = @(Get-Content "$r\local\testB\appdata\coop_log.txt" -Encoding 1251 -ErrorAction SilentlyContinue)
     $k = -1
-    for ($i = 0; $i -lt $gl.Count; $i++) { if ($gl[$i] -match 'kicked: ') { $k = $i } }
+    # (the engine ends the guest's game: the scripts log "load: kick" as they save the character first)
+    for ($i = 0; $i -lt $gl.Count; $i++) { if ($gl[$i] -match 'kicked: |load: kick') { $k = $i } }
     $res = @()
     if ($k -lt 0) { $res += "QA menu_kick FAIL the guest's game did not end" }
     else {

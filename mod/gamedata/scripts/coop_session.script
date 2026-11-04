@@ -369,37 +369,12 @@ end)
 coop_main.on_state("lobby", function(t)
 	local was = partner_lobby and partner_lobby.where
 	partner_lobby = { ready = t[1] == "1", where = t[2], ng_ready = t[3] == "1", world = t[4], name = t[5] or "" }
-	-- the partner left the world for the main menu
-	if was == "game" and partner_lobby.where == "menu" and db.actor then
-		if coop_main.role == "host" then
-			coop_main.msg(string.format("%s вышел в главное меню", coop_main.peer_name))
-		else
-			kick("Хост вышел в главное меню")
-		end
+	-- the partner left the world for the main menu (the guest's game ends with the host's: the engine does it)
+	if was == "game" and partner_lobby.where == "menu" and db.actor and coop_main.role == "host" then
+		coop_main.msg(string.format("%s вышел в главное меню", coop_main.peer_name))
 	end
 end)
 
--- the guest's game ends with the host's: back to the main menu, which says why (coop_menu shows it)
-function kick(why)
-	if kick_done then return end
-	kick_done = true
-	coop_main.log("kicked: " .. why)
-	local f = io.open(app_path("coop_kicked.txt"), "w")
-	if f then f:write(why) f:close() end
-	pcall(export_character)
-	-- (a world the host sent while both played is no news for the main menu: it must not load it)
-	if rawget(_G, "coop_link_take_session") then pcall(coop_link_take_session) end
-	-- the link is broken off too: the guest joins again from the menu when the host is back
-	if rawget(_G, "coop_link_stop") then pcall(coop_link_stop) end
-	exec_console_cmd("disconnect")
-end
-kick_done = false
-
--- the host's game gone: a few seconds for a hiccup, then out
-local lost_at = nil
-coop_main.on_event("_connection", function(a)
-	lost_at = (a[1] == "0" and coop_main.role == "client" and is_guest_session()) and time_global() + 8000 or nil
-end)
 function partner() return partner_card, partner_lobby end
 
 -- step 1: wipe the clone's inventory and spawn ours; step 2 (next ticks): conditions, upgrades, slots
@@ -484,53 +459,33 @@ coop_main.add_state_provider("g", function()
 	return { (is_guest_session() and char_ready) and 1 or 0 }
 end)
 
------------------------------------------------------------------- host: send session / guest: load it
-local save_pending, save_tries, save_name = nil, 0, nil
-local function send_session()
-	if coop_main.role ~= "host" then
-		coop_main.msg("Отправить сессию может только хост")
-		return
-	end
-	save_name = session_save()
-	save_pending, save_tries = time_global() + 200, 0
-	pcall(os.remove, getFS():update_path("$game_saves$", save_name .. ".scop"))
-	exec_console_cmd("save " .. save_name)
-	coop_main.msg("Сессия сохранена, отправляю напарнику...")
+------------------------------------------------------------------ the session: the engine's (r12)
+-- The engine sends the host's world to a guest waiting in its menu and loads it there, reloads both games, reloads
+-- the guest after the host's travel and ends the guest's game with the host's. The scripts ask for reloads (the
+-- host's keys) and keep the guest's character safe before each load.
+
+-- the engine is about to load (a reload, the host's travel) or to end the game (the host left): the character
+-- goes to its file first
+function engine_before_load(why)
+	coop_main.log("load: " .. tostring(why))
+	if why == "reload" and coop_main.role == "client" then coop_main.msg("Хост перезагружает мир") end
+	pcall(export_character)
 end
 
--- a few values that outlive a level change or a load (the scripts start anew with each): appdata\coop_runtime.txt
-local function runtime_get(key)
-	local f = io.open(app_path("coop_runtime.txt"), "r")
-	if not f then return nil end
-	local v = nil
-	for line in f:lines() do
-		local k, val = line:match("^([%w_]+)=(.*)$")
-		if k == key then v = val end
-	end
-	f:close()
-	return v
+-- the host's world went to the guest: from now on the host's new spawns are the guest's too
+function engine_world_sent(mode)
+	coop_spawn.arm("world sent (" .. tostring(mode) .. ")")
 end
 
-local function runtime_set(key, value)
-	local all, f = {}, io.open(app_path("coop_runtime.txt"), "r")
-	if f then
-		for line in f:lines() do
-			local k, val = line:match("^([%w_]+)=(.*)$")
-			if k and k ~= key then all[#all + 1] = k .. "=" .. val end
-		end
-		f:close()
-	end
-	if value ~= nil then all[#all + 1] = key .. "=" .. tostring(value) end
-	f = io.open(app_path("coop_runtime.txt"), "w")
-	if f then f:write(table.concat(all, "\n") .. "\n") f:close() end
+-- a script moved the actor itself (a test's jump): no travel for the engine
+function alive_write()
+	if rawget(_G, "coop_session_moved") then coop_session_moved() end
 end
 
--- Num2 on the host: both games go back to this moment together - the world is saved and sent, the guest loads
--- it as soon as it has it and says so, and then the host loads the same save
--- guest_only (after a travel): the host's game goes on, the guest's loads the world as the host has it now
-local guest_only_until = 0
-local world_sent, level_up_at, reload_at = false, nil, nil -- (world_sent: send_to_waiting_guest, below)
-local function reload_both(guest_only)
+-- Num2 on the host: both games go back to this moment together (the world is saved and sent, the guest loads it
+-- and says so, then the host loads the same save)
+coop_main.on_event("_cmd_sync", function(a)
+	if a and a.outside then return end -- (the old launcher's request: the engine sends the world itself)
 	if coop_main.role ~= "host" then
 		coop_main.msg("Перезагрузить мир у обоих может только хост")
 		return
@@ -539,133 +494,9 @@ local function reload_both(guest_only)
 		coop_main.msg("Напарник не подключён")
 		return
 	end
-	-- the guest loads what comes next only because it is asked to (a world sent on a reconnect is not loaded)
-	coop_main.send("reload_req")
-	send_session()
-	coop_main.log("reload both (guest only " .. tostring(guest_only == true) .. ")")
-	if guest_only == true then
-		guest_only_until = time_global() + 120000
-		coop_main.msg("Напарник загружает мир в том виде, как у вас")
-	else
-		guest_only_until = 0
-		coop_main.msg("Перезагрузка мира у обоих: ждём, пока напарник получит сейв...")
-	end
-end
-coop_main.on_event("_cmd_sync", function(a)
-	-- the engine's link (and the launcher) ask for the world once both are up, as a reload of both: a guest in a
-	-- game or loading one has the world (the host's game would restart for nothing), a guest waiting in its menu
-	-- gets it from send_to_waiting_guest. (A guest with no game running yet - its launcher waits - is sent it here)
-	if a and a.outside then
-		local _, pl = partner()
-		coop_main.log("sync from outside: the guest's game is " .. tostring(pl and pl.where or "not up"))
-		-- (a guest in its menu is sent the world now, without a reload here; it loads it from the menu)
-		if pl and pl.where == "menu" and not world_sent and not save_pending then
-			world_sent = true
-			send_session()
-		end
-		if pl then return end
-	end
-	reload_both(false)
-end)
-
-coop_main.on_event("reloading", function()
-	if coop_main.role ~= "host" or not db.actor then return end
-	if time_global() < guest_only_until then
-		guest_only_until = 0
-		coop_main.msg(string.format("%s загружается рядом с вами", coop_main.peer_name))
-		return
-	end
-	coop_main.msg("Напарник загружается, загружаем тот же сейв")
-	coop_main.log("load: the guest reloads, this game loads the same save")
-	-- the world this load brings is the shared one already: no sync after it
-	runtime_set("after_reload", 1)
-	exec_console_cmd("load " .. session_save())
-end)
-
--- after the two travelled together (another level, fast travel) each game made up the new place on its own:
--- other people, elsewhere, otherwise. The host reloads both games there once both have arrived.
-local auto_sync_at, auto_sync_until = nil, 0
-local alive_next, alive_pos = 0, nil
-
--- where and when this game was last: a travel's arrival is told from a load by it. A jump on this level (the
--- PDA's travel to a place in sight) is a travel as well
-function alive_write(first)
-	if coop_main.role ~= "host" or not db.actor then return end
-	local pos = db.actor:position()
-	if not first and alive_pos and alive_pos:distance_to(pos) > 60 then request_auto_sync("fast travel on this level") end
-	alive_pos = vector():set(pos)
-	alive_next = time_global() + 1000
-	runtime_set("last_level", level.name())
-	runtime_set("last_pos", string.format("%.1f,%.1f,%.1f", pos.x, pos.y, pos.z))
-	runtime_set("alive_at", os.time())
-end
-function request_auto_sync(why)
-	-- (the link may not have said "connected" yet in the first moments after a load: it is asked when it is time)
-	if coop_main.role == "client" or is_guest_session() then return end
-	local now = time_global()
-	auto_sync_at, auto_sync_until = now + 5000, now + 90000
-	coop_main.log("auto sync wanted: " .. tostring(why))
-end
-
-local function update_auto_sync(now)
-	if not auto_sync_at or now < auto_sync_at then return end
-	if now > auto_sync_until then
-		auto_sync_at = nil
-		return
-	end
-	if not coop_main.connected or coop_main.role ~= "host" then
-		auto_sync_at = now + 2000
-		return
-	end
-	-- the guest in a game (its load puts it next to the host), and neither busy with a talk or a menu
-	local _, pl = partner()
-	local in_game = pl and pl.where == "game"
-	if not in_game or db.actor:is_talking() or not main_hud_shown() then
-		auto_sync_at = now + 2000
-		return
-	end
-	auto_sync_at = nil
-	reload_both(true)
-end
-
--- a guest waiting ready in its lobby gets the world once this game is up (the lobby's own requests are lost in
--- the main menu); once per wait: it is sent again only after the guest has been in a game or gone
-local function send_to_waiting_guest(now)
-	if coop_main.role ~= "host" or not coop_main.connected then
-		world_sent = false
-		return
-	end
-	local _, pl = partner()
-	if not pl or pl.where ~= "menu" then
-		if pl and pl.where == "game" then world_sent = false end
-		return
-	end
-	if pl.ready and not world_sent and not save_pending and level_up_at and now > level_up_at then
-		world_sent = true
-		coop_main.log("world sent to the guest waiting in its menu")
-		-- the guest gets the world as it is now: a sync wanted before is done by this
-		auto_sync_at = nil
-		send_session()
-	end
-end
-
--- the host asked both games to reload: the world that comes next is loaded at once
-local reload_expected = nil
-coop_main.on_event("reload_req", function()
-	reload_expected = time_global() + 120000
-end)
-
-coop_main.on_event("session_ready", function()
-	if coop_main.role == "host" or not db.actor then return end
-	-- a world sent again on a reconnect: this game is in it already
-	if not (reload_expected and time_global() < reload_expected) then return end
-	reload_expected = nil
-	coop_main.msg("Хост перезагружает мир у обоих")
-	coop_main.log("load: the host's reload")
-	export_character()
-	coop_main.send("reloading")
-	-- a moment for the word to leave this game before loading stops it
-	reload_at = time_global() + 1000
+	coop_main.log("reload both")
+	coop_session_reload(true)
+	coop_main.msg("Перезагрузка мира у обоих: ждём, пока напарник получит сейв...")
 end)
 
 coop_main.on_event("_cmd_load", function()
@@ -680,8 +511,7 @@ coop_main.on_event("_cmd_load", function()
 			coop_main.msg("Сохранений нет")
 			return
 		end
-		coop_main.send("reload_req")
-		coop_main.send("@saved", session_save())
+		coop_session_reload(false)
 		coop_main.msg(string.format("Загрузка сохранения «%s» у обоих: ждём, пока напарник получит его...", last))
 		return
 	end
@@ -704,21 +534,6 @@ local function load_state(m_data)
 end
 
 local function actor_on_first_update()
-	level_up_at = time_global() + 5000
-	-- the host came to another level: once the guest is here too, both games load the host's world
-	-- (a travel: a moment ago this game was elsewhere - on another level, or far away on this one after a
-	-- fast travel that loads the level anew; a game loaded from the menu a while later is no travel)
-	local here, pos = level.name(), db.actor:position()
-	local last, at = runtime_get("last_level"), tonumber(runtime_get("alive_at") or "")
-	local lx, ly, lz = (runtime_get("last_pos") or ""):match("^([-%d.]+),([-%d.]+),([-%d.]+)$")
-	local far = lx and pos:distance_to(vector():set(tonumber(lx), tonumber(ly), tonumber(lz))) > 100
-	if runtime_get("after_reload") then
-		runtime_set("after_reload", nil)
-	-- (a new game starts on "fake_start": no travel)
-	elseif at and os.time() - at < 120 and last and last ~= "fake_start" and (last ~= here or far) then
-		request_auto_sync(string.format("travel %s -> %s", last, here))
-	end
-	alive_write(true)
 	if is_guest_session() then
 		char_ready = false
 		import_character()
@@ -736,45 +551,9 @@ local function actor_on_update()
 			import_step, char_ready = nil, true
 		end
 	end
-	send_to_waiting_guest(now)
-	update_auto_sync(now)
-	if now > alive_next then
-		alive_next = now + 1000
-		alive_write(false)
-		-- in a game the host's worlds are taken by the events (session_ready); the engine's note that one came
-		-- is for the main menu, which would load it on the way out
-		if coop_main.role == "client" and rawget(_G, "coop_link_take_session") then coop_link_take_session() end
-	end
-	if lost_at and now > lost_at then
-		lost_at = nil
-		if not coop_main.connected then kick("Хост разорвал соединение") end
-	end
-	if reload_at and now > reload_at then
-		reload_at = nil
-		exec_console_cmd("load " .. session_save())
-	end
 	if mirror_at and now > mirror_at then
 		mirror_at = nil
 		exec_console_cmd("save " .. session_save())
-	end
-	if save_pending and now > save_pending then
-		-- only a save that is really there goes to the guest (a world that is still starting may not save yet)
-		local f = io.open(getFS():update_path("$game_saves$", save_name .. ".scop"), "rb")
-		if f then
-			f:close()
-			save_pending, save_tries = nil, 0
-			coop_main.send("@saved", save_name)
-			coop_spawn.arm("session saved")
-		else
-			save_tries = (save_tries or 0) + 1
-			if save_tries > 20 then
-				save_pending, save_tries = nil, 0
-				coop_main.msg("Сессия не сохранилась, повторите (" .. coop_main.key_name("sync") .. ")")
-			else
-				if save_tries % 5 == 0 then exec_console_cmd("save " .. save_name) end
-				save_pending = now + 500
-			end
-		end
 	end
 	if now > next_export then
 		next_export = now + 15000
@@ -791,7 +570,6 @@ function on_game_start()
 	pcall(hook_saves)
 	player_id = load_player_id()
 	session_owner, char_ready, import_step = nil, false, nil
-	kick_done = false
 	RegisterScriptCallback("save_state", save_state)
 	RegisterScriptCallback("load_state", load_state)
 	RegisterScriptCallback("actor_on_first_update", actor_on_first_update)

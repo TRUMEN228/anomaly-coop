@@ -239,8 +239,8 @@ local function update_follow(now)
 	near_at = now
 	if r.level == here then
 		coop_main.msg(string.format("%s переместился: идём за ним", r.name))
+		-- (the engine takes a jump this far for a travel: the guest is reloaded next to this player)
 		db.actor:set_actor_position(r.pos)
-		coop_session.request_auto_sync("went after the partner's fast travel")
 	else
 		coop_main.msg(string.format("%s ушёл на локацию %s: идём за ним", r.name, game.translate_string(r.level)))
 		ChangeLevel(r.pos, r.lvid, r.gvid, VEC_ZERO, true)
