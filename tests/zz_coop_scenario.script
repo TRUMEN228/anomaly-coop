@@ -371,12 +371,14 @@ cmd.take_fresh = function(a)
 	local item = in_box(box, a[4])[1]
 	if not item then return false, "none in the box" end
 	item:set_condition(1)
+	ctx.taken_id = item:id()
 	local ok = take_from(box, a[4])
 	return ok, ok and "taken as new" or "not taken"
 end
 
 cmd.cond = function(a)
-	local item = on_actor(a[3])[1]
+	local item = ctx.taken_id and level.object_by_id(ctx.taken_id)
+	if not (item and item:parent() and item:parent():id() == AC_ID) then item = on_actor(a[3])[1] end
 	if not item then return false, "none on me" end
 	return true, string.format("%.2f", item:condition())
 end
@@ -655,36 +657,50 @@ local STEPS = {
 		announce("ШАГ 9. Разговор: хост заговаривает с Волком.\\nУ ГОСТЯ должно открыться такое же окно разговора с теми же репликами.", 10)
 		-- the nearest loner who is no story character (their first words may end the talk at once) and not
 		-- hostile; Wolf when there is no one else
-		local npc, best = nil, 40
+		local list = {}
 		for id, st in pairs(db.storage) do
 			local o = st.object
 			if o and IsStalker(o) and o:alive() and id ~= AC_ID and not coop_player.is_puppet(id) and not get_object_story_id(id)
-				and o:relation(db.actor) ~= game_object.enemy and o:position():distance_to(db.actor:position()) < best then
-				npc, best = o, o:position():distance_to(db.actor:position())
+				and o:relation(db.actor) ~= game_object.enemy and not o:best_enemy() and not o:wounded()
+				and o:position():distance_to(db.actor:position()) < 40 then
+				list[#list + 1] = o
 			end
 		end
-		npc = npc or get_story_object("esc_2_12_stalker_wolf")
-		ctx.talk_npc = npc
-		if not npc then record("9host", false, "no one to talk to") return end
-		-- as a player does: right next to them (a meet lets one talk only close by)
-		local np = npc:position()
-		local d = vector():set(db.actor:position()):sub(np)
-		d.y = 0
-		if d:magnitude() > 0.1 then d:normalize() else d = vector():set(1, 0, 0) end
-		local close = aside(np, d.x * 1.5, d.z * 1.5)
-		jump(close)
-		look_at(np)
-		npc:enable_talk()
-		db.actor:run_talk_dialog(npc, false)
-		record("9host", db.actor:is_talking(), string.format("%s with %s (talk enabled %s)",
-			db.actor:is_talking() and "talking" or "the talk did not start", npc:section(), tostring(npc:is_talk_enabled())))
-		after(1500, function()
-			record("9hold", db.actor:is_talking(), db.actor:is_talking() and "still talking 1.5 s later" or "the talk ended by itself")
-		end)
-	end },
-	{ 107, function()
+		local me = db.actor:position()
+		table.sort(list, function(x, y) return x:position():distance_to(me) < y:position():distance_to(me) end)
+		local wolf = get_story_object("esc_2_12_stalker_wolf")
+		if wolf and wolf:alive() then list[#list + 1] = wolf end
+		local tried = {}
 		ctx.expect["9"] = function(ok, detail) return ok and detail == "shown", "guest's talk window copy: " .. detail end
-		ask("9", "mirror_shown")
+		local function try(i)
+			local npc = list[i]
+			if not npc or i > 3 then
+				record("9host", false, "no one would talk: " .. table.concat(tried, ", "))
+				return
+			end
+			ctx.talk_npc = npc
+			-- as a player does: right next to them (a meet lets one talk only close by)
+			local np = npc:position()
+			local d = vector():set(db.actor:position()):sub(np)
+			d.y = 0
+			if d:magnitude() > 0.1 then d:normalize() else d = vector():set(1, 0, 0) end
+			jump(aside(np, d.x * 1.5, d.z * 1.5))
+			look_at(np)
+			npc:enable_talk()
+			db.actor:run_talk_dialog(npc, false)
+			after(1200, function()
+				local enemy = npc:best_enemy()
+				tried[#tried + 1] = string.format("%s %s%s", npc:section(), db.actor:is_talking() and "talks" or "ended",
+					enemy and (" (fights " .. enemy:section() .. ")") or "")
+				if db.actor:is_talking() then
+					record("9host", true, "talking: " .. table.concat(tried, ", "))
+					after(1500, function() ask("9", "mirror_shown") end)
+				else
+					try(i + 1)
+				end
+			end)
+		end
+		try(1)
 	end },
 	{ 108, function()
 		announce("ШАГ 10. Подарок в разговоре: хост получает пиво, пока говорит.\\nГостю тоже должно прийти пиво («Вы тоже получили»).", 8)
