@@ -3,8 +3,10 @@
 # Results: local\test{A,B}\appdata\coop_qa.txt, printed at the end; then both games close.
 # The run is recorded (ffmpeg, only the two game windows, side by side): local\qa_rec\run.mp4; frames of both
 # windows every 2 s: local\qa_shots (and run.webp made of them).
-# usage: scenario.ps1 [-Minutes 8]
-param([int]$Minutes = 8)
+# -Mode travel: the travel test instead (zz_coop_travel.script): the host goes to another level, then to the main
+# menu; what the guest does then is checked here, in its log
+# usage: scenario.ps1 [-Minutes 8] [-Mode scenario|travel]
+param([int]$Minutes = 8, [string]$Mode = "scenario")
 $r = 'D:\Projects\stalker_coop'
 
 python "$r\build.py" --scripts-only | Out-Null
@@ -16,13 +18,17 @@ s = open(p, 'rb').read().decode('cp1251')
 for k, v in (('world', 'sandbox'), ('money', '0')):
     s = re.sub(r'(?m)^' + k + r'=.*$', k + '=' + v, s) if re.search(r'(?m)^' + k + '=', s) else s.rstrip('\n') + '\n' + k + '=' + v + '\n'
 open(p, 'wb').write(s.encode('cp1251'))
-src = open(r'$r\tests\zz_coop_scenario.script', encoding='utf-8').read()
-for n in 'AB':
-    open(r'$r\local\test' + n + r'\gamedata\scripts\zz_coop_scenario.script', 'wb').write(src.encode('cp1251'))
+for name in ('zz_coop_scenario', 'zz_coop_travel'):
+    src = open(r'$r\tests\\' + name + '.script', encoding='utf-8').read()
+    for n in 'AB':
+        open(r'$r\local\test' + n + r'\gamedata\scripts\\' + name + '.script', 'wb').write(src.encode('cp1251'))
 "@
+$flag = if ($Mode -eq 'travel') { 'coop_travel.txt' } else { 'coop_scenario.txt' }
 foreach ($n in 'A', 'B') {
-    "1" | Set-Content "$r\local\test$n\appdata\coop_scenario.txt"
-    Remove-Item "$r\local\test$n\appdata\coop_qa.txt", "$r\local\test$n\appdata\coop_qa_steps.txt" -ErrorAction SilentlyContinue
+    $a = "$r\local\test$n\appdata"
+    Remove-Item "$a\coop_scenario.txt", "$a\coop_travel.txt", "$a\coop_qt_phase.txt", "$a\coop_qt_loads.txt" -ErrorAction SilentlyContinue
+    "1" | Set-Content "$a\$flag"
+    Remove-Item "$a\coop_qa.txt", "$a\coop_qa_steps.txt" -ErrorAction SilentlyContinue
 }
 
 & "$r\tests\duo_link.ps1" -NoLauncher -Save coop_sandbox
@@ -116,9 +122,31 @@ while (((Get-Date) - $t0).TotalMinutes -lt $Minutes) {
     $sec = [int]((Get-Date) - $t0).TotalSeconds
     foreach ($n in $win.Keys) { try { Shot $win[$n] ("$shots\{0:d4}_{1}_{2}.jpg" -f $sec, $step, $n) } catch { } }
     if ($lines -match '^QA end ') { break }
+    # travel: the host has left for the menu; the guest's part takes a while (its game ends, the menu comes)
+    if ($Mode -eq 'travel' -and $lines -match '^QA menu_go ') {
+        if (-not $menuAt) { $menuAt = Get-Date }
+        elseif (((Get-Date) - $menuAt).TotalSeconds -gt 40) { break }
+    }
+}
+if ($Mode -eq 'travel') {
+    # the guest after the host left: its game ended with a window saying why, and nothing loaded after
+    $gl = @(Get-Content "$r\local\testB\appdata\coop_log.txt" -Encoding 1251 -ErrorAction SilentlyContinue)
+    $k = -1
+    for ($i = 0; $i -lt $gl.Count; $i++) { if ($gl[$i] -match 'kicked: ') { $k = $i } }
+    $res = @()
+    if ($k -lt 0) { $res += "QA menu_kick FAIL the guest's game did not end" }
+    else {
+        $res += "QA menu_kick PASS " + ($gl[$k] -replace '^\[\d+\]\s*', '')
+        $loadsAfter = @($gl[($k + 1)..($gl.Count - 1)] | ? { $_ -match '\] load|loading the host|=== Anomaly' })
+        $res += if ($loadsAfter.Count -eq 0) { "QA menu_noload PASS the guest loaded nothing after" } else { "QA menu_noload FAIL " + ($loadsAfter -join ' / ') }
+        $note = Get-Content "$r\local\testB\appdata\coop_kicked.txt" -Raw -ErrorAction SilentlyContinue
+        $res += if (-not $note) { "QA menu_window PASS the main menu showed why (the note was read)" } else { "QA menu_window FAIL the note is still unread: $note" }
+    }
+    $res | % { "  $_" }
+    $res | Add-Content "$r\local\testA\appdata\coop_qa.txt"
 }
 foreach ($n in 'A', 'B') {
-    Remove-Item "$r\local\test$n\appdata\coop_scenario.txt" -ErrorAction SilentlyContinue
+    Remove-Item "$r\local\test$n\appdata\coop_scenario.txt", "$r\local\test$n\appdata\coop_travel.txt" -ErrorAction SilentlyContinue
     "--- game $n (" + $(if ($n -eq 'A') { 'host' } else { 'guest' }) + ")"
     Get-Content "$r\local\test$n\appdata\coop_syntax.txt" -ErrorAction SilentlyContinue | ? { $_ -notmatch ': ok$' } | % { "SYNTAX $_" }
     Get-Content "$r\local\test$n\appdata\coop_qa.txt" -ErrorAction SilentlyContinue

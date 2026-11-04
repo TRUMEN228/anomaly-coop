@@ -5,7 +5,9 @@ function on_game_start()
 	local names = {}
 	local flist = getFS():file_list_open_ex("$game_scripts$", bit_or(FS.FS_ListFiles, FS.FS_RootOnly), "coop_*.script")
 	for i = 0, flist:Size() - 1 do names[#names + 1] = flist:GetAt(i):NameShort() end
-	if getFS():exist("$game_scripts$", "zz_coop_scenario.script") then names[#names + 1] = "zz_coop_scenario.script" end
+	for _, n in ipairs({ "zz_coop_scenario.script", "zz_coop_travel.script" }) do
+		if getFS():exist("$game_scripts$", n) then names[#names + 1] = n end
+	end
 	for _, name in ipairs(names) do
 		local f = io.open(getFS():update_path("$game_scripts$", name), "rb")
 		local src = f and f:read("*a"); if f then f:close() end

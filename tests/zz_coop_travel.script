@@ -1,0 +1,252 @@
+--[[
+	dev only: the travel test (active when appdata\coop_travel.txt exists), run by tests\scenario.ps1 -Mode travel.
+	1. The host goes to another level: its game loads once (the travel), the guest's once (the host's world, next
+	   to the host); the host's must not load again.
+	2. The host leaves for the main menu: the guest's game ends with a window saying why and loads nothing of its
+	   own (the runner checks this in the guest's log: the host's scripts are gone by then).
+	A level load starts the scripts anew: where the host is in the test is kept in appdata\coop_qt_phase.txt, the
+	loads each game made in appdata\coop_qt_loads.txt. Results: "QA <step> PASS|FAIL <detail>" as in the scenario.
+--]]
+
+local active = false
+local ready_at = nil
+local later = {}
+local ctx = {}
+local banner = { text = "", until_t = 0 }
+local PANEL = nil
+
+local TARGET = "l02_garbage"
+local GUEST_WAIT = 150000    -- ms the host waits for the guest on the new level
+local HOST_QUIET = 30000     -- ms after the guest's arrival the host's game must not load again
+
+local function app(name) return getFS():update_path("$app_data_root$", name) end
+
+local function read_file(name)
+	local f = io.open(app(name), "r")
+	if not f then return nil end
+	local s = f:read("*a")
+	f:close()
+	return s
+end
+
+local function write_file(name, s, mode)
+	local f = io.open(app(name), mode or "w")
+	if f then f:write(s) f:close() end
+end
+
+local function record(step, ok, detail)
+	local line = string.format("QA %s %s %s", step, ok and "PASS" or "FAIL", detail or "")
+	coop_main.log(line)
+	write_file("coop_qa.txt", line .. "\n", "a")
+end
+
+local function after(ms, fn) later[#later + 1] = { time_global() + ms, fn } end
+
+local function loads()
+	local n = 0
+	for _ in (read_file("coop_qt_loads.txt") or ""):gmatch("[^\n]+") do n = n + 1 end
+	return n
+end
+
+local function phase()
+	local s = read_file("coop_qt_phase.txt") or ""
+	local name, arg = s:match("^(%w+)|?([^\n]*)")
+	return name or "start", arg
+end
+
+------------------------------------------------------------------ the banner (both games)
+local function show(text, secs) banner.text, banner.until_t = text, time_global() + (secs or 12) * 1000 end
+
+local function announce(text, secs)
+	show(text, secs)
+	coop_main.send("qt_show", text, secs or 12)
+	write_file("coop_qa_steps.txt", os.time() .. "|" .. text:gsub("\\n.*$", "") .. "\n", "a")
+end
+
+coop_main.on_event("qt_show", function(a)
+	if active then show(a[1] or "", tonumber(a[2]) or 12) end
+end)
+
+class "UICoopQt" (CUIScriptWnd)
+
+function UICoopQt:__init() super()
+	local xml = utils_xml.get_hud_xml()
+	self.text = xml:InitTextWnd("companion_list:slot:distance", self)
+	local ok, font = pcall(function() return GetFontGraffiti22Russian() end)
+	self.text:SetFont(ok and font or GetFontMedium())
+	self.text:SetTextComplexMode(true)
+	self.text:SetWndPos(vector2():set(112, 30))
+	self.text:SetWndSize(vector2():set(800, 180))
+	self.text:SetTextAlignment(2)
+	self.text:SetVTextAlignment(0)
+	self.text:SetTextColor(GetARGB(255, 255, 220, 120))
+	self.shown_text = nil
+end
+
+function UICoopQt:__finalize() end
+
+function UICoopQt:Update()
+	CUIScriptWnd.Update(self)
+	local text = time_global() < banner.until_t and banner.text or ""
+	if text ~= self.shown_text then
+		self.shown_text = text
+		self.text:SetText(text)
+	end
+end
+
+------------------------------------------------------------------ the guest's part
+-- where the guest is: level, position, its loads so far
+local function whereabouts()
+	local p = db.actor:position()
+	return level.name(), string.format("%.1f", p.x), string.format("%.1f", p.y), string.format("%.1f", p.z), tostring(loads())
+end
+
+coop_main.on_event("qt_where", function()
+	if active and coop_main.role ~= "host" and db.actor then coop_main.send("qt_here", whereabouts()) end
+end)
+
+------------------------------------------------------------------ the host's part
+-- a place on the target level to travel to: one of its smart terrains
+local function destination()
+	local list = {}
+	for name, se in pairs(SIMBOARD and SIMBOARD.smarts_by_names or {}) do
+		local gv = game_graph():vertex(se.m_game_vertex_id)
+		if gv and alife():level_name(gv:level_id()) == TARGET then list[#list + 1] = { name, se } end
+	end
+	table.sort(list, function(x, y) return x[1] < y[1] end)
+	local pick = list[1]
+	return pick and pick[2], pick and pick[1]
+end
+
+-- the guest's answers: on the start level its loads before the travel, on the new one where it is
+coop_main.on_event("qt_ready", function(a)
+	if not (active and coop_main.role == "host") then return end
+	ctx.guest = { level = a[1], loads = tonumber(a[5]) or 0 }
+end)
+
+coop_main.on_event("qt_here", function(a)
+	if not (active and coop_main.role == "host") or not ctx.ask_where then return end
+	ctx.ask_where = nil
+	local lvl, x, y, z, n = a[1], tonumber(a[2]), tonumber(a[3]), tonumber(a[4]), tonumber(a[5]) or 0
+	local d = (x and lvl == level.name()) and db.actor:position():distance_to(vector():set(x, y, z)) or -1
+	record("t_guest", lvl == level.name() and d >= 0 and d < 60,
+		string.format("guest on %s, %s from the host", tostring(lvl), d >= 0 and string.format("%.0f m", d) or "-"))
+	local before = tonumber(ctx.guest_before) or -1
+	record("t_guest_loads", before >= 0 and n - before == 1,
+		string.format("guest loaded %d time(s) since the travel (one expected)", n - before))
+end)
+
+local function host_start()
+	announce("ТЕСТ ПЕРЕХОДА, шаг 1: хост уходит на Свалку.\\nХост загружается один раз. Гость — тоже один раз, и оказывается рядом с хостом.", 10)
+	after(8000, function()
+		local se, name = destination()
+		if not se then
+			record("t0", false, "no place on " .. TARGET)
+			return
+		end
+		local g = ctx.guest and ctx.guest.loads or -1
+		write_file("coop_qt_phase.txt", string.format("travelled|%d;%d;%d", loads(), g, time_global()))
+		record("t0", true, string.format("leaving %s for %s (%s); loads so far: host %d, guest %d", level.name(), TARGET,
+			name, loads(), g))
+		ChangeLevel(se.position, se.m_level_vertex_id, se.m_game_vertex_id, vector():set(0, 0, 0), false)
+	end)
+end
+
+local function host_travelled(arg)
+	local h0, g0 = arg:match("^(%-?%d+);(%-?%d+)")
+	ctx.host_before, ctx.guest_before = tonumber(h0) or -1, tonumber(g0) or -1
+	record("t_host_level", level.name() == TARGET, "host on " .. level.name())
+	announce("Хост на Свалке. Ждём гостя: он должен загрузиться рядом.", 10)
+	ctx.wait_until = time_global() + GUEST_WAIT
+	ctx.waiting = true
+end
+
+local function host_menu_step()
+	announce("ТЕСТ ПЕРЕХОДА, шаг 2: хост выходит в главное меню.\\nУ ГОСТЯ — окно «Хост вышел в главное меню», своя игра у гостя НЕ загружается.", 10)
+	after(8000, function()
+		write_file("coop_qt_phase.txt", "menu|" .. os.time())
+		record("menu_go", true, "the host leaves for the main menu")
+		exec_console_cmd("disconnect")
+	end)
+end
+
+local function host_update(now)
+	if not ctx.waiting then return end
+	-- the guest has come once it answers from this level
+	if ctx.guest and ctx.guest.level == level.name() and not ctx.arrived then
+		ctx.arrived = now
+		ctx.ask_where = true
+		coop_main.send("qt_where")
+		after(HOST_QUIET, function()
+			local n = loads() - (ctx.host_before or 0)
+			record("t_host_loads", n == 1, string.format("host loaded %d time(s) since the travel (one: the travel)", n))
+			ctx.waiting = false
+			host_menu_step()
+		end)
+	elseif not ctx.arrived and now > ctx.wait_until then
+		ctx.waiting = false
+		record("t_guest", false, "the guest did not come to " .. level.name() .. " in time (last on " ..
+			tostring(ctx.guest and ctx.guest.level) .. ")")
+		host_menu_step()
+	end
+end
+
+------------------------------------------------------------------ the clock
+local function actor_on_update()
+	if not active then return end
+	local now = time_global()
+	local keep = {}
+	for _, l in ipairs(later) do
+		if now >= l[1] then pcall(l[2]) else keep[#keep + 1] = l end
+	end
+	later = keep
+	if not (ready_at and now > ready_at and coop_main.connected) then return end
+	if coop_main.role ~= "host" then
+		-- the guest says where it is now and then
+		if not ctx.ready_sent or now > ctx.ready_sent + 3000 then
+			ctx.ready_sent = now
+			coop_main.send("qt_ready", whereabouts())
+		end
+		return
+	end
+	if not ctx.started then
+		local name, arg = phase()
+		if name == "start" then
+			if not ctx.guest then return end
+			ctx.started = true
+			host_start()
+		elseif name == "travelled" then
+			ctx.started = true
+			host_travelled(arg or "")
+		else
+			ctx.started = true
+		end
+	end
+	local ok, err = pcall(host_update, now)
+	if not ok then record("t_script", false, tostring(err)) end
+end
+
+local function actor_on_first_update()
+	write_file("coop_qt_loads.txt", string.format("%d %s\n", os.time(), level.name()), "a")
+	-- the guest's character, the host's spawns and the mirror settle first
+	ready_at = time_global() + 15000
+	if not PANEL and get_hud() then
+		PANEL = UICoopQt()
+		get_hud():AddDialogToRender(PANEL)
+	end
+end
+
+local function actor_on_net_destroy()
+	if PANEL and get_hud() then get_hud():RemoveDialogToRender(PANEL) end
+	PANEL = nil
+end
+
+function on_game_start()
+	local f = io.open(app("coop_travel.txt"), "r")
+	active = f ~= nil
+	if f then f:close() end
+	if not active then return end
+	RegisterScriptCallback("actor_on_first_update", actor_on_first_update)
+	RegisterScriptCallback("actor_on_update", actor_on_update)
+	RegisterScriptCallback("actor_on_net_destroy", actor_on_net_destroy)
+end
