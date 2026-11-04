@@ -319,6 +319,64 @@ cmd.census = function(a)
 		table.concat(missing, " "), #extra, table.concat(extra, " "), #off, table.concat(off, " "), #life, table.concat(life, " "))
 end
 
+-- what a trader sells: its inventory but what it wears and holds
+local function goods_count(npc)
+	local keep = {}
+	for slot = 0, 13 do
+		local o = npc:item_in_slot(slot)
+		if o then keep[o:id()] = true end
+	end
+	local w = npc:active_item()
+	if w then keep[w:id()] = true end
+	local n = 0
+	npc:iterate_inventory(function(_, o) if o and not keep[o:id()] then n = n + 1 end end, nil)
+	return n
+end
+
+local function trader()
+	local npc = get_story_object("esc_m_trader")
+	return npc and npc:alive() and npc or nil
+end
+
+cmd.mirror_shown = function()
+	local shown = rawget(_G, "coop_talk_mirror_shown") and coop_talk_mirror_shown() or false
+	return true, shown and "shown" or "not shown"
+end
+
+-- the guest turns to the trader as a player does (npc_on_use asks the host for its goods)
+cmd.trader = function()
+	local npc = trader()
+	if not npc then return false, "no trader here" end
+	SendScriptCallback("npc_on_use", npc, db.actor)
+	return true, "asked " .. npc:section()
+end
+
+-- what the guest's trader has, and whether it would sell it (the trade window lists only what it sells)
+cmd.trader_check = function()
+	local npc = trader()
+	if not npc then return false, "no trader here" end
+	pcall(trade_manager.update, npc)
+	local p = trade_manager.get_trade_profile and trade_manager.get_trade_profile(npc:id())
+	return true, string.format("%d|%s", goods_count(npc), tostring(p and p.current_sell_condition))
+end
+
+-- the guest's copy of the pistol as new (its own roll), then taken: the host's state must come
+cmd.take_fresh = function(a)
+	local box = box_by(a[3])
+	if not box then return false, "no box" end
+	local item = in_box(box, a[4])[1]
+	if not item then return false, "none in the box" end
+	item:set_condition(1)
+	local ok = take_from(box, a[4])
+	return ok, ok and "taken as new" or "not taken"
+end
+
+cmd.cond = function(a)
+	local item = on_actor(a[3])[1]
+	if not item then return false, "none on me" end
+	return true, string.format("%.2f", item:condition())
+end
+
 cmd.weather = function() return true, string.format("%s at %02d:%02d", tostring(level.get_weather()),
 	level.get_time_hours(), level.get_time_minutes()) end
 
@@ -459,7 +517,7 @@ end)
 
 local STEPS = {
 	{ 0, function()
-		announce("ТЕСТ КООПЕРАТИВА: 8 шагов, около двух с половиной минут.\\nОба игрока переносятся на улицу в деревню новичков, рядом ставится тестовый тайник.", 8)
+		announce("ТЕСТ КООПЕРАТИВА: 13 шагов, около трёх с половиной минут.\\nОба игрока переносятся на улицу в деревню новичков, рядом ставится тестовый тайник.", 8)
 		local center, lv, gv = village()
 		local dir, side = open_direction(center)
 		local me = aside(center, 0, 0)
@@ -589,8 +647,99 @@ local STEPS = {
 		local got = db.actor:money() - ctx.money0
 		record("7", got == 500, string.format("host money +%d", got))
 	end },
-	{ 103, function() census("census2") end },
 	{ 104, function()
+		announce("ШАГ 9. Разговор: хост заговаривает с Волком.\\nУ ГОСТЯ должно открыться такое же окно разговора с теми же репликами.", 10)
+		local wolf = get_story_object("esc_2_12_stalker_wolf")
+		ctx.talk_npc = wolf
+		if not wolf then record("9", false, "no Wolf here") return end
+		look_at(wolf:position())
+		db.actor:run_talk_dialog(wolf, false)
+		record("9host", db.actor:is_talking(), db.actor:is_talking() and "talking to Wolf" or "the talk did not start")
+	end },
+	{ 107, function()
+		ctx.expect["9"] = function(ok, detail) return ok and detail == "shown", "guest's talk window copy: " .. detail end
+		ask("9", "mirror_shown")
+	end },
+	{ 108, function()
+		announce("ШАГ 10. Подарок в разговоре: хост получает пиво, пока говорит.\\nГостю тоже должно прийти пиво («Вы тоже получили»).", 8)
+		ctx.expect["10a"] = function(ok, detail) ctx.beer0 = tonumber(detail) or 0 return ok, "guest beers before: " .. detail end
+		ask("10a", "has", "beer")
+		after(300, function() alife_create_item("beer", db.actor) end)
+	end },
+	{ 114, function()
+		ctx.expect["10"] = function(ok, detail)
+			local got = (tonumber(detail) or 0) - (ctx.beer0 or 0)
+			return got == 1, string.format("guest got %d beer", got)
+		end
+		ask("10", "has", "beer")
+	end },
+	{ 115, function()
+		announce("ШАГ 11. Покупка: хост «покупает» тушёнку прямо в разговоре.\\nГостю она приходить НЕ должна.", 8)
+		ctx.expect["11a"] = function(ok, detail) ctx.can0 = tonumber(detail) or 0 return ok, "guest cans before: " .. detail end
+		ask("11a", "has", "tushonka")
+		after(300, function() alife_create_item("tushonka", db.actor) end)
+		-- the trade window reports what it moved (actor_on_trade)
+		for _, ms in ipairs({ 400, 500, 650 }) do
+			after(ms, function()
+				local can = on_actor("tushonka")[1]
+				if can and not ctx.can_traded then
+					ctx.can_traded = true
+					SendScriptCallback("actor_on_trade", can, false, 100)
+				end
+			end)
+		end
+	end },
+	{ 121, function()
+		ctx.expect["11"] = function(ok, detail)
+			local got = (tonumber(detail) or 0) - (ctx.can0 or 0)
+			return got == 0, string.format("guest got %d cans (none expected)", got)
+		end
+		ask("11", "has", "tushonka")
+	end },
+	{ 122, function()
+		db.actor:stop_talk()
+		after(2500, function()
+			ctx.expect["9close"] = function(ok, detail) return ok and detail == "not shown", "after the host's talk ended the guest's copy is " .. detail end
+			ask("9close", "mirror_shown")
+		end)
+	end },
+	{ 126, function()
+		announce("ШАГ 12. Торговец: гость обращается к Сидоровичу.\\nТовар Сидоровича у гостя должен совпасть с товаром у хоста, окно торговли — не пустое.", 10)
+		ask("12ask", "trader")
+	end },
+	{ 132, function()
+		local npc = trader()
+		if npc then pcall(trade_manager.update, npc) end
+		local mine = npc and goods_count(npc) or -1
+		ctx.expect["12"] = function(ok, detail)
+			local n, cond = detail:match("^(%d+)|(.*)$")
+			n = tonumber(n)
+			return ok and n == mine and mine > 0 and cond ~= "nil",
+				string.format("Sidorovich's goods: host %d, guest %s; guest sells by %s", mine, tostring(n), tostring(cond))
+		end
+		ask("12", "trader_check")
+	end },
+	{ 135, function()
+		local box = ctx.box and level.object_by_id(ctx.box)
+		if not box then return end
+		announce("ШАГ 13. Состояние вещи: хост кладёт в тайник пистолет с износом 40 %.\\nГость берёт его (его копия как новая) — после взятия у гостя он тоже должен стать изношенным.", 12)
+		alife_create_item("wpn_pm", db.actor, { cond = 0.4 })
+		after(800, function()
+			local pm = on_actor("wpn_pm")[1]
+			if pm then db.actor:transfer_item(pm, box) end
+		end)
+	end },
+	{ 141, function() if ctx.box then ask("13take", "take_fresh", ctx.box, "wpn_pm") end end },
+	{ 148, function()
+		ctx.expect["13"] = function(ok, detail)
+			local c = tonumber(detail)
+			return ok and c and math.abs(c - 0.4) < 0.05, "guest's pistol condition " .. detail .. " (host 0.40)"
+		end
+		ask("13", "cond", "wpn_pm")
+		after(2000, function() close_box() ask("13close", "close_box") end)
+	end },
+	{ 153, function() census("census2") end },
+	{ 154, function()
 		announce("ШАГ 8. Оба переходят на ферму к механику.\\nЗеркало должно расставить у гостя тех же людей и монстров, что у хоста; через 18 с — перепись.", 12)
 		local center, lv, gv = village(FARM)
 		local dir, side = open_direction(center)
@@ -605,9 +754,9 @@ local STEPS = {
 		ask("8go", "goto", gx, gy, gz, sx, sy, sz)
 		record("8", true, string.format("at the farm %.0f m from the village", center:distance_to(village())))
 	end },
-	{ 122, function() census("census3") end },
-	{ 123, function() ask("jumps", "jumps") end },
-	{ 124, function()
+	{ 172, function() census("census3") end },
+	{ 173, function() ask("jumps", "jumps") end },
+	{ 174, function()
 		-- the same clock (the guest's runs at real speed while it is ahead)
 		local hm = level.get_time_hours() * 60 + level.get_time_minutes()
 		ctx.expect["clock"] = function(ok, detail)
@@ -617,7 +766,7 @@ local STEPS = {
 		end
 		ask("clock", "weather")
 	end },
-	{ 126, function()
+	{ 176, function()
 		announce("ТЕСТ ЗАКОНЧЕН. Итоги — в coop_qa.txt обеих игр.", 15)
 		record("end", true, "done")
 	end },
