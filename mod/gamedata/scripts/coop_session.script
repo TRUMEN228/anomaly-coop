@@ -541,6 +541,7 @@ local function reload_both(guest_only)
 	-- the guest loads what comes next only because it is asked to (a world sent on a reconnect is not loaded)
 	coop_main.send("reload_req")
 	send_session()
+	coop_main.log("reload both (guest only " .. tostring(guest_only == true) .. ")")
 	if guest_only == true then
 		guest_only_until = time_global() + 120000
 		coop_main.msg("Напарник загружает мир в том виде, как у вас")
@@ -559,6 +560,7 @@ coop_main.on_event("reloading", function()
 		return
 	end
 	coop_main.msg("Напарник загружается, загружаем тот же сейв")
+	coop_main.log("load: the guest reloads, this game loads the same save")
 	-- the world this load brings is the shared one already: no sync after it
 	runtime_set("after_reload", 1)
 	exec_console_cmd("load " .. session_save())
@@ -625,6 +627,7 @@ local function send_to_waiting_guest(now)
 	end
 	if pl.ready and not world_sent and not save_pending and level_up_at and now > level_up_at then
 		world_sent = true
+		coop_main.log("world sent to the guest waiting in its menu")
 		-- the guest gets the world as it is now: a sync wanted before is done by this
 		auto_sync_at = nil
 		send_session()
@@ -643,6 +646,7 @@ coop_main.on_event("session_ready", function()
 	if not (reload_expected and time_global() < reload_expected) then return end
 	reload_expected = nil
 	coop_main.msg("Хост перезагружает мир у обоих")
+	coop_main.log("load: the host's reload")
 	export_character()
 	coop_main.send("reloading")
 	-- a moment for the word to leave this game before loading stops it
@@ -667,6 +671,7 @@ coop_main.on_event("_cmd_load", function()
 		return
 	end
 	export_character()
+	coop_main.log("load: the last save (guest)")
 	exec_console_cmd("load " .. session_save())
 end)
 

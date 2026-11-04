@@ -53,6 +53,7 @@ local function in_game() return level.present() and db.actor ~= nil end
 
 -- "load" works only inside a running game; from the main menu a save starts as the load page starts it
 local function load_world(name)
+	coop_main.log(string.format("load %s (%s)", name, alife() == nil and "from the menu" or "in a game"))
 	if alife() == nil then
 		exec_console_cmd("disconnect")
 		exec_console_cmd("start server(" .. name .. "/single/alife/load) client(localhost)")
