@@ -683,7 +683,7 @@ local STEPS = {
 		ctx.expect["9"] = function(ok, detail) return ok and detail == "shown", "guest's talk window copy: " .. detail end
 		local function try(i)
 			local npc = list[i]
-			if not npc or i > 3 then
+			if not npc or i > 2 then
 				record("9host", false, "no one would talk: " .. table.concat(tried, ", "))
 				return
 			end
@@ -697,6 +697,9 @@ local STEPS = {
 			look_at(np)
 			-- (a raised gun makes them raise theirs)
 			db.actor:activate_slot(0)
+			-- the meet decides on its own update whether the player is close enough to talk to: a talk started
+			-- before it has seen the jump is ended by it at once (xr_meet's process_npc_usability)
+			after(1500, function()
 			npc:enable_talk()
 			db.actor:run_talk_dialog(npc, false)
 			for _, ms in ipairs({ 0, 100, 300, 600 }) do
@@ -722,9 +725,10 @@ local STEPS = {
 					try(i + 1)
 				end
 			end)
+			end)
 		end
 		focus("A")
-		after(3000, function() try(1) end)
+		after(1500, function() try(1) end)
 	end },
 	{ 112, function()
 		announce("ШАГ 10. Подарок в разговоре: хост получает пиво, пока говорит.\\nГостю тоже должно прийти пиво («Вы тоже получили»).", 8)
@@ -907,26 +911,11 @@ local function actor_on_net_destroy()
 	PANEL = nil
 end
 
--- who ends a talk: every stop_talk from a script is logged with its caller
-local function trace_stop_talk()
-	local ok, err = pcall(function()
-		local orig = game_object.stop_talk
-		if not orig or rawget(_G, "coop_qa_stop_traced") then return end
-		coop_qa_stop_traced = true
-		game_object.stop_talk = function(self, ...)
-			coop_main.log("QA trace: stop_talk on " .. tostring(self:section()) .. " | " .. debug.traceback("", 2))
-			return orig(self, ...)
-		end
-	end)
-	coop_main.log("QA trace: stop_talk " .. (ok and "wrapped" or ("not wrapped: " .. tostring(err))))
-end
-
 function on_game_start()
 	local f = io.open(app("coop_scenario.txt"), "r")
 	active = f ~= nil
 	if f then f:close() end
 	if not active then return end
-	trace_stop_talk()
 	RegisterScriptCallback("actor_on_first_update", actor_on_first_update)
 	RegisterScriptCallback("actor_on_update", actor_on_update)
 	RegisterScriptCallback("actor_on_net_destroy", actor_on_net_destroy)
