@@ -139,8 +139,8 @@ if ($Mode -eq 'travel') {
         $res += "QA menu_kick PASS " + ($gl[$k] -replace '^\[\d+\]\s*', '')
         $loadsAfter = @($gl[($k + 1)..($gl.Count - 1)] | ? { $_ -match '\] load|loading the host|=== Anomaly' })
         $res += if ($loadsAfter.Count -eq 0) { "QA menu_noload PASS the guest loaded nothing after" } else { "QA menu_noload FAIL " + ($loadsAfter -join ' / ') }
-        $note = Get-Content "$r\local\testB\appdata\coop_kicked.txt" -Raw -ErrorAction SilentlyContinue
-        $res += if (-not $note) { "QA menu_window PASS the main menu showed why (the note was read)" } else { "QA menu_window FAIL the note is still unread: $note" }
+        $shown = @($gl[($k + 1)..($gl.Count - 1)] | ? { $_ -match 'kick window shown' })
+        $res += if ($shown.Count -gt 0) { "QA menu_window PASS the main menu showed why" } else { "QA menu_window FAIL the main menu showed no window" }
     }
     $res | % { "  $_" }
     $res | Add-Content "$r\local\testA\appdata\coop_qa.txt"

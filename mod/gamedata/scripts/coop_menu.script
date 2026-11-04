@@ -831,8 +831,10 @@ local function extract_files()
 	f:close()
 end
 
--- the guest's game was ended by the host's (coop_session.kick): the main menu says so once
-local function show_kicked(owner)
+-- the guest's game was ended by the host's (coop_session.kick): the main menu says so once. The note is read as
+-- the menu is built, the window shown a moment later from its update (one shown while it is built stays under it)
+local kicked_why, kicked_at = nil, nil
+local function read_kicked(owner)
 	local path = getFS():update_path("$app_data_root$", "coop_kicked.txt")
 	local f = io.open(path, "r")
 	if not f then return end
@@ -842,11 +844,18 @@ local function show_kicked(owner)
 	if why == "" then return end
 	f = io.open(path, "w")
 	if f then f:close() end
+	kicked_why, kicked_at = why, time_global() + 500
+end
+
+local function show_kicked()
+	if not (kicked_why and time_global() > kicked_at) then return end
 	local box = CUIMessageBoxEx()
 	box:InitMessageBox("message_box_ok")
-	box:SetText(why)
+	box:SetText(kicked_why)
 	box:ShowDialog(true)
 	kicked_box = box
+	coop_main.log("kick window shown: " .. kicked_why)
+	kicked_why = nil
 end
 
 function before_main_menu()
@@ -858,12 +867,13 @@ function before_main_menu()
 		init(self, ...)
 		local ok, err = pcall(add_entry, self)
 		if not ok then printf("! coop menu: %s", tostring(err)) end
-		ok, err = pcall(show_kicked, self)
+		ok, err = pcall(read_kicked, self)
 		if not ok then printf("! coop menu: %s", tostring(err)) end
 	end
 	local update = ui_main_menu.main_menu.Update
 	ui_main_menu.main_menu.Update = function(self, ...)
 		update(self, ...)
+		pcall(show_kicked)
 		local ok, err = pcall(poll_link, self)
 		if not ok then
 			printf("! coop menu: %s", tostring(err))
