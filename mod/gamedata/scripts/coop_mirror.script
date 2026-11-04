@@ -5,9 +5,10 @@
 	creature near either player (state "wm"); the guest makes its world the same:
 	  - one the host has and the guest has not: made (in its squad, as a new spawn from the host is), or brought
 	    back from wherever the guest's simulation took it;
-	  - one the host has dead and the guest alive: killed;
-	  - one of the guest's own the host has not: gone (only where the host surely has its world online - near
-	    both players - and never a story character).
+	  - one the host has dead and the guest alive: killed; a body the host has and the guest has not: made and
+	    killed at once (the body's loot is the host's: what the guest takes the host confirms or takes back);
+	  - one of the guest's own the host has not, alive or a body: gone (only where the host surely has its world
+	    online - near both players - and never a story character).
 	Positions, poses and health of those it has are set by coop_world ("n") as before. Away from the players the
 	guest's squads stop choosing new targets (they would choose differently from the host's).
 	  host -> guest:  "wm"  stamp, level, host position, then id:section:x:y:z:lvid:gvid:alive:squad:squad section:smart
@@ -20,12 +21,14 @@ local NEAR_HOST = 110        -- guest: removed only this near the host too (its 
 local MAKE_PER_TICK = 3      -- a few at a time: making creatures costs a frame
 local RELEASE_PER_TICK = 5
 local MISSES = 2             -- removed after this many lists in a row without it (a spawn may be on its way)
+local MISSES_DEAD = 3        -- a body: one more (a death on its way to the host)
 
 local ready_at = nil
 local next_send = 0
 local last_stamp = nil
 local missing = {}           -- guest: local id -> lists in a row that did not have it
 local made_at = {}           -- guest: local id -> when the mirror made or moved it (left alone for a while)
+local to_kill = {}           -- guest: local id -> until when: a body made here dies as soon as it is online
 local stats = { made = 0, moved = 0, killed = 0, removed = 0 }
 
 local function dbg(s) if coop_main.debug then coop_main.log("mirror: " .. s) end end
@@ -91,8 +94,9 @@ local function apply(t)
 					obj:kill(obj)
 					killed = killed + 1
 				end
-			elseif alive == "1" and pos:distance_to(here) < NEAR_GUEST then
+			elseif pos:distance_to(here) < NEAR_GUEST then
 				local se = id and alife_object(id)
+				local body = alive == "0"
 				if se and se:section_name() == sec then
 					-- the guest's simulation has it elsewhere (offline): back to where the host has it, with its squad
 					-- (a squad comes online by where the squad is)
@@ -105,13 +109,16 @@ local function apply(t)
 						end
 						made_at[id] = now
 						moved = moved + 1
+						if body then to_kill[id] = now + 10000 end
 					end
 				elseif made < MAKE_PER_TICK then
-					local gid = coop_spawn.make_creature(tonumber(sq), sq_sec ~= "" and sq_sec or nil, hid, sec, pos,
-						tonumber(lvid), tonumber(gvid), tonumber(smart))
+					-- (a body has no squad any more: it is made alone)
+					local gid = coop_spawn.make_creature(not body and tonumber(sq) or nil, not body and sq_sec ~= "" and sq_sec or nil,
+						hid, sec, pos, tonumber(lvid), tonumber(gvid), tonumber(smart))
 					if gid then
 						made_at[gid] = now
 						made = made + 1
+						if body then to_kill[gid] = now + 10000 end
 					end
 				end
 			end
@@ -122,14 +129,14 @@ local function apply(t)
 	local seen, gone = {}, {}
 	for id, st in pairs(db.storage) do
 		local obj = st.object
-		if obj and id ~= AC_ID and is_creature(obj) and obj:alive() and not coop_player.is_puppet(id) then
+		if obj and id ~= AC_ID and is_creature(obj) and not coop_player.is_puppet(id) and not to_kill[id] then
 			local p = obj:position()
 			if p:distance_to(here) < NEAR_GUEST and p:distance_to(host_pos) < NEAR_HOST
 				and not listed[coop_spawn.R(id)] and not story(obj)
 				and not (made_at[id] and now - made_at[id] < 10000) then
 				seen[id] = true
 				missing[id] = (missing[id] or 0) + 1
-				if missing[id] >= MISSES and #gone < RELEASE_PER_TICK then
+				if missing[id] >= (obj:alive() and MISSES or MISSES_DEAD) and #gone < RELEASE_PER_TICK then
 					dbg(string.format("not at the host: %s %d", obj:section(), id))
 					gone[#gone + 1] = id
 				end
@@ -192,9 +199,25 @@ local function actor_on_first_update()
 	ready_at = time_global() + 10000
 end
 
+-- a body made here dies the moment it is online (it must not stand up and look around first)
+local function actor_on_update()
+	if not next(to_kill) then return end
+	local now = time_global()
+	for id, until_t in pairs(to_kill) do
+		local obj = level.object_by_id(id)
+		if obj and obj:alive() then
+			obj:kill(obj)
+			to_kill[id] = nil
+		elseif (obj and not obj:alive()) or now > until_t then
+			to_kill[id] = nil
+		end
+	end
+end
+
 function on_game_start()
-	ready_at, last_stamp, missing, made_at = nil, nil, {}, {}
+	ready_at, last_stamp, missing, made_at, to_kill = nil, nil, {}, {}, {}
 	local ok, err = pcall(hook_squads)
 	if not ok then coop_main.log("mirror: squads not hooked: " .. tostring(err)) end
 	RegisterScriptCallback("actor_on_first_update", actor_on_first_update)
+	RegisterScriptCallback("actor_on_update", actor_on_update)
 end

@@ -21,6 +21,8 @@ local PANEL = nil
 local CREATURE = "flesh_weak"      -- big and slow: easy to see
 local PUT = "kolbasa"         -- not in the sandbox gear: counts start from what the test puts in
 local RACE = "energy_drink"
+local JUMP_SPEED = 15         -- m/s: nobody runs this fast; faster is a jump
+local JUMP_SETTLE = 15000     -- the first seconds (a move of both, everyone put in place) do not count
 
 local function app(name) return getFS():update_path("$app_data_root$", name) end
 
@@ -168,8 +170,10 @@ local VILLAGE = "esc_smart_terrain_2_12"
 local BOX = "inv_backpack"
 
 -- a spot of open ground: the village's middle, or where the player stands on another level
-local function village()
-	local smart = SIMBOARD and SIMBOARD.smarts_by_names and SIMBOARD.smarts_by_names[VILLAGE]
+local FARM = "esc_smart_terrain_5_7"  -- the farm with the mechanic: loners, no one hostile
+
+local function village(name)
+	local smart = SIMBOARD and SIMBOARD.smarts_by_names and SIMBOARD.smarts_by_names[name or VILLAGE]
 	if smart and level.name() == "l01_escape" then
 		return vector():set(smart.position), smart.m_level_vertex_id, smart.m_game_vertex_id
 	end
@@ -318,6 +322,15 @@ end
 cmd.weather = function() return true, string.format("%s at %02d:%02d", tostring(level.get_weather()),
 	level.get_time_hours(), level.get_time_minutes()) end
 
+-- to another place next to the host, looking where the host looks
+cmd.goto = function(a)
+	local v = function(i) return vector():set(tonumber(a[i]) or 0, tonumber(a[i + 1]) or 0, tonumber(a[i + 2]) or 0) end
+	jump(v(3))
+	ctx.settle_until = time_global() + JUMP_SETTLE
+	after(1500, function() look_at(v(6)) end)
+	return true, "moved"
+end
+
 cmd.look = function(a)
 	look_at(vector():set(tonumber(a[3]) or 0, tonumber(a[4]) or 0, tonumber(a[5]) or 0))
 	return true, "looking"
@@ -369,12 +382,15 @@ coop_main.on_event("qa_go", function()
 	end
 end)
 
-local JUMP_SPEED = 15         -- m/s: nobody runs this fast; faster is a jump
-local JUMP_SETTLE = 15000     -- the first seconds (the move to the village, everyone put in place) do not count
 local jumps, last_seen, next_look = {}, {}, 0
 
 local function watch_jumps(now)
 	if now < next_look then return end
+	-- a move of both players puts everyone in place again: not counted for a while
+	if ctx.settle_until and now < ctx.settle_until then
+		next_look, last_seen, ctx.last_look = now + 200, {}, nil
+		return
+	end
 	local dt = (now - (ctx.last_look or now)) / 1000
 	ctx.last_look, next_look = now, now + 200
 	local here = db.actor:position()
@@ -443,7 +459,7 @@ end)
 
 local STEPS = {
 	{ 0, function()
-		announce("ТЕСТ КООПЕРАТИВА: 7 шагов, около двух минут.\\nОба игрока переносятся на улицу в деревню новичков, рядом ставится тестовый тайник.", 8)
+		announce("ТЕСТ КООПЕРАТИВА: 8 шагов, около двух с половиной минут.\\nОба игрока переносятся на улицу в деревню новичков, рядом ставится тестовый тайник.", 8)
 		local center, lv, gv = village()
 		local dir, side = open_direction(center)
 		local me = aside(center, 0, 0)
@@ -574,8 +590,24 @@ local STEPS = {
 		record("7", got == 500, string.format("host money +%d", got))
 	end },
 	{ 103, function() census("census2") end },
-	{ 103.5, function() ask("jumps", "jumps") end },
 	{ 104, function()
+		announce("ШАГ 8. Оба переходят на ферму к механику.\\nЗеркало должно расставить у гостя тех же людей и монстров, что у хоста; через 18 с — перепись.", 12)
+		local center, lv, gv = village(FARM)
+		local dir, side = open_direction(center)
+		local me = aside(center, 0, 0)
+		local guest_pos = aside(center, side.x * 2.5, side.z * 2.5)
+		local spot = vector():set(center.x + dir.x * 8, center.y, center.z + dir.z * 8)
+		jump(me)
+		after(1500, function() look_at(spot) end)
+		local f = function(p) return string.format("%.2f", p.x), string.format("%.2f", p.y), string.format("%.2f", p.z) end
+		local gx, gy, gz = f(guest_pos)
+		local sx, sy, sz = f(spot)
+		ask("8go", "goto", gx, gy, gz, sx, sy, sz)
+		record("8", true, string.format("at the farm %.0f m from the village", center:distance_to(village())))
+	end },
+	{ 122, function() census("census3") end },
+	{ 123, function() ask("jumps", "jumps") end },
+	{ 125, function()
 		announce("ТЕСТ ЗАКОНЧЕН. Итоги — в coop_qa.txt обеих игр.", 15)
 		record("end", true, "done")
 	end },
