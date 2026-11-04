@@ -40,6 +40,9 @@ end
 ------------------------------------------------------------------ hits
 -- the host: the engine hands a hit on the guest's puppet here (r12)
 function partner_hit(power, htype, bone, who_id, dx, dy, dz, impulse)
+	local w = who_id and who_id >= 0 and level.object_by_id(who_id)
+	coop_main.log(string.format("combat: the guest's puppet hit by %s (%s), power %.2f, type %s", tostring(who_id),
+		w and w:section() or "?", power or 0, tostring(htype)))
 	if not (coop_main.is_host() and coop_main.connected) or (power or 0) <= 0 then return end
 	-- (the host's own shots are friendly fire: coop_team; an anomaly or a fall hurts the guest in its own game)
 	if who_id == AC_ID then return end
