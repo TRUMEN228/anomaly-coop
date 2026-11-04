@@ -662,6 +662,8 @@ local STEPS = {
 			local o = st.object
 			if o and IsStalker(o) and o:alive() and id ~= AC_ID and not coop_player.is_puppet(id) and not get_object_story_id(id)
 				and o:relation(db.actor) ~= game_object.enemy and not o:best_enemy() and not o:wounded()
+				-- (a meet lets only a squad's leader talk: the others send the player to it)
+				and (function() local sq = get_object_squad(o) return not sq or sq:commander_id() == id end)()
 				and o:position():distance_to(db.actor:position()) < 40 then
 				list[#list + 1] = o
 			end
