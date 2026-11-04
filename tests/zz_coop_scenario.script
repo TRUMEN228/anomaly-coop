@@ -42,6 +42,12 @@ end
 local function announce(text, secs)
 	show(text, secs)
 	coop_main.send("qa_show", text, secs or 12)
+	local f = io.open(app("coop_qa_steps.txt"), "a")
+	if f then
+		local first = text:gsub("\\n.*$", "")
+		f:write(os.time() .. "|" .. first .. "\n")
+		f:close()
+	end
 end
 
 class "UICoopQa" (CUIScriptWnd)
@@ -357,8 +363,51 @@ coop_main.on_event("qa_show", function(a)
 end)
 
 coop_main.on_event("qa_go", function()
-	if active and not is_host then ctx.go = true end
+	if active and not is_host then
+		ctx.go = true
+		ctx.go_at = time_global()
+	end
 end)
+
+local JUMP_SPEED = 15         -- m/s: nobody runs this fast; faster is a jump
+local JUMP_SETTLE = 15000     -- the first seconds (the move to the village, everyone put in place) do not count
+local jumps, last_seen, next_look = {}, {}, 0
+
+local function watch_jumps(now)
+	if now < next_look then return end
+	local dt = (now - (ctx.last_look or now)) / 1000
+	ctx.last_look, next_look = now, now + 200
+	local here = db.actor:position()
+	local seen = {}
+	for id, st in pairs(db.storage) do
+		local o = st.object
+		if o and id ~= AC_ID and (IsStalker(o) or IsMonster(o)) and o:alive() and not coop_player.is_puppet(id)
+			and o:position():distance_to(here) < 60 then
+			local p = vector():set(o:position())
+			seen[id] = p
+			local last = last_seen[id]
+			if last and dt > 0.05 and dt < 1 then
+				local d = last:distance_to(p)
+				if d / dt > JUMP_SPEED then
+					jumps[#jumps + 1] = { t = (now - ctx.go_at) / 1000, sec = o:section(), id = id, d = d }
+				end
+			end
+		end
+	end
+	last_seen = seen
+end
+
+cmd.jumps = function()
+	local counted, list = 0, {}
+	for _, j in ipairs(jumps) do
+		if j.t * 1000 > JUMP_SETTLE then
+			counted = counted + 1
+			if #list < 8 then list[#list + 1] = string.format("%s#%d %.1fm at %.0fs", j.sec, j.id, j.d, j.t) end
+		end
+	end
+	return counted == 0, string.format("%d jumps after the first %d s (%d in all) [%s]", counted, JUMP_SETTLE / 1000,
+		#jumps, table.concat(list, "; "))
+end
 
 ------------------------------------------------------------------ the host's part
 local function ask(step, name, ...) coop_main.send("qa", step, name, ...) end
@@ -525,6 +574,7 @@ local STEPS = {
 		record("7", got == 500, string.format("host money +%d", got))
 	end },
 	{ 103, function() census("census2") end },
+	{ 103.5, function() ask("jumps", "jumps") end },
 	{ 104, function()
 		announce("ТЕСТ ЗАКОНЧЕН. Итоги — в coop_qa.txt обеих игр.", 15)
 		record("end", true, "done")
@@ -556,6 +606,7 @@ local function actor_on_update()
 	if not (ready_at and now > ready_at and coop_main.connected) then return end
 	is_host = coop_main.role == "host"
 	if not is_host then
+		if ctx.go then watch_jumps(now) end
 		-- the guest says it is up until the host starts
 		if not ctx.go and (not ctx.ready_sent or now > ctx.ready_sent + 3000) then
 			ctx.ready_sent = now

@@ -22,7 +22,7 @@ for n in 'AB':
 "@
 foreach ($n in 'A', 'B') {
     "1" | Set-Content "$r\local\test$n\appdata\coop_scenario.txt"
-    Remove-Item "$r\local\test$n\appdata\coop_qa.txt" -ErrorAction SilentlyContinue
+    Remove-Item "$r\local\test$n\appdata\coop_qa.txt", "$r\local\test$n\appdata\coop_qa_steps.txt" -ErrorAction SilentlyContinue
 }
 
 & "$r\tests\duo_link.ps1" -NoLauncher -Save coop_sandbox
@@ -75,6 +75,7 @@ if ((Test-Path $ffmpeg) -and $win['A'] -and $win['B']) {
     $psi = New-Object System.Diagnostics.ProcessStartInfo $ffmpeg, $ffargs
     $psi.UseShellExecute = $false; $psi.RedirectStandardInput = $true; $psi.CreateNoWindow = $true
     $recorder = [System.Diagnostics.Process]::Start($psi)
+    $recStart = [DateTimeOffset]::Now.ToUnixTimeSeconds()
     "recording both windows: $rec\run.mp4"
 }
 
@@ -124,4 +125,28 @@ if ($recorder) {
 }
 & "$r\tests\duo.ps1" -Stop | Out-Null
 "games closed"
+
+# frames of the recording 1, 3 and 6 s after each step's banner went up (the host wrote when): local\qa_rec\frames,
+# both games side by side; frames.txt says which step each is
+$steps = "$r\local\testA\appdata\coop_qa_steps.txt"
+$fr = "$rec\frames"
+if ($recorder -and (Test-Path "$rec\run.mp4") -and (Test-Path $steps)) {
+    Remove-Item $fr -Recurse -Force -ErrorAction SilentlyContinue
+    New-Item -ItemType Directory -Force $fr | Out-Null
+    $index = @()
+    $i = 0
+    foreach ($line in Get-Content $steps -Encoding 1251) {
+        $t, $text = $line -split '\|', 2
+        $i++
+        foreach ($d in 1, 3, 6) {
+            $at = [long]$t - $recStart + $d
+            if ($at -lt 0) { continue }
+            $name = "{0:d2}_{1}s.jpg" -f $i, $d
+            & $ffmpeg -hide_banner -loglevel error -y -ss $at -i "$rec\run.mp4" -frames:v 1 -vf scale=1600:-2 "$fr\$name"
+            if (Test-Path "$fr\$name") { $index += "$name  ($at s)  $text" }
+        }
+    }
+    $index | Set-Content "$fr\frames.txt" -Encoding utf8
+    "frames: $fr ($($index.Count))"
+}
 python -I "$r\tests\shots_video.py" $shots "$shots\run.webp" 500
