@@ -120,6 +120,7 @@ while (((Get-Date) - $t0).TotalMinutes -lt $Minutes) {
 foreach ($n in 'A', 'B') {
     Remove-Item "$r\local\test$n\appdata\coop_scenario.txt" -ErrorAction SilentlyContinue
     "--- game $n (" + $(if ($n -eq 'A') { 'host' } else { 'guest' }) + ")"
+    Get-Content "$r\local\test$n\appdata\coop_syntax.txt" -ErrorAction SilentlyContinue | ? { $_ -notmatch ': ok$' } | % { "SYNTAX $_" }
     Get-Content "$r\local\test$n\appdata\coop_qa.txt" -ErrorAction SilentlyContinue
     Get-Content "$r\local\test$n\appdata\coop_log.txt" -ErrorAction SilentlyContinue | Select-String "failed|mirror:|not at the host" | Select -Last 12 | % Line
 }
