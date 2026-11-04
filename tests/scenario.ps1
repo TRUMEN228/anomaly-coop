@@ -18,7 +18,7 @@ s = open(p, 'rb').read().decode('cp1251')
 for k, v in (('world', 'sandbox'), ('money', '0')):
     s = re.sub(r'(?m)^' + k + r'=.*$', k + '=' + v, s) if re.search(r'(?m)^' + k + '=', s) else s.rstrip('\n') + '\n' + k + '=' + v + '\n'
 open(p, 'wb').write(s.encode('cp1251'))
-for name in ('zz_coop_scenario', 'zz_coop_travel'):
+for name in ('zz_coop_scenario', 'zz_coop_travel', 'zz_coop_syntax'):
     src = open(r'$r\tests\\' + name + '.script', encoding='utf-8').read()
     for n in 'AB':
         open(r'$r\local\test' + n + r'\gamedata\scripts\\' + name + '.script', 'wb').write(src.encode('cp1251'))
