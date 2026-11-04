@@ -666,7 +666,14 @@ local STEPS = {
 		npc = npc or get_story_object("esc_2_12_stalker_wolf")
 		ctx.talk_npc = npc
 		if not npc then record("9host", false, "no one to talk to") return end
-		look_at(npc:position())
+		-- as a player does: right next to them (a meet lets one talk only close by)
+		local np = npc:position()
+		local d = vector():set(db.actor:position()):sub(np)
+		d.y = 0
+		if d:magnitude() > 0.1 then d:normalize() else d = vector():set(1, 0, 0) end
+		local close = aside(np, d.x * 1.5, d.z * 1.5)
+		jump(close)
+		look_at(np)
 		npc:enable_talk()
 		db.actor:run_talk_dialog(npc, false)
 		record("9host", db.actor:is_talking(), string.format("%s with %s (talk enabled %s)",

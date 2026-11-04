@@ -565,7 +565,7 @@ coop_main.on_event("bcond", function(a)
 	if not (same(item, a[2]) and cond and item:parent() and item:parent():id() == AC_ID and item.set_condition) then return end
 	if math.abs((item:condition() or 1) - cond) > 0.001 then
 		pcall(item.set_condition, item, cond)
-		dbg(string.format("took %s: condition %.2f as the host's", a[2], cond))
+		dbg(string.format("took %s: condition %.2f as the host's (now %.2f)", a[2], cond, item:condition()))
 	end
 end)
 
