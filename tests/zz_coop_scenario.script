@@ -879,6 +879,28 @@ local STEPS = {
 			ctx.bandits = sq.id
 		end
 		record("14spawn", sq ~= nil, sq and ("bandits " .. sq.id) or "no squad")
+		-- how the bandits are doing: alive, how far from the host and the guest's puppet, whom they fight
+		for _, ms in ipairs({ 8000, 15000, 22000 }) do
+			after(ms, function()
+				local squad = ctx.bandits and alife_object(ctx.bandits)
+				local pid = coop_player.get_puppet_id()
+				local puppet = pid and level.object_by_id(pid)
+				local out = {}
+				if squad then
+					for m in squad:squad_members() do
+						local o = level.object_by_id(m.id)
+						if o then
+							local e = o:best_enemy()
+							out[#out + 1] = string.format("%d %s host %.0f m guest %.0f m enemy %s", m.id,
+								o:alive() and "alive" or "dead", o:position():distance_to(db.actor:position()),
+								puppet and o:position():distance_to(puppet:position()) or -1,
+								e and (e:id() == AC_ID and "host" or (e:id() == pid and "guest" or e:section())) or "-")
+						end
+					end
+				end
+				coop_main.log(string.format("QA bandits at %d s: %s", ms / 1000, table.concat(out, "; ")))
+			end)
+		end
 	end },
 	{ 204, function()
 		-- the host: someone fights the guest's puppet, and its hits went to the guest
