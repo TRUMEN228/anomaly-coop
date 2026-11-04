@@ -280,8 +280,16 @@ coop_main.on_event("_connection", function(a)
 end)
 
 ------------------------------------------------------------------ damage
-local function on_before_hit(obj, shit)
+local function on_before_hit(obj, shit, flags)
 	if applying or coop_player.is_puppet(obj) then return end
+	-- The guest's creatures live and die by the host: their health comes from it ("n"), their deaths too ("die").
+	-- Whatever else hurts them here (the guest's own fights, a campfire) would kill one the host has alive; only
+	-- this player's own hits count (they go to the host)
+	local by_me = shit.draftsman and shit.draftsman:id() == AC_ID
+	if coop_main.is_client() and coop_session.is_guest_session() and not by_me then
+		if flags then flags.ret_value = false end
+		return
+	end
 	if shit.draftsman and shit.draftsman:id() == AC_ID and obj:alive() then
 		if not pending_hits[obj:id()] then pending_hits[obj:id()] = obj.health end
 	end
@@ -772,8 +780,8 @@ local function actor_on_update()
 	if not ok then coop_main.log("world flush failed: " .. tostring(err)) end
 end
 
-local function npc_on_before_hit(npc, shit, bone_id, flags) on_before_hit(npc, shit) end
-local function monster_on_before_hit(m, shit, bone_id, flags) on_before_hit(m, shit) end
+local function npc_on_before_hit(npc, shit, bone_id, flags) on_before_hit(npc, shit, flags) end
+local function monster_on_before_hit(m, shit, bone_id, flags) on_before_hit(m, shit, flags) end
 
 function on_game_start()
 	host_weather = nil

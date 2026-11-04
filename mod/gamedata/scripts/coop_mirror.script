@@ -5,7 +5,8 @@
 	creature near either player (state "wm"); the guest makes its world the same:
 	  - one the host has and the guest has not: made (in its squad, as a new spawn from the host is), or brought
 	    back from wherever the guest's simulation took it;
-	  - one the host has dead and the guest alive: killed; a body the host has and the guest has not: made and
+	  - one the host has dead and the guest alive: killed; one alive at the host and dead here: the body goes and
+	    the creature is made anew; a body the host has and the guest has not: made and
 	    killed at once (the body's loot is the host's: what the guest takes the host confirms or takes back);
 	  - one of the guest's own the host has not, alive or a body: gone (only where the host surely has its world
 	    online - near both players - and never a story character).
@@ -79,7 +80,7 @@ local function apply(t)
 	local here = db.actor:position()
 	local host_pos = vec(t[3], t[4], t[5])
 	local now = time_global()
-	local listed, made, moved, killed = {}, 0, 0, 0
+	local listed, made, moved, killed, revive = {}, 0, 0, 0, {}
 	for i = 6, #t do
 		local hid, sec, x, y, z, lvid, gvid, alive, sq, sq_sec, smart =
 			t[i]:match("^(%d+):([^:]+):([^:]+):([^:]+):([^:]+):(%d+):(%d+):(%d):(%d*):([^:]*):(%d*)$")
@@ -93,6 +94,10 @@ local function apply(t)
 				if alive == "0" and obj:alive() then
 					obj:kill(obj)
 					killed = killed + 1
+				elseif alive == "1" and not obj:alive() and not story(obj) and #revive < RELEASE_PER_TICK
+					and not (made_at[id] and now - made_at[id] < 10000) then
+					-- died here only (nothing turns a body back): it goes, and the next list makes it anew
+					revive[#revive + 1] = id
 				end
 			elseif pos:distance_to(here) < NEAR_GUEST then
 				local se = id and alife_object(id)
@@ -126,6 +131,11 @@ local function apply(t)
 	end
 
 	-- the guest's own: what the host does not have, near both players
+	for _, id in ipairs(revive) do
+		dbg(string.format("alive at the host, a body here: %d made anew", id))
+		coop_spawn.release_creature(id)
+		made_at[id] = now
+	end
 	local seen, gone = {}, {}
 	for id, st in pairs(db.storage) do
 		local obj = st.object

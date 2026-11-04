@@ -212,7 +212,10 @@ local incoming = {}           -- section -> count of the partner's gifts still t
 local traded = {}             -- item id -> true: bought or sold in a trade window (never a gift)
 local outgoing = {}           -- { id, sec, reward, at }: decided a moment later, once a trade had its say
 
+-- an inventory, loot or trade window: Anomaly's own (ui_inventory), or the engine's where a mod uses it
 local function menu_shown()
+	local gui = ui_inventory and ui_inventory.GUI
+	if gui and gui:IsShown() then return true end
 	local m = ActorMenu and ActorMenu.get_actor_menu and ActorMenu.get_actor_menu()
 	return m and m:IsShown()
 end
