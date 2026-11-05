@@ -17,7 +17,7 @@ local FOLLOW_DIST = 30
 local downed_until = nil     -- time_global when the knocked-down actor dies
 local down_pos = nil
 local partner_down = false
-local host_opt = { ff = false, money = false, revive = true }
+local host_opt = { ff = false, money = false, revive = true, loot = true }
 local money_last = nil
 local applying_money = false
 local near_at = 0            -- last time the partner was near on this level
@@ -47,13 +47,27 @@ end
 
 coop_main.add_state_provider("o", function()
 	if not host() then return end
-	return { opt("ff", false) and 1 or 0, opt("money", false) and 1 or 0, opt("revive", true) and 1 or 0 }
+	return { opt("ff", false) and 1 or 0, opt("money", false) and 1 or 0, opt("revive", true) and 1 or 0,
+		opt("loot", true) and 1 or 0 }
 end)
 
 coop_main.on_state("o", function(t)
 	if host() then return end
 	host_opt.ff, host_opt.money, host_opt.revive = t[1] == "1", t[2] == "1", t[3] ~= "0"
+	host_opt.loot = t[4] ~= "0"
 end)
+
+-- shared loot (the host's option, on unless it says off): a take from a box or a body is gone for the partner too;
+-- off, each player has the same loot as its own copy. The engine does the boxes (r13)
+local told_loot = nil
+local function tell_loot()
+	local on = opt("loot", true) ~= false
+	if on ~= told_loot and rawget(_G, "coop_items_shared") then
+		coop_items_shared(on)
+		told_loot = on
+	end
+end
+function shared_loot() return opt("loot", true) ~= false end
 
 ------------------------------------------------------------------ knockdown
 coop_main.add_state_provider("dn", function()
@@ -250,6 +264,7 @@ end
 ------------------------------------------------------------------ update
 local next_tick = 0
 local function actor_on_update()
+	pcall(tell_loot)
 	local now = time_global()
 	if downed_until then
 		local ok, err = pcall(update_downed, now)

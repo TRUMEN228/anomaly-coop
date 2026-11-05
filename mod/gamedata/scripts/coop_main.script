@@ -14,7 +14,7 @@
 	Event types starting with "@" are handled by the bridge itself.
 --]]
 
-VERSION = "2.15"
+VERSION = "2.16"
 debug = false
 local TICK_MS = 100
 local FAST_MS = 50       -- states marked fast (the partner's position) go both ways twice as often
@@ -398,6 +398,12 @@ function option(name, def)
 	local v = options[name]
 	if v == nil then return def end
 	return v
+end
+
+-- an option changed for this run only (a test's switch)
+function set_option(name, v)
+	if not options then load_keys() end
+	options[name] = v
 end
 
 -- "DIK_NUMPAD3" -> "Num3" for messages

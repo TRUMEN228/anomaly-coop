@@ -11,8 +11,8 @@
 
 local ENGINE = rawget(_G, "coop_engine_version") and coop_engine_version() or 0
 local DEFAULT_PORT = 27015
-local OPTIONS = { "ff", "money", "rewards", "revive", "follow" }
-local DEFAULTS = { ff = false, money = false, rewards = true, revive = true, follow = true }
+local OPTIONS = { "ff", "money", "rewards", "revive", "follow", "loot" }
+local DEFAULTS = { ff = false, money = false, rewards = true, revive = true, follow = true, loot = true }
 
 local function keys_path() return getFS():update_path("$app_data_root$", "coop_keys.txt") end
 

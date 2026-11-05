@@ -114,6 +114,10 @@
 			<texture>ui_inGame2_checkbox</texture>
 			<text x="-8" font="letterica16" r="170" g="170" b="170">Переход на локацию за напарником</text>
 		</check_follow>
+		<check_loot x="330" y="448" width="32" height="21" vert_align="c">
+			<texture>ui_inGame2_checkbox</texture>
+			<text x="-8" font="letterica16" r="170" g="170" b="170">Общий лут</text>
+		</check_loot>
 
 		<status x="32" y="480" width="576" height="26">
 			<text font="letterica16" r="230" g="200" b="120" align="l" vert_align="c" complex_mode="1"/>
