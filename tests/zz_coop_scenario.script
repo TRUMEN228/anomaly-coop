@@ -412,6 +412,51 @@ cmd.combat = function()
 		fought, on_me, got, blocked)
 end
 
+-- items on the ground of this section within r of a point
+local function ground_items(sec, pos, r)
+	local list = {}
+	level.iterate_nearest(pos, r, function(o)
+		if o and o:section() == sec and not o:parent() then list[#list + 1] = o end
+	end)
+	return list
+end
+
+local function vpos(a, i) return vector():set(tonumber(a[i]) or 0, tonumber(a[i + 1]) or 0, tonumber(a[i + 2]) or 0) end
+
+cmd.ground = function(a)
+	return true, tostring(#ground_items(a[3], vpos(a, 4), 3))
+end
+
+-- the guest picks an item up from the ground, as a player does
+cmd.pickup = function(a)
+	local item = ground_items(a[3], vpos(a, 4), 4)[1]
+	if not item then return false, "none on the ground here" end
+	db.actor:take_item(item)
+	return true, "picked up"
+end
+
+-- the guest drops an item of its own (made first: one just made goes to no one)
+cmd.drop_new = function(a)
+	alife_create_item(a[3], db.actor)
+	after(1500, function()
+		local list = on_actor(a[3])
+		local item = list[#list]
+		if item then db.actor:drop_item(item) end
+	end)
+	return true, "dropping"
+end
+
+-- what a body here holds (the host's id)
+cmd.body = function(a)
+	local obj = level.object_by_id(coop_spawn.L(tonumber(a[3])) or -1)
+	if not obj then return false, "no body here" end
+	if obj:alive() then return false, "alive here" end
+	local list = {}
+	obj:iterate_inventory(function(_, o) if o then list[#list + 1] = o:section() end end, obj)
+	table.sort(list)
+	return true, table.concat(list, ",")
+end
+
 cmd.weather = function() return true, string.format("%s at %02d:%02d", tostring(level.get_weather()),
 	level.get_time_hours(), level.get_time_minutes()) end
 
@@ -552,7 +597,7 @@ end)
 
 local STEPS = {
 	{ 0, function()
-		announce("ТЕСТ КООПЕРАТИВА: 14 шагов, около трёх с половиной минут.\\nОба игрока переносятся на улицу в деревню новичков, рядом ставится тестовый тайник.", 8)
+		announce("ТЕСТ КООПЕРАТИВА: 18 шагов, около трёх с половиной минут.\\nОба игрока переносятся на улицу в деревню новичков, рядом ставится тестовый тайник.", 8)
 		local center, lv, gv = village()
 		local dir, side = open_direction(center)
 		local me = aside(center, 0, 0)
@@ -951,7 +996,80 @@ local STEPS = {
 		local sq = ctx.bandits and alife_object(ctx.bandits)
 		if sq then pcall(sq.remove_squad, sq) end
 	end },
-	{ 211, function()
+	{ 212, function()
+		announce("ШАГ 15. Хост бросает на землю аптечку.\\nУ ГОСТЯ она должна лежать там же.", 8)
+		alife_create_item("medkit", db.actor)
+		after(1500, function()
+			local list = on_actor("medkit")
+			local item = list[#list]
+			if not item then record("15", false, "no medkit to drop") return end
+			db.actor:drop_item(item)
+			after(2500, function() ctx.drop_pos = vector():set(item:position()) end)
+		end)
+	end },
+	{ 218, function()
+		local p = ctx.drop_pos
+		if not p then record("15", false, "the medkit is not on the ground") return end
+		ctx.expect["15"] = function(ok, detail)
+			return ok and (tonumber(detail) or 0) >= 1, "guest's medkits on that spot: " .. detail
+		end
+		ask("15", "ground", "medkit", string.format("%.2f", p.x), string.format("%.2f", p.y), string.format("%.2f", p.z))
+	end },
+	{ 220, function()
+		local p = ctx.drop_pos
+		if not p then return end
+		announce("ШАГ 16. Гость поднимает аптечку с земли.\\nУ ХОСТА она должна исчезнуть.", 8)
+		ctx.ground16 = #ground_items("medkit", p, 3)
+		ask("16take", "pickup", "medkit", string.format("%.2f", p.x), string.format("%.2f", p.y), string.format("%.2f", p.z))
+	end },
+	{ 226, function()
+		local p = ctx.drop_pos
+		if not p then return end
+		local n = #ground_items("medkit", p, 3)
+		record("16", n == (ctx.ground16 or 1) - 1, string.format("host's medkits on that spot %d -> %d", ctx.ground16 or -1, n))
+	end },
+	{ 228, function()
+		announce("ШАГ 17. Гость бросает на землю бинт.\\nУ ХОСТА он должен появиться рядом с гостем.", 8)
+		local pid = coop_player.get_puppet_id()
+		local puppet = pid and level.object_by_id(pid)
+		ctx.puppet_pos = puppet and vector():set(puppet:position())
+		ctx.bandages0 = ctx.puppet_pos and #ground_items("bandage", ctx.puppet_pos, 6) or 0
+		ask("17drop", "drop_new", "bandage")
+	end },
+	{ 235, function()
+		local p = ctx.puppet_pos
+		if not p then record("17", false, "no guest's puppet here") return end
+		local n = #ground_items("bandage", p, 6)
+		record("17", n == ctx.bandages0 + 1, string.format("bandages by the guest at the host %d -> %d", ctx.bandages0, n))
+	end },
+	{ 237, function()
+		announce("ШАГ 18. Хост убивает сталкера рядом.\\nЧерез несколько секунд вещи на трупе у гостя — те же, что у хоста.", 10)
+		local me, best, npc = db.actor:position(), 60, nil
+		for id, st in pairs(db.storage) do
+			local o = st.object
+			if o and IsStalker(o) and o:alive() and id ~= AC_ID and not coop_player.is_puppet(id) and not get_object_story_id(id)
+				and o:position():distance_to(me) < best then
+				npc, best = o, o:position():distance_to(me)
+			end
+		end
+		if not npc then record("18", false, "no stalker near") return end
+		ctx.body = npc:id()
+		npc:kill(db.actor)
+		record("18kill", true, string.format("%s killed, %.0f m away", npc:section(), best))
+	end },
+	{ 247, function()
+		local body = ctx.body and level.object_by_id(ctx.body)
+		if not body then return end
+		local list = {}
+		body:iterate_inventory(function(_, o) if o then list[#list + 1] = o:section() end end, body)
+		table.sort(list)
+		local mine = table.concat(list, ",")
+		ctx.expect["18"] = function(ok, detail)
+			return ok and detail == mine, string.format("body: host [%s], guest [%s]", mine, detail)
+		end
+		ask("18", "body", tostring(ctx.body))
+	end },
+	{ 252, function()
 		announce("ТЕСТ ЗАКОНЧЕН. Итоги — в coop_qa.txt обеих игр.", 15)
 		record("end", true, "done")
 	end },
