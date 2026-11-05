@@ -702,7 +702,8 @@ local STEPS = {
 		announce("ШАГ 6. Хост и гость ОДНОВРЕМЕННО берут энергетик из тайника.\\nОн должен остаться только у хоста, у гостя — сообщение «забрал раньше вас».", 12)
 		ctx.host_race0 = #on_actor(RACE)
 		ask("6", "take", ctx.box, RACE)
-		take_from(box, RACE)
+		-- at the moment the guest's take comes (it opens the box first, then takes a second later)
+		after(1100, function() take_from(box, RACE) end)
 	end },
 	{ 88, function()
 		if not ctx.box then return end
