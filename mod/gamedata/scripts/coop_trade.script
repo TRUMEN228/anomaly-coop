@@ -33,6 +33,7 @@ coop_main.on_event("_cmd_give", function()
 	if not se then return end
 	box_id = se.id
 	exchange_ids[se.id] = true
+	if rawget(_G, "coop_items_ignore") then coop_items_ignore(se.id, true) end
 	open_at = time_global() + 5000 -- give up if it does not come online
 	dbg("box " .. box_id)
 end)

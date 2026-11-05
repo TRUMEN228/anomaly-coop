@@ -2,7 +2,7 @@
 	Anomaly Co-op: world sync.
 	Both players start from the host's save, so object ids match and events are matched by id + section.
 	  host -> client: game time, weather, surge (state "w"); creature positions/health: the engine (r12)
-	  host -> client: corpse inventories after death ("loot"), hostility in the creature state
+	  items (takes, drops, boxes, a body's loot): the engine (r13, coop_items)
 	  both ways:      damage dealt by the actor ("hit"), deaths ("die"),
 	                  items taken from the ground ("take") or from boxes/corpses ("btake"),
 	                  items dropped ("drop") or put into boxes ("bput")
@@ -15,10 +15,6 @@ local ENGINE = rawget(_G, "coop_engine_version") and coop_engine_version() or 0
 local applying = false         -- true while we apply a remote event, to avoid echoing it back
 function is_applying() return applying end
 local pending_hits = {}        -- id -> health before the actor's hit
-local pending_take = {}        -- id -> { sec, pos, time }
-local pending_drop = {}        -- id -> sec
-local box_take = {}            -- item id -> { box id, time } (filled by actor_on_item_take_from_box)
-local TAKE_WAIT = 1000         -- a take waits this long for the loot window to say it came from a box
 
 local function puppet_obj()
 	local id = coop_player.get_puppet_id()
@@ -162,28 +158,12 @@ coop_main.on_event("hit", function(a)
 end)
 
 ------------------------------------------------------------------ deaths
-local pending_loot = {}      -- host: corpse id -> time to send its inventory (after death_manager filled it)
 local refresh = {}           -- { box, at }: show the open box again once the partner's item is in it
 -- (twice: the item comes a few frames after the word, sometimes later)
 local function want_refresh(id)
 	local now = time_global()
 	refresh[#refresh + 1] = { id, now + 400 }
 	refresh[#refresh + 1] = { id, now + 1500 }
-end
-
--- A box holds what the host's box holds: after every change there the host sends the whole list ("bset") and
--- the guest's box is made the same. The guest's own changes go to the host first, numbered: a list that does
--- not have the guest's last change yet is not applied (the next one will have it).
-local box_seq = 0            -- guest: its last change to a box sent to the host
-local box_acked = 0          -- host: the guest's last change applied here
-local snap_at = {}           -- host: box id -> when to send what it holds
-local function want_snapshot(id)
-	if id and coop_main.is_host() then snap_at[id] = time_global() + 300 end
-end
-local function next_box_seq()
-	if coop_main.is_host() then return 0 end
-	box_seq = box_seq + 1
-	return box_seq
 end
 
 local DEATH_NEAR = 150 -- as far as the engine sends the host's creatures
@@ -196,9 +176,6 @@ local function far_from_players(obj)
 end
 
 local function on_death(victim, who)
-	if victim and coop_main.is_host() and coop_main.connected and is_creature(victim) and not coop_player.is_puppet(victim) then
-		pending_loot[victim:id()] = time_global() + 3000
-	end
 	if applying or not coop_main.connected or not victim then return end
 	if coop_player.is_puppet(victim) or victim:id() == AC_ID then return end
 	-- the client reports its own kills; the host only deaths far from both players (the engine brings the near ones
@@ -224,126 +201,41 @@ coop_main.on_event("die", function(a)
 end)
 
 ------------------------------------------------------------------ items
+-- The engine sees where an item goes and tells the partner (r13, coop_items): out of a box or a body, up from the
+-- ground, down, into a box; a box follows the host's list, a body's loot is the host's. The scripts make the new
+-- items (Anomaly's helper sets their state) and show an open box or body anew.
 local suppress_until = 0
 -- ignore our own inventory changes for a while (character import)
-function suppress(ms) suppress_until = time_global() + ms end
-local function suppressed() return applying or time_global() < suppress_until end
-
-local function actor_on_item_take(item)
-	if suppressed() or not coop_main.connected then return end
-	pending_take[item:id()] = { item:section(), vector():set(db.actor:position()), time_global() }
+function suppress(ms)
+	suppress_until = time_global() + ms
+	if rawget(_G, "coop_items_pause") then coop_items_pause(ms) end
 end
 
-local function actor_on_item_take_from_box(box, item)
-	if suppressed() or not coop_main.connected or not box or not item then return end
-	box_take[item:id()] = { box:id(), time_global() }
+local function spawn_item(sec, owner, cond, ammo)
+	if not ini_sys:section_exist(sec) then return end
+	local t = {}
+	cond = tonumber(cond)
+	ammo = tonumber(ammo)
+	if cond and cond < 0.999 then t.cond = cond end
+	if ammo and ammo > 0 then t.ammo = ammo end
+	applying = true
+	alife_create_item(sec, owner, t)
+	applying = false
 end
 
-local function actor_on_item_drop(item)
-	if suppressed() or not coop_main.connected then return end
-	pending_drop[item:id()] = item:section()
-end
-
-local function item_props(obj)
-	local cond = obj.condition and obj:condition() or 1
-	local ammo = (IsAmmo and IsAmmo(obj) and obj:ammo_get_count()) or 0
-	return string.format("%.3f", cond), ammo
-end
-
-local function flush_loot()
-	local now = time_global()
-	for id, at in pairs(pending_loot) do
-		if now >= at then
-			pending_loot[id] = nil
-			local npc = level.object_by_id(id)
-			if npc and not npc:alive() and IsStalker(npc) then
-				local list = {}
-				npc:iterate_inventory(function(_, o)
-					if o and o:section() then
-						local cond, ammo = item_props(o)
-						list[#list+1] = string.format("%s:%s:%s", o:section(), cond, ammo)
-					end
-				end, nil)
-				coop_main.send("loot", coop_spawn.R(id), npc:section(), table.concat(list, ";"))
-			end
-		end
+-- the engine: a new item in a box, a body or the player (owner), or on the ground there (owner -1)
+function engine_spawn(sec, owner, cond, ammo, x, y, z, lvid, gvid)
+	local where
+	if owner and owner >= 0 then
+		where = level.object_by_id(owner) or alife_object(owner)
+		if not where then return end
+	else
+		local pos = vector():set(x, y, z)
+		if not lvid or lvid < 0 or lvid >= 4294967295 then lvid = level.vertex_id(pos) end
+		where = { pos, lvid, (gvid and gvid >= 0) and gvid or db.actor:game_vertex_id() }
 	end
+	spawn_item(sec, where, cond, ammo)
 end
-
--- Anomaly's loot window says an item came from a box (actor_on_item_take_from_box) only when it reads its lists
--- again, a moment after the item is in the inventory: a take is a ground take only when no such word came in time
-local function flush_items()
-	local now = time_global()
-	for id, t in pairs(pending_take) do
-		local box = box_take[id] and box_take[id][1]
-		if box and coop_trade.is_exchange_box(box) then
-			-- taken back from the exchange box: not a world event
-			pending_take[id], box_take[id] = nil, nil
-		elseif box then
-			coop_main.send("btake", coop_spawn.R(box), coop_spawn.R(id), t[1], next_box_seq())
-			want_snapshot(box)
-			pending_take[id], box_take[id] = nil, nil
-		elseif now - t[3] > TAKE_WAIT then
-			coop_main.send("take", coop_spawn.R(id), t[1], f2(t[2].x), f2(t[2].y), f2(t[2].z))
-			pending_take[id] = nil
-		end
-	end
-	-- a word from the window for an item whose take was already sent (or never came)
-	for id, b in pairs(box_take) do
-		if not pending_take[id] and now - b[2] > 3000 then box_take[id] = nil end
-	end
-
-	for id, sec in pairs(pending_drop) do
-		local obj = level.object_by_id(id)
-		if obj then -- gone = eaten/used/sold to nothing
-			local parent = obj:parent()
-			local cond, ammo = item_props(obj)
-			if not parent then
-				local p = obj:position()
-				coop_main.send("drop", id, sec, cond, ammo, f2(p.x), f2(p.y), f2(p.z), obj:level_vertex_id(), obj:game_vertex_id())
-			elseif parent:id() ~= AC_ID and IsInvbox(parent) and not coop_trade.is_exchange_box(parent:id()) then
-				coop_main.send("bput", coop_spawn.R(parent:id()), sec, cond, ammo, next_box_seq())
-				want_snapshot(parent:id())
-			end
-		end
-	end
-	pending_drop = {}
-end
-
--- find a ground item by id, else the nearest one of the same section
-local function find_ground_item(id, sec, pos, radius)
-	local obj = id and level.object_by_id(id)
-	if same(obj, sec) and not obj:parent() then return obj end
-	local best, bd = nil, radius
-	for oid, st in pairs(db.storage) do
-		local o = st.object
-		if o and o:section() == sec and not o:parent() then
-			local d = o:position():distance_to(pos)
-			if d < bd then best, bd = o, d end
-		end
-	end
-	if best then return best end
-	-- items do not always live in db.storage; scan nearby objects
-	level.iterate_nearest(pos, radius, function(o)
-		if o and o:section() == sec and not o:parent() then best = o return true end
-	end)
-	return best
-end
-
-local function release_obj(obj)
-	local se = obj and alife_object(obj:id())
-	if se then alife_release(se) end
-end
-
-coop_main.on_event("take", function(a)
-	local obj = find_ground_item(coop_spawn.L(a[1]), a[2], vec(a[3], a[4], a[5]), 4)
-	dbg("recv take " .. tostring(a[2]) .. " found=" .. tostring(obj ~= nil))
-	if obj then
-		applying = true
-		release_obj(obj)
-		applying = false
-	end
-end)
 
 -- a box or body open here shows what the partner just took or put (r11)
 local function refresh_open_box(box)
@@ -364,201 +256,8 @@ local function refresh_open_box(box)
 	return not ok or done ~= false
 end
 
--- the host's state of what the guest took from a box or a body
-coop_main.on_event("bcond", function(a)
-	local item = level.object_by_id(coop_spawn.L(a[1]) or -1)
-	local cond = tonumber(a[3])
-	if not (same(item, a[2]) and cond and item:parent() and item:parent():id() == AC_ID and item.set_condition) then return end
-	if math.abs((item:condition() or 1) - cond) > 0.001 then
-		pcall(item.set_condition, item, cond)
-		dbg(string.format("took %s: condition %.2f as the host's (now %.2f)", a[2], cond, item:condition()))
-	end
-end)
-
--- both took the same thing at once: it stays with the host, the guest gives its copy up
-coop_main.on_event("bdeny", function(a)
-	local id, sec = coop_spawn.L(a[1]), a[2]
-	local item = id and level.object_by_id(id)
-	if same(item, sec) and item:parent() and item:parent():id() == AC_ID then
-		applying = true
-		release_obj(item)
-		applying = false
-		coop_main.msg(string.format("%s забрал это раньше вас", coop_main.peer_name))
-	end
-end)
-
-coop_main.on_event("btake", function(a)
-	local box = level.object_by_id(coop_spawn.L(a[1]) or -1)
-	local id, sec = coop_spawn.L(a[2]), a[3]
-	local item = id and level.object_by_id(id)
-	if coop_main.is_host() then
-		box_acked = math.max(box_acked, tonumber(a[4]) or 0)
-		want_snapshot(box and box:id())
-	end
-	-- this player took the same item a moment before the word came
-	if same(item, sec) and item:parent() and item:parent():id() == AC_ID then
-		if coop_main.is_host() then
-			coop_main.send("bdeny", a[2], sec)
-		else
-			applying = true
-			release_obj(item)
-			applying = false
-			coop_main.msg(string.format("%s забрал это раньше вас", coop_main.peer_name))
-		end
-		return
-	end
-	if not (same(item, sec) and item:parent() and box and item:parent():id() == box:id()) then
-		item = nil
-		if box then
-			box:iterate_inventory_box(function(b, o)
-				if not item and o:section() == sec then item = o end
-			end, box)
-			if not item and box.iterate_inventory then
-				box:iterate_inventory(function(b, o)
-					if not item and o:section() == sec then item = o end
-				end, box)
-			end
-		end
-	end
-	if item then
-		-- the guest's copy may be in another state (a body's loot is rolled in each game): it takes the host's
-		if coop_main.is_host() then
-			local cond = item_props(item)
-			coop_main.send("bcond", a[2], sec, cond)
-		end
-		applying = true
-		release_obj(item)
-		applying = false
-		-- the item goes a few frames later
-		want_refresh(box and box:id() or item:id())
-	elseif box and coop_main.is_host() then
-		-- the guest took what is no longer there (the host had it a moment before): the guest gives it up
-		coop_main.send("bdeny", a[2], sec)
-	end
-end)
-
-local function spawn_item(sec, owner, cond, ammo)
-	if not ini_sys:section_exist(sec) then return end
-	local t = {}
-	cond = tonumber(cond)
-	ammo = tonumber(ammo)
-	if cond and cond < 0.999 then t.cond = cond end
-	if ammo and ammo > 0 then t.ammo = ammo end
-	applying = true
-	alife_create_item(sec, owner, t)
-	applying = false
-end
-
--- guest: replace what the local death_manager put on the body with the host's list
-coop_main.on_event("loot", function(a)
-	if coop_main.is_host() then return end
-	local npc = level.object_by_id(coop_spawn.L(a[1]) or -1)
-	if not (same(npc, a[2]) and not npc:alive()) then return end
-	applying = true
-	local old = {}
-	npc:iterate_inventory(function(_, o) if o then old[#old+1] = o:id() end end, nil)
-	for _, id in ipairs(old) do
-		local se = alife_object(id)
-		if se then alife_release(se) end
-	end
-	local n = 0
-	for entry in (a[3] or ""):gmatch("[^;]+") do
-		local sec, cond, ammo = entry:match("^([^:]+):([^:]*):(%d*)$")
-		if sec and ini_sys:section_exist(sec) then
-			spawn_item(sec, npc, cond, ammo)
-			n = n + 1
-		end
-	end
-	applying = false
-	want_refresh(npc:id())
-	if coop_main.debug then coop_main.log("loot " .. npc:section() .. ": " .. n .. " items from host, replaced " .. #old) end
-end)
-
-coop_main.on_event("drop", function(a)
-	-- a: id, sec, cond, ammo, x, y, z, lvid, gvid
-	if coop_player.get_remote() and coop_player.get_remote().level ~= level.name() then return end
-	local pos = vec(a[5], a[6], a[7])
-	local lvid = tonumber(a[8]) or level.vertex_id(pos)
-	if lvid >= 4294967295 then lvid = level.vertex_id(pos) end
-	spawn_item(a[2], { pos, lvid, tonumber(a[9]) or db.actor:game_vertex_id() }, a[3], a[4])
-	dbg("recv drop " .. tostring(a[2]) .. " at " .. vec_to_str(pos))
-end)
-
-coop_main.on_event("bput", function(a)
-	local box = level.object_by_id(coop_spawn.L(a[1]) or -1)
-	if coop_main.is_host() then
-		box_acked = math.max(box_acked, tonumber(a[5]) or 0)
-		want_snapshot(box and box:id())
-	end
-	if box then
-		spawn_item(a[2], box, a[3], a[4])
-		-- the new item comes into the box a moment later
-		want_refresh(box:id())
-	end
-end)
-
-local function box_items(box)
-	local list = {}
-	box:iterate_inventory_box(function(_, o) list[#list + 1] = o end, box)
-	return list
-end
-
-local function flush_snapshots(now)
-	for id, at in pairs(snap_at) do
-		if now >= at then
-			snap_at[id] = nil
-			local box = level.object_by_id(id)
-			if box and IsInvbox(box) and not coop_trade.is_exchange_box(id) then
-				local list = {}
-				for _, o in ipairs(box_items(box)) do
-					local cond, ammo = item_props(o)
-					list[#list + 1] = string.format("%s:%s:%s", o:section(), cond, ammo)
-				end
-				coop_main.send("bset", coop_spawn.R(id), box_acked, table.concat(list, ";"))
-			end
-		end
-	end
-end
-
-coop_main.on_event("bset", function(a)
-	if coop_main.is_host() then return end
-	-- a change of this player's own is still on its way to the host: the next list has it
-	if (tonumber(a[2]) or 0) < box_seq then return end
-	local box = level.object_by_id(coop_spawn.L(a[1]) or -1)
-	if not (box and IsInvbox(box)) then return end
-	local want, have = {}, {}
-	for entry in (a[3] or ""):gmatch("[^;]+") do
-		local sec, cond, ammo = entry:match("^([^:]+):([^:]*):(%d*)$")
-		if sec and ini_sys:section_exist(sec) then
-			want[sec] = want[sec] or {}
-			want[sec][#want[sec] + 1] = { cond, ammo }
-		end
-	end
-	for _, o in ipairs(box_items(box)) do
-		local sec = o:section()
-		have[sec] = have[sec] or {}
-		have[sec][#have[sec] + 1] = o
-	end
-	local gone, added = 0, 0
-	applying = true
-	for sec, list in pairs(have) do
-		for i = #(want[sec] or {}) + 1, #list do
-			release_obj(list[i])
-			gone = gone + 1
-		end
-	end
-	applying = false
-	for sec, list in pairs(want) do
-		for i = #(have[sec] or {}) + 1, #list do
-			spawn_item(sec, box, list[i][1], list[i][2])
-			added = added + 1
-		end
-	end
-	if gone + added > 0 then
-		want_refresh(box:id())
-		dbg(string.format("box %s made as the host's: -%d +%d", box:section(), gone, added))
-	end
-end)
+-- the engine: the partner changed this box or body
+function engine_refresh(id) want_refresh(id) end
 
 ------------------------------------------------------------------ main loop
 local next_flush = 0
@@ -579,9 +278,6 @@ local function actor_on_update()
 	end
 	local ok, err = pcall(function()
 		flush_hits()
-		flush_items()
-		flush_snapshots(now)
-		flush_loot()
 	end)
 	if not ok then coop_main.log("world flush failed: " .. tostring(err)) end
 end
@@ -597,7 +293,4 @@ function on_game_start()
 	RegisterScriptCallback("monster_on_before_hit", monster_on_before_hit)
 	RegisterScriptCallback("npc_on_death_callback", on_death)
 	RegisterScriptCallback("monster_on_death_callback", on_death)
-	RegisterScriptCallback("actor_on_item_take", actor_on_item_take)
-	RegisterScriptCallback("actor_on_item_take_from_box", actor_on_item_take_from_box)
-	RegisterScriptCallback("actor_on_item_drop", actor_on_item_drop)
 end
