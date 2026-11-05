@@ -427,6 +427,10 @@ cmd.ground = function(a)
 	return true, tostring(#ground_items(a[3], vpos(a, 4), 3))
 end
 
+cmd.ground_r = function(a)
+	return true, tostring(#ground_items(a[3], vpos(a, 4), tonumber(a[7]) or 3))
+end
+
 -- the guest picks an item up from the ground, as a player does
 cmd.pickup = function(a)
 	local item = ground_items(a[3], vpos(a, 4), 4)[1]
@@ -597,7 +601,7 @@ end)
 
 local STEPS = {
 	{ 0, function()
-		announce("ТЕСТ КООПЕРАТИВА: 18 шагов, около трёх с половиной минут.\\nОба игрока переносятся на улицу в деревню новичков, рядом ставится тестовый тайник.", 8)
+		announce("ТЕСТ КООПЕРАТИВА: 19 шагов, около трёх с половиной минут.\\nОба игрока переносятся на улицу в деревню новичков, рядом ставится тестовый тайник.", 8)
 		local center, lv, gv = village()
 		local dir, side = open_direction(center)
 		local me = aside(center, 0, 0)
@@ -1071,6 +1075,32 @@ local STEPS = {
 		ask("18", "body", tostring(ctx.body))
 	end },
 	{ 252, function()
+		announce("ШАГ 19. Хост бросает болт.\\nУ ГОСТЯ болт летит так же и падает туда же.", 10)
+		-- the bolts already on the ground around, so the new one is told from them
+		ctx.bolts0 = {}
+		for _, o in ipairs(ground_items("bolt", db.actor:position(), 40)) do ctx.bolts0[o:id()] = true end
+		local pos = ahead(15)
+		look_at(pos)
+		db.actor:activate_slot(6)
+		after(2000, function() level.press_action(bind_to_dik(key_bindings.kWPN_FIRE)) end)
+		after(2400, function() level.release_action(bind_to_dik(key_bindings.kWPN_FIRE)) end)
+	end },
+	{ 260, function()
+		-- where the host's bolt came down
+		local fell
+		for _, o in ipairs(ground_items("bolt", db.actor:position(), 40)) do
+			if not ctx.bolts0[o:id()] then fell = o end
+		end
+		db.actor:activate_slot(0)
+		if not fell then record("19", false, "the host threw no bolt") return end
+		local p = fell:position()
+		record("19host", true, string.format("the host's bolt fell %.0f m away", p:distance_to(db.actor:position())))
+		ctx.expect["19"] = function(ok, detail)
+			return ok and (tonumber(detail) or 0) >= 1, "the guest's bolts where the host's fell (2.5 m): " .. detail
+		end
+		ask("19", "ground_r", "bolt", string.format("%.2f", p.x), string.format("%.2f", p.y), string.format("%.2f", p.z), "2.5")
+	end },
+	{ 264, function()
 		announce("ТЕСТ ЗАКОНЧЕН. Итоги — в coop_qa.txt обеих игр.", 15)
 		record("end", true, "done")
 	end },
