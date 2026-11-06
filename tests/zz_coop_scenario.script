@@ -1260,7 +1260,8 @@ local STEPS = {
 	end },
 	{ 358, function()
 		announce("ШАГ 25. Удары гостя: у хоста появляется плоть, гость ранит её, потом убивает.\\nУ хоста она теряет здоровье и умирает от гостя.", 12)
-		local pos, lv = meeting_point()
+		-- (near both players now: the meeting point of step 2 is back in the village, past the mirror's reach)
+		local pos, lv = ahead(8)
 		local se = alife_create(CREATURE, pos, lv, db.actor:game_vertex_id())
 		ctx.h25 = se and se.id
 		if not se then record("25", false, "not made at the host") end
