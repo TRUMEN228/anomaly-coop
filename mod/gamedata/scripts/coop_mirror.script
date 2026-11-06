@@ -15,6 +15,8 @@
 	  host -> guest:  "wm"  stamp, level, host position, then id:section:x:y:z:lvid:gvid:alive:squad:squad section:smart
 --]]
 
+-- engine r16: the host's engine sends the list itself (coop_creatures census) and hands it here (engine_census)
+local E16 = (rawget(_G, "coop_engine_version") and coop_engine_version() or 0) >= 16
 local SEND_MS = 1500
 local RADIUS = 130           -- host: creatures this near either player
 local NEAR_GUEST = 110       -- guest: made or removed only this near this player (inside the host's radius)
@@ -43,7 +45,7 @@ function get_stats() return stats end
 
 ------------------------------------------------------------------ host: what is around the players
 coop_main.add_state_provider("wm", function()
-	if not (coop_main.is_host() and coop_main.connected and db.actor) then return end
+	if E16 or not (coop_main.is_host() and coop_main.connected and db.actor) then return end
 	local now = time_global()
 	if now < next_send then return end -- nil = keep the last list on the bridge
 	next_send = now + SEND_MS
@@ -171,7 +173,7 @@ local function apply(t)
 	end
 end
 
-coop_main.on_state("wm", function(t)
+local function on_list(t)
 	if not (coop_main.is_client() and coop_session.is_guest_session() and db.actor) then return end
 	if t[1] == last_stamp or not ready_at or time_global() < ready_at then return end
 	last_stamp = t[1]
@@ -179,7 +181,15 @@ coop_main.on_state("wm", function(t)
 	if t[2] ~= level.name() then return end
 	local ok, err = pcall(apply, t)
 	if not ok then coop_main.log("mirror failed: " .. tostring(err)) end
-end)
+end
+coop_main.on_state("wm", on_list)
+
+-- r16: the host's list from the engine: stamp|level|x|y|z|entry|entry...
+function engine_census(text)
+	local t = {}
+	for f in (tostring(text) .. "|"):gmatch("([^|]*)|") do t[#t + 1] = f end
+	on_list(t)
+end
 
 ------------------------------------------------------------------ guest: its own simulation holds still
 -- Squads choose where to go next (generic_update, specific_update) each in its own game, with its own dice: the

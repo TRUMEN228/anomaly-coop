@@ -7,6 +7,9 @@
 	                  "mgive"  a sum of money
 --]]
 
+-- engine r16: an item for the partner on this level goes as its whole state (coop_items_gift): the partner's copy
+-- has the same condition, ammo, addons and upgrades
+local E16 = (rawget(_G, "coop_engine_version") and coop_engine_version() or 0) >= 16
 local BOX_SECTION = "inv_backpack"
 local box_id = nil           -- the exchange box while it exists
 local box_opened = false
@@ -65,11 +68,13 @@ local function close_box(box)
 	local items, entries, secs = {}, {}, {}
 	box:iterate_inventory_box(function(b, o) items[#items+1] = o end, box)
 	if #items > 0 and coop_main.connected then
+		local r = coop_player.get_remote()
+		local engine = E16 and r and r.level == level.name()
 		for _, o in ipairs(items) do
-			entries[#entries+1] = item_entry(o)
+			if not (engine and coop_items_gift(o:id())) then entries[#entries+1] = item_entry(o) end
 			secs[#secs+1] = o:section()
 		end
-		coop_main.send("gift", table.concat(entries, ";"))
+		if #entries > 0 then coop_main.send("gift", table.concat(entries, ";")) end
 		for _, o in ipairs(items) do
 			local se = alife_object(o:id())
 			if se then alife_release(se) end
@@ -84,6 +89,19 @@ local function close_box(box)
 end
 
 local receiving_until = 0
+local engine_gifts, engine_gifts_at = {}, nil
+-- r16: the engine made the partner's item here; the message lists them together a moment later
+function engine_gift(sec)
+	receiving_until = time_global() + 3000
+	engine_gifts[#engine_gifts + 1] = sec
+	engine_gifts_at = time_global() + 500
+end
+local function tell_engine_gifts()
+	if not engine_gifts_at or time_global() < engine_gifts_at then return end
+	coop_main.msg(string.format("%s передал вам: %s", coop_main.peer_name, names(engine_gifts)))
+	xr_sound.set_sound_play(AC_ID, "pda_tips")
+	engine_gifts, engine_gifts_at = {}, nil
+end
 -- the partner's items are coming in: they are not this player's own finds (coop_quests does not pass them on)
 function is_receiving() return time_global() < receiving_until end
 
@@ -220,6 +238,7 @@ local function actor_on_update()
 	next_tick = now + 200
 	local ok, err = pcall(function()
 		if next(pending_upgrades) then apply_pending() end
+	if engine_gifts_at then tell_engine_gifts() end
 		if not box_id then return end
 		local box = level.object_by_id(box_id)
 		local gui = ui_inventory.GUI

@@ -159,14 +159,28 @@ end
 
 ------------------------------------------------------------------ friendly fire
 -- the actor hit the partner's puppet (an NPC, or a second actor on engine r5)
+-- engine r16: the engine tells the partner itself (with the bone and the direction) and hands the partner's here
+local E16 = (rawget(_G, "coop_engine_version") and coop_engine_version() or 0) >= 16
 function partner_hit(power, htype)
-	if not opt("ff", false) or (power or 0) <= 0 then return end
+	if E16 or not opt("ff", false) or (power or 0) <= 0 then return end
 	coop_main.send("ffhit", string.format("%.3f", power), htype or hit.fire_wound)
 end
 
 local function npc_on_before_hit(npc, shit, bone_id, flags)
 	if not (coop_player.is_puppet(npc) and shit and shit.draftsman and shit.draftsman:id() == AC_ID) then return end
 	partner_hit(shit.power, shit.type)
+end
+
+function engine_ffhit(power, htype, bone, dx, dy, dz, impulse)
+	if not db.actor or downed_until or (power or 0) <= 0 then return end
+	local h = hit()
+	h.power = power
+	h.type = htype or hit.fire_wound
+	if bone and bone ~= "" then pcall(h.bone, h, bone) end
+	h.impulse = impulse or 0
+	h.direction = vector():set(dx or 0, dy or 0, dz or 1)
+	h.draftsman = coop_player.get_puppet_id() and level.object_by_id(coop_player.get_puppet_id()) or db.actor
+	db.actor:hit(h)
 end
 
 coop_main.on_event("ffhit", function(a)
@@ -184,10 +198,15 @@ end)
 -- engine r15: the engine follows the money itself (coop_props); the scripts tell it the host's option
 local E15 = (rawget(_G, "coop_engine_version") and coop_engine_version() or 0) >= 15
 local told_money = nil
+local told_ff = nil
 local function update_money()
 	if E15 then
 		local on = shared_money() == true
 		if on ~= told_money then coop_money_shared(on) told_money = on end
+		if E16 then
+			local ff = coop_main.connected and opt("ff", false) == true
+			if ff ~= told_ff then coop_friendly_fire(ff) told_ff = ff end
+		end
 		return
 	end
 	local m = db.actor:money()
@@ -343,6 +362,7 @@ end
 function on_game_start()
 	downed_until, down_pos, partner_down, money_last, follow_at, partner_level, mset_at = nil, nil, false, nil, nil, nil, nil
 	told_money = nil
+	told_ff = nil
 	RegisterScriptCallback("actor_on_update", actor_on_update)
 	RegisterScriptCallback("actor_on_before_death", actor_on_before_death)
 	RegisterScriptCallback("actor_on_before_hit", actor_on_before_hit)
