@@ -464,6 +464,12 @@ end
 cmd.weather = function() return true, string.format("%s at %02d:%02d", tostring(level.get_weather()),
 	level.get_time_hours(), level.get_time_minutes()) end
 
+-- the guest's clock runs two hours ahead of the host's (the engine puts it back, r14)
+cmd.ahead = function()
+	level.change_game_time(0, 2, 0)
+	return true, string.format("%02d:%02d", level.get_time_hours(), level.get_time_minutes())
+end
+
 -- to another place next to the host, looking where the host looks
 cmd.goto = function(a)
 	local v = function(i) return vector():set(tonumber(a[i]) or 0, tonumber(a[i + 1]) or 0, tonumber(a[i + 2]) or 0) end
@@ -601,7 +607,7 @@ end)
 
 local STEPS = {
 	{ 0, function()
-		announce("ТЕСТ КООПЕРАТИВА: 20 шагов, около трёх с половиной минут.\\nОба игрока переносятся на улицу в деревню новичков, рядом ставится тестовый тайник.", 8)
+		announce("ТЕСТ КООПЕРАТИВА: 21 шаг, около трёх с половиной минут.\\nОба игрока переносятся на улицу в деревню новичков, рядом ставится тестовый тайник.", 8)
 		local center, lv, gv = village()
 		local dir, side = open_direction(center)
 		local me = aside(center, 0, 0)
@@ -1134,6 +1140,24 @@ local STEPS = {
 		ask("20close", "close_box")
 	end },
 	{ 288, function()
+		announce("ШАГ 21. Время и погода хоста: у ГОСТЯ часы уходят на 2 часа вперёд, у хоста резко меняется небо.\\nЧерез секунду у гостя время и небо как у хоста.", 10)
+		ask("21ahead", "ahead")
+		level.set_weather("w_cloudy1", true)
+		if coop_world.weather_jumped then coop_world.weather_jumped() end
+	end },
+	{ 294, function()
+		local hm = level.get_time_hours() * 60 + level.get_time_minutes()
+		local w = tostring(level.get_weather())
+		ctx.expect["21"] = function(ok, detail)
+			local name, h, m = detail:match("^(%S+) at (%d+):(%d+)")
+			local d = h and math.abs((tonumber(h) * 60 + tonumber(m)) - hm) or 999
+			if d > 12 * 60 then d = 24 * 60 - d end
+			return ok and d <= 2 and name == w, string.format("host %s at %02d:%02d, guest %s (%d min apart)", w,
+				math.floor(hm / 60), hm % 60, detail, d)
+		end
+		ask("21", "weather")
+	end },
+	{ 300, function()
 		announce("ТЕСТ ЗАКОНЧЕН. Итоги — в coop_qa.txt обеих игр.", 15)
 		record("end", true, "done")
 	end },

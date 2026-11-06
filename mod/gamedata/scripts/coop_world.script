@@ -1,7 +1,8 @@
 --[[
 	Anomaly Co-op: world sync.
 	Both players start from the host's save, so object ids match and events are matched by id + section.
-	  host -> client: game time, weather, surge (state "w"); creature positions/health: the engine (r12)
+	  host -> client: game time, weather, surge: the engine (r14, coop_clock; state "w" with an older engine);
+	                  creature positions/health: the engine (r12)
 	  items (takes, drops, boxes, a body's loot): the engine (r13, coop_items)
 	  both ways:      damage dealt by the actor ("hit"), deaths ("die"),
 	                  items taken from the ground ("take") or from boxes/corpses ("btake"),
@@ -38,9 +39,13 @@ local function game_minutes()
 	return (level.get_time_days() * 24 + level.get_time_hours()) * 60 + level.get_time_minutes()
 end
 
+-- r14: the engine sends the host's time and weather and puts them in the guest's game (coop_clock); the scripts
+-- tell it when the host's sky jumps and give it the surge, the guest's scripts get the surge back (engine_world_state)
+local CLOCK = ENGINE >= 14
+
 local weather_jumps = 0        -- host: changes of the sky made at once so far (below)
 coop_main.add_state_provider("w", function()
-	if not coop_main.is_host() then return end
+	if CLOCK or not coop_main.is_host() then return end
 	return { game_minutes(), level.get_weather() or "", surge_manager.is_started() and 1 or 0, weather_jumps,
 		string.format("%.2f", level.get_time_factor()) }
 end)
@@ -50,13 +55,18 @@ end)
 -- jump is counted and sent, and the guest's sky jumps too
 local host_weather = nil
 local host_jumps = nil         -- guest: the host's count it followed
-function weather_jumped() weather_jumps = weather_jumps + 1 end
+local engine_led = false       -- guest (r14): the engine has put the host's sky here
+function weather_jumped()
+	weather_jumps = weather_jumps + 1
+	if CLOCK then coop_world_jumped() end
+end
 local function hook_weather()
 	local cls = level_weathers and level_weathers.WeatherManager
 	if not cls or rawget(_G, "coop_weather_hooked") then return end
 	_G.coop_weather_hooked = true
 	local select = cls.select_weather
 	cls.select_weather = function(self, now)
+		if coop_main.is_client() and engine_led then return end
 		if coop_main.is_client() and host_weather then
 			if not weather.is_paused() then level.set_weather(host_weather, now) end
 			return
@@ -67,8 +77,36 @@ local function hook_weather()
 end
 
 local next_world_apply = 0
-coop_main.on_state("w", function(t)
+-- the surge: the host's in the guest's game
+local function follow_surge(host_surge)
+	if host_surge and not surge_manager.is_started() then
+		coop_main.msg("У хоста начался выброс!")
+		surge_manager.start_surge()
+	elseif (not host_surge) and surge_manager.is_started() then
+		surge_manager.stop_surge()
+	end
+end
+
+-- r14: the host's scripts' world state from the engine (on the guest): "surge"
+function engine_world_state(s)
 	if not coop_main.is_client() then return end
+	engine_led = true
+	follow_surge(s == "1")
+end
+
+-- host (r14): the surge state for the engine's line
+local told_state = nil
+local function tell_world_state()
+	if not CLOCK or not coop_main.is_host() then return end
+	local s = surge_manager.is_started() and "1" or "0"
+	if s ~= told_state then
+		coop_world_state(s)
+		told_state = s
+	end
+end
+
+coop_main.on_state("w", function(t)
+	if CLOCK or not coop_main.is_client() then return end
 	local now = time_global()
 	if now < next_world_apply then return end
 	next_world_apply = now + 2000
@@ -99,13 +137,7 @@ coop_main.on_state("w", function(t)
 		dbg(string.format("weather: host %s, here %s -> %s%s", w, tostring(here), tostring(level.get_weather()),
 			first and " (at once)" or ""))
 	end
-	local host_surge = t[3] == "1"
-	if host_surge and not surge_manager.is_started() then
-		coop_main.msg("У хоста начался выброс!")
-		surge_manager.start_surge()
-	elseif (not host_surge) and surge_manager.is_started() then
-		surge_manager.stop_surge()
-	end
+	follow_surge(t[3] == "1")
 end)
 
 ------------------------------------------------------------------ creature positions
@@ -278,6 +310,7 @@ local function actor_on_update()
 	end
 	local ok, err = pcall(function()
 		flush_hits()
+		tell_world_state()
 	end)
 	if not ok then coop_main.log("world flush failed: " .. tostring(err)) end
 end
@@ -287,6 +320,8 @@ local function monster_on_before_hit(m, shit, bone_id, flags) on_before_hit(m, s
 
 function on_game_start()
 	host_weather = nil
+	engine_led = false
+	told_state = nil
 	pcall(hook_weather)
 	RegisterScriptCallback("actor_on_update", actor_on_update)
 	RegisterScriptCallback("npc_on_before_hit", npc_on_before_hit)
