@@ -1408,7 +1408,14 @@ local function actor_on_net_destroy()
 	PANEL = nil
 end
 
+-- step 25: the host's flesh is hurt only by the guest (its hits come by the engine, not as a hit here): the farm's
+-- own creatures would kill it first
+local function flesh_25_only_guest(obj, shit, bone_id, flags)
+	if ctx.h25 and obj and obj:id() == ctx.h25 and coop_main.role == "host" then flags.ret_value = false end
+end
+
 function on_game_start()
+	RegisterScriptCallback("monster_on_before_hit", flesh_25_only_guest)
 	local f = io.open(app("coop_scenario.txt"), "r")
 	active = f ~= nil
 	if f then f:close() end
