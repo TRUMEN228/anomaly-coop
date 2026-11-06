@@ -5,7 +5,7 @@
 	  both ways:      "revive" the partner used a medkit next to the downed actor's puppet
 	                  "ffhit"  friendly fire: the actor shot the partner's puppet (power, hit type)
 	                  "money"  shared money changed by this amount ("mset" sets the guest's total)
-	  guest -> host:  "sleep"  the guest slept this many hours: the host's time moves too
+	  both ways:      "sleep"  this player lies down to sleep this many hours: the partner sleeps too
 	Following the partner to another level is local: when the partner leaves from near the actor,
 	the actor follows a few seconds later.
 --]]
@@ -213,17 +213,63 @@ coop_main.on_event("_connection", function(a)
 end)
 
 ------------------------------------------------------------------ sleep
-local function actor_on_sleep(hours)
-	if host() or not coop_main.connected then return end
-	coop_main.send("sleep", tonumber(hours) or 0)
+-- Both sleep: when one lies down (Anomaly's sleep window, a sleeping bag, a knock-out), the partner's game sleeps
+-- the same hours - the screen goes dark, the controls are off, the sound is down, then it wakes. The host's clock moves
+-- (its own sleep or the partner's); the guest's follows the host's (the engine, r14)
+local partner_hours = nil      -- the partner's sleep this game is sleeping now
+local saved_music, saved_effects
+
+local function sleeping_now() return has_alife_info("actor_is_sleeping") or partner_hours ~= nil end
+
+local function hook_sleep()
+	local cls = ui_sleep_dialog and ui_sleep_dialog.UISleep
+	if not cls or rawget(_G, "coop_sleep_hooked") then return end
+	_G.coop_sleep_hooked = true
+	local lie_down = cls.OnButtonSleep
+	cls.OnButtonSleep = function(self)
+		local h = math.floor(tonumber(self.forced or (self.time_track and self.time_track:GetIValue())) or 0)
+		if coop_main.connected and h > 0 then coop_main.send("sleep", h) end
+		return lie_down(self)
+	end
+end
+
+function partner_dream()
+	level.add_cam_effector("camera_effects\\sleep.anm", 10, false, "coop_team.partner_wake")
+	local h = partner_hours or 0
+	if host() and h > 0 then level.change_game_time(0, h, 0) end
+	db.actor.power = 1
+end
+
+function partner_wake()
+	xr_effects.enable_ui(db.actor, nil)
+	if saved_music then exec_console_cmd("snd_volume_music " .. tostring(saved_music)) end
+	if saved_effects then exec_console_cmd("snd_volume_eff " .. tostring(saved_effects)) end
+	saved_music, saved_effects = nil, nil
+	partner_hours = nil
+	disable_info("actor_is_sleeping")
+end
+
+local function sleep_with_partner(h)
+	partner_hours = h
+	pcall(function() local w = level.main_input_receiver(); if w then w:HideDialog() end end)
+	xr_effects.disable_ui(db.actor, nil)
+	saved_music = get_console_cmd(2, "snd_volume_music")
+	saved_effects = get_console_cmd(2, "snd_volume_eff")
+	exec_console_cmd("snd_volume_music 0")
+	exec_console_cmd("snd_volume_eff 0")
+	db.actor:activate_slot(0)
+	level.add_cam_effector("camera_effects\\sleep.anm", 10, false, "coop_team.partner_dream")
+	level.add_pp_effector("surge_fade.ppe", 11, false)
+	db.actor:give_info_portion("actor_is_sleeping")
+	coop_main.msg(string.format("%s лёг спать на %d ч, вы спите вместе", coop_main.peer_name, h))
 end
 
 coop_main.on_event("sleep", function(a)
-	if not host() then return end
 	local h = math.floor(tonumber(a[1]) or 0)
-	if h <= 0 or h > 48 then return end
-	level.change_game_time(0, h, 0)
-	coop_main.msg(string.format("%s поспал %d ч, время идёт для обоих", coop_main.peer_name, h))
+	if h <= 0 or h > 48 or not db.actor then return end
+	-- (both lay down at once: each sleeps its own; the host's clock moves once, by its own)
+	if sleeping_now() then return end
+	sleep_with_partner(h)
 end)
 
 ------------------------------------------------------------------ travelling together
@@ -293,5 +339,6 @@ function on_game_start()
 	RegisterScriptCallback("actor_on_before_hit", actor_on_before_hit)
 	RegisterScriptCallback("actor_on_item_use", actor_on_item_use)
 	RegisterScriptCallback("npc_on_before_hit", npc_on_before_hit)
-	RegisterScriptCallback("actor_on_sleep", actor_on_sleep)
+	partner_hours = nil
+	pcall(hook_sleep)
 end

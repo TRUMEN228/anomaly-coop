@@ -477,6 +477,9 @@ cmd.news = function()
 		pda_count("QA news both games make"))
 end
 
+-- is this game asleep (the sleep's dark screen, the controls off)
+cmd.asleep = function() return true, has_alife_info("actor_is_sleeping") and "1" or "0" end
+
 -- the guest's clock runs two hours ahead of the host's (the engine puts it back, r14)
 cmd.ahead = function()
 	level.change_game_time(0, 2, 0)
@@ -620,7 +623,7 @@ end)
 
 local STEPS = {
 	{ 0, function()
-		announce("ТЕСТ КООПЕРАТИВА: 22 шага, около трёх с половиной минут.\\nОба игрока переносятся на улицу в деревню новичков, рядом ставится тестовый тайник.", 8)
+		announce("ТЕСТ КООПЕРАТИВА: 23 шага, около трёх с половиной минут.\\nОба игрока переносятся на улицу в деревню новичков, рядом ставится тестовый тайник.", 8)
 		local center, lv, gv = village()
 		local dir, side = open_direction(center)
 		local me = aside(center, 0, 0)
@@ -1187,6 +1190,30 @@ local STEPS = {
 		ask("22", "news")
 	end },
 	{ 310, function()
+		announce("ШАГ 23. Сон: хост ложится спать на 3 часа.\\nУ ГОСТЯ экран тоже темнеет, он спит вместе с хостом и просыпается в то же время.", 8)
+		ctx.slept_from = level.get_time_hours() * 60 + level.get_time_minutes()
+		after(2000, function() ui_sleep_dialog.sleep_forced(3) end)
+	end },
+	{ 316, function()
+		ctx.expect["23asleep"] = function(ok, detail) return ok and detail == "1", "the guest asleep with the host: " .. detail end
+		ask("23asleep", "asleep")
+	end },
+	{ 340, function()
+		local hm = level.get_time_hours() * 60 + level.get_time_minutes()
+		local moved = (hm - (ctx.slept_from or hm)) % (24 * 60)
+		record("23host", moved >= 170 and moved <= 200, string.format("the host's clock moved %d min (3 h)", moved))
+		ctx.expect["23"] = function(ok, detail)
+			local h, m = detail:match(" at (%d+):(%d+)")
+			local d = h and math.abs((tonumber(h) * 60 + tonumber(m)) - hm) or 999
+			if d > 12 * 60 then d = 24 * 60 - d end
+			return ok and d <= 2, string.format("after the sleep host %02d:%02d, guest %s (%d min apart)",
+				math.floor(hm / 60), hm % 60, detail, d)
+		end
+		ask("23", "weather")
+		ask("23awake", "asleep")
+		ctx.expect["23awake"] = function(ok, detail) return ok and detail == "0", "the guest awake again: " .. detail end
+	end },
+	{ 344, function()
 		announce("ТЕСТ ЗАКОНЧЕН. Итоги — в coop_qa.txt обеих игр.", 15)
 		record("end", true, "done")
 	end },
