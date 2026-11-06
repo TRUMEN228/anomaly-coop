@@ -23,7 +23,11 @@ local function dbg(s) if coop_main.debug then coop_main.log("objects: " .. s) en
 local L, R = function(x) return coop_spawn.L(x) end, function(x) return coop_spawn.R(x) end
 
 ------------------------------------------------------------------ doors
+-- engine r15: push doors, breakable things and explosions are the engine's (coop_props); a scripted door (ph_door)
+-- stays the scripts': the engine is told to leave it
+local E15 = (rawget(_G, "coop_engine_version") and coop_engine_version() or 0) >= 15
 local function on_door(action, open)
+	if E15 and action and action.object then coop_door_scripted(action.object:id()) end
 	if applying or not coop_main.connected or not (action and action.object) then return end
 	if not ready_at or time_global() < ready_at then return end
 	coop_main.send("door", R(action.object:id()), open and 1 or 0)
@@ -62,7 +66,7 @@ local function hook_breakables()
 	_G.coop_breakables_hooked = true
 	local death = cls.death_callback
 	cls.death_callback = function(self, victim, who)
-		if not applying and coop_main.connected and victim then
+		if not E15 and not applying and coop_main.connected and victim then
 			pcall(coop_main.send, "pbreak", R(victim:id()), victim:section())
 		end
 		return death(self, victim, who)
@@ -374,7 +378,7 @@ local function each_push_door(fn)
 end
 
 coop_main.add_state_provider("pd", function()
-	if not coop_main.connected then return end
+	if E15 or not coop_main.connected then return end
 	local now = time_global()
 	if now < next_door_scan then return end
 	next_door_scan = now + 300
@@ -429,7 +433,7 @@ local function actor_on_update()
 	if now < next_tick then return end
 	next_tick = now + 100
 	local ok, err = pcall(function()
-		drive_doors()
+		if not E15 then drive_doors() end
 		if coop_main.connected and now % 1000 < 100 then check_surrender() end
 	end)
 	if not ok then coop_main.log("objects update failed: " .. tostring(err)) end

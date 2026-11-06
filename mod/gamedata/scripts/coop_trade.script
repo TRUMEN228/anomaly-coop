@@ -149,7 +149,8 @@ function UICoopMoney:OnOk()
 		self.status:SetText("Напарник не подключён")
 	else
 		db.actor:give_money(-n)
-		coop_main.send("mgive", n)
+		-- (engine r15 carries the sum: coop_props)
+		if rawget(_G, "coop_money_give") then coop_money_give(n) else coop_main.send("mgive", n) end
 		coop_main.msg(string.format("Передано напарнику: %d руб.", n))
 		self:Close()
 	end
@@ -181,6 +182,12 @@ coop_main.on_event("mgive", function(a)
 	coop_main.msg(string.format("%s передал вам %d руб.", coop_main.peer_name, n))
 	xr_sound.set_sound_play(AC_ID, "pda_tips")
 end)
+
+-- engine r15: the partner's sum is in this player's money already
+function engine_money_given(n)
+	coop_main.msg(string.format("%s передал вам %d руб.", coop_main.peer_name, n))
+	xr_sound.set_sound_play(AC_ID, "pda_tips")
+end
 
 -- upgrades and the loaded magazine need the online object
 local function apply_pending()

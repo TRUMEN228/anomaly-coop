@@ -17,6 +17,9 @@ local STOP_DIST = 0.6
 -- positions, played back this far behind; with stock exes the script pulls and teleports it as before
 local ENGINE = rawget(_G, "coop_engine_version") and coop_engine_version() or 0
 local NET_DELAY = ENGINE >= 2 and 0 or 200 -- since engine r2, 0 = the delay follows the link
+-- engine r15: the engine sends where this player is 20 times a second and moves the partner's puppet itself
+-- (coop_partner); the scripts give it the slower part (extras) and get the partner's through engine_partner
+local ENGINE_PARTNER = ENGINE >= 15
 
 local remote = nil         -- last partner state
 local remote_time = 0
@@ -138,9 +141,29 @@ local function actor_on_item_use(obj, sec)
 	for k in pairs(HEAL) do if sec:find(k) then heal_until = time_global() + 4000 return end end
 end
 
+-- the slower part of this player's state for the engine (r15), in the order engine_partner reads it back
+local function extras_now(a)
+	local wpn = a:active_item()
+	local outfit = a:item_in_slot(7)
+	local moving = (IsMoveState("mcAnyMove") and 1 or 0)
+	if moving == 1 and IsMoveState("mcSprint") then moving = 2 end
+	local name = coop_main.my_name ~= "" and coop_main.my_name or a:character_name()
+	return table.concat({
+		IsMoveState("mcCrouch") and "c" or "s", moving,
+		wpn and wpn:section() or "", outfit and outfit:section() or "", a:get_visual_name() or "",
+		string.format("%.2f", a.health), (tostring(name):gsub("[|\t\n]", " ")),
+		shots, aim_point(), reloads, torch_on(a) and 1 or 0, time_global() < heal_until and 1 or 0,
+		addon_flags(wpn), hand_flashlight(a),
+	}, "|")
+end
+
+local function tell_extras()
+	if ENGINE_PARTNER and db.actor then coop_partner_extras(extras_now(db.actor)) end
+end
+
 coop_main.add_state_provider("p", function()
 	local a = db.actor
-	if not a then return end
+	if not a or ENGINE_PARTNER then return end
 	local pos = a:position()
 	local dir = device().cam_dir
 	local wpn = a:active_item()
@@ -172,7 +195,7 @@ coop_main.add_state_provider("p", function()
 	}
 end, true) -- fast: the engine puppet interpolates between these positions
 
-coop_main.on_state("p", function(t)
+local function on_partner(t)
 	local r = {
 		level = t[1],
 		pos = vector():set(tonumber(t[2]) or 0, tonumber(t[3]) or 0, tonumber(t[4]) or 0),
@@ -236,7 +259,7 @@ coop_main.on_state("p", function(t)
 	if remote and remote.pos:distance_to(r.pos) < 0.01 and r.moving == 0 then r.vel = VEC_ZERO end
 	remote = r
 	remote_time = now
-	if ENGINE >= 1 and r.stamp and puppet_id and r.level == level.name() then
+	if not ENGINE_PARTNER and ENGINE >= 1 and r.stamp and puppet_id and r.level == level.name() then
 		local npc = level.object_by_id(puppet_id)
 		if npc and npc:net_puppet_active() then
 			npc:net_puppet_push(r.pos, r.stamp)
@@ -248,7 +271,20 @@ coop_main.on_state("p", function(t)
 			end
 		end
 	end
-end, true)
+end
+coop_main.on_state("p", function(t) if not ENGINE_PARTNER then on_partner(t) end end, true)
+
+-- r15: the partner's state from the engine (it has moved the puppet already): the same fields as state "p"
+function engine_partner(motion, extras)
+	local m, e = {}, {}
+	for f in (tostring(motion) .. "|"):gmatch("([^|]*)|") do m[#m + 1] = f end
+	for f in (tostring(extras) .. "|"):gmatch("([^|]*)|") do e[#e + 1] = f end
+	local t = { m[1], m[2], m[3], m[4], m[5], m[6], m[7],
+		e[1], e[2], e[3], e[4], e[5], e[6], e[7], e[8], e[9], e[10], e[11], e[12],
+		m[8], m[9], m[10], e[13], e[14] }
+	local ok, err = pcall(on_partner, t)
+	if not ok then coop_main.log("partner state failed: " .. tostring(err)) end
+end
 
 ------------------------------------------------------------------ puppet driven by the AI planner
 -- Script-mode object actions do not make a stalker shoot, so the puppet runs inside its own AI planner:
@@ -777,6 +813,7 @@ local function actor_on_update()
 	local ok, err = pcall(update)
 	if not ok then coop_main.log("puppet update failed: " .. tostring(err)) end
 	tell_partner()
+	pcall(tell_extras)
 end
 
 ------------------------------------------------------------------ puppet protection

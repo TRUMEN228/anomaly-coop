@@ -477,6 +477,30 @@ cmd.news = function()
 		pda_count("QA news both games make"))
 end
 
+-- money (r15): how much the guest has; a sum given to the host
+cmd.money = function() return true, tostring(db.actor:money()) end
+cmd.give_money = function(a)
+	local n = tonumber(a[3]) or 0
+	db.actor:give_money(-n)
+	coop_money_give(n)
+	return true, "gave " .. n
+end
+
+-- this player hits a creature (r15: the engine takes the hit to the host)
+cmd.hurt = function(a)
+	local id = coop_spawn.L(a[3])
+	local o = id and level.object_by_id(id)
+	if not (o and o:alive()) then return false, "not here or dead" end
+	local h = hit()
+	h.type = hit.wound
+	h.power = tonumber(a[4]) or 0.3
+	h.impulse = 0
+	h.draftsman = db.actor
+	h.direction = vector():set(0, 0, 1)
+	o:hit(h)
+	return true, string.format("%.2f", o:alive() and o.health or 0)
+end
+
 -- is this game asleep (the sleep's dark screen, the controls off)
 cmd.asleep = function() return true, has_alife_info("actor_is_sleeping") and "1" or "0" end
 
@@ -623,7 +647,7 @@ end)
 
 local STEPS = {
 	{ 0, function()
-		announce("ТЕСТ КООПЕРАТИВА: 23 шага, около трёх с половиной минут.\\nОба игрока переносятся на улицу в деревню новичков, рядом ставится тестовый тайник.", 8)
+		announce("ТЕСТ КООПЕРАТИВА: 25 шагов, около трёх с половиной минут.\\nОба игрока переносятся на улицу в деревню новичков, рядом ставится тестовый тайник.", 8)
 		local center, lv, gv = village()
 		local dir, side = open_direction(center)
 		local me = aside(center, 0, 0)
@@ -1214,6 +1238,46 @@ local STEPS = {
 		ctx.expect["23awake"] = function(ok, detail) return ok and detail == "0", "the guest awake again: " .. detail end
 	end },
 	{ 344, function()
+		announce("ШАГ 24. Деньги: хост включает общие деньги и получает 1000 руб.\\nУ гостя столько же денег, сколько у хоста. Потом гость передаёт хосту 300 руб.", 10)
+		coop_main.set_option("money", true)
+		after(1500, function() db.actor:give_money(1000) end)
+	end },
+	{ 350, function()
+		local m = db.actor:money()
+		ctx.expect["24"] = function(ok, detail)
+			return ok and tonumber(detail) == m, string.format("shared money: host %d, guest %s", m, detail)
+		end
+		ask("24", "money")
+	end },
+	{ 352, function()
+		coop_main.set_option("money", false)
+		ctx.money_before = db.actor:money()
+		after(1000, function() ask("24give", "give_money", "300") end)
+	end },
+	{ 357, function()
+		local d = db.actor:money() - (ctx.money_before or 0)
+		record("24got", d == 300, string.format("the host got %d from the guest (300)", d))
+	end },
+	{ 358, function()
+		announce("ШАГ 25. Удары гостя: у хоста появляется плоть, гость ранит её, потом убивает.\\nУ хоста она теряет здоровье и умирает от гостя.", 12)
+		local pos, lv = meeting_point()
+		local se = alife_create(CREATURE, pos, lv, db.actor:game_vertex_id())
+		ctx.h25 = se and se.id
+		if not se then record("25", false, "not made at the host") end
+	end },
+	{ 372, function() if ctx.h25 then ask("25hurt", "hurt", ctx.h25, "0.3") end end },
+	{ 375, function()
+		local o = ctx.h25 and level.object_by_id(ctx.h25)
+		local h = o and (o:alive() and o.health or 0)
+		record("25", h ~= nil and h < 0.95, string.format("the host's flesh after the guest's hit: health %s", h and string.format("%.2f", h) or "none"))
+		if ctx.h25 then ask("25kill", "hurt", ctx.h25, "100") end
+	end },
+	{ 379, function()
+		local o = ctx.h25 and level.object_by_id(ctx.h25)
+		record("25dead", o ~= nil and not o:alive(), "the host's flesh after the guest's kill: " ..
+			(o and (o:alive() and "alive" or "dead") or "none"))
+	end },
+	{ 382, function()
 		announce("ТЕСТ ЗАКОНЧЕН. Итоги — в coop_qa.txt обеих игр.", 15)
 		record("end", true, "done")
 	end },

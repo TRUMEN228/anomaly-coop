@@ -44,7 +44,9 @@ local function explode_sound(sec)
 	return s
 end
 
-coop_main.on_event("boom", function(a)
+-- engine r15: the engine tells this player's explosions itself (coop_props) and hands the partner's here
+local E15 = (rawget(_G, "coop_engine_version") and coop_engine_version() or 0) >= 15
+local function boom(a)
 	local sec = a[1]
 	if not (sec and ini_sys:section_exist(sec) and db.actor) then return end
 	local pos = vector():set(tonumber(a[2]) or 0, tonumber(a[3]) or 0, tonumber(a[4]) or 0)
@@ -54,11 +56,13 @@ coop_main.on_event("boom", function(a)
 	local snd = explode_sound(sec)
 	if snd then pcall(function() sound_object(snd):play_at_pos(db.actor, pos, 0) end) end
 	dbg("partner's " .. sec .. " exploded")
-end)
+end
+coop_main.on_event("boom", boom)
+function engine_boom(sec, x, y, z) boom({ sec, x, y, z }) end
 
 local function actor_on_update()
 	local now = time_global()
-	if now < next_scan or not coop_main.connected then return end
+	if E15 or now < next_scan or not coop_main.connected then return end
 	next_scan = now + 100
 	local ok, err = pcall(scan)
 	if not ok then coop_main.log("fx scan failed: " .. tostring(err)) end

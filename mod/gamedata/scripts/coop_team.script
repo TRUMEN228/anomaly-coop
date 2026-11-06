@@ -181,7 +181,15 @@ coop_main.on_event("ffhit", function(a)
 end)
 
 ------------------------------------------------------------------ shared money
+-- engine r15: the engine follows the money itself (coop_props); the scripts tell it the host's option
+local E15 = (rawget(_G, "coop_engine_version") and coop_engine_version() or 0) >= 15
+local told_money = nil
 local function update_money()
+	if E15 then
+		local on = shared_money() == true
+		if on ~= told_money then coop_money_shared(on) told_money = on end
+		return
+	end
 	local m = db.actor:money()
 	if not shared_money() then money_last = m return end
 	if money_last and m ~= money_last and not applying_money then coop_main.send("money", m - money_last) end
@@ -324,7 +332,7 @@ local function actor_on_update()
 	local ok, err = pcall(function()
 		update_money()
 		update_follow(now)
-		if mset_at and now > mset_at then
+		if mset_at and now > mset_at and not E15 then
 			mset_at = nil
 			if shared_money() then coop_main.send("mset", db.actor:money()) end
 		end
@@ -334,6 +342,7 @@ end
 
 function on_game_start()
 	downed_until, down_pos, partner_down, money_last, follow_at, partner_level, mset_at = nil, nil, false, nil, nil, nil, nil
+	told_money = nil
 	RegisterScriptCallback("actor_on_update", actor_on_update)
 	RegisterScriptCallback("actor_on_before_death", actor_on_before_death)
 	RegisterScriptCallback("actor_on_before_hit", actor_on_before_hit)

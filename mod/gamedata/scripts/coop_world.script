@@ -155,7 +155,8 @@ local function on_before_hit(obj, shit, flags)
 		if flags then flags.ret_value = false end
 		return
 	end
-	if shit.draftsman and shit.draftsman:id() == AC_ID and obj:alive() then
+	-- (engine r15: the engine sends this player's hits itself, coop_partner)
+	if ENGINE < 15 and shit.draftsman and shit.draftsman:id() == AC_ID and obj:alive() then
 		if not pending_hits[obj:id()] then pending_hits[obj:id()] = obj.health end
 	end
 end
@@ -169,6 +170,14 @@ local function flush_hits()
 		end
 	end
 	pending_hits = {}
+end
+
+-- r15: the guest's hit done in the host's game by the engine: the creature turns on the players
+function engine_partner_hit(id)
+	local obj = level.object_by_id(id)
+	if obj and obj:alive() and IsStalker(obj) and obj:relation(db.actor) ~= game_object.enemy then
+		obj:set_relation(game_object.enemy, db.actor)
+	end
 end
 
 coop_main.on_event("hit", function(a)
@@ -212,7 +221,9 @@ local function on_death(victim, who)
 	if coop_player.is_puppet(victim) or victim:id() == AC_ID then return end
 	-- the client reports its own kills; the host only deaths far from both players (the engine brings the near ones
 	-- with the creatures, and the bodies' places, r12)
-	if (coop_main.is_host() and far_from_players(victim)) or (not coop_main.is_host() and who and who:id() == AC_ID) then
+	-- (engine r15: the guest's own kills go with its hits, coop_partner)
+	if (coop_main.is_host() and far_from_players(victim)) or
+		(ENGINE < 15 and not coop_main.is_host() and who and who:id() == AC_ID) then
 		coop_main.send("die", coop_spawn.R(victim:id()), victim:section())
 	end
 end
