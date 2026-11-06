@@ -131,8 +131,10 @@ local function npc_on_use(npc, who)
 	end
 end
 
+-- engine r18: the engine sends this player's deals itself (a sold item as its whole state) and hands a bought one here
+local E18 = (rawget(_G, "coop_engine_version") and coop_engine_version() or 0) >= 18
 local function actor_on_trade(item, sell_bye, money)
-	if applying or not (coop_main.connected and item and talking_to) then return end
+	if E18 or applying or not (coop_main.connected and item and talking_to) then return end
 	local parent = item:parent()
 	if parent and parent:id() == AC_ID then
 		coop_main.send("tbuy", R(talking_to), item:section())
@@ -143,8 +145,8 @@ local function actor_on_trade(item, sell_bye, money)
 	end
 end
 
-coop_main.on_event("tbuy", function(a)
-	local npc = level.object_by_id(L(a[1]) or -1)
+local function trader_sold(a, npc_id)
+	local npc = level.object_by_id(npc_id or -1)
 	if not npc then return end
 	local keep, found = slotted(npc), nil
 	npc:iterate_inventory(function(_, o) if not found and o and o:section() == a[2] and not keep[o:id()] then found = o end end, nil)
@@ -155,7 +157,9 @@ coop_main.on_event("tbuy", function(a)
 		applying = false
 		dbg("trader sold " .. a[2] .. " to partner")
 	end
-end)
+end
+coop_main.on_event("tbuy", function(a) trader_sold(a, L(a[1])) end)
+function engine_tbuy(npc_id, sec) trader_sold({ nil, sec }, npc_id) end
 
 coop_main.on_event("tsell", function(a)
 	local npc = level.object_by_id(L(a[1]) or -1)

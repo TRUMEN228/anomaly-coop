@@ -22,8 +22,10 @@ local declined = false  -- the partner's talk copy was closed here: no new one u
 local talking = false   -- this player's own talk window
 
 ------------------------------------------------------------------ the starter's side
+-- engine r18: the engine sends the talk's lines, answers, choices and switches itself and hands the partner's here
+local E18 = (rawget(_G, "coop_engine_version") and coop_engine_version() or 0) >= 18
 function on_line(speaker, text, other)
-	if not (coop_main.connected and db.actor) or not text or text == "" then return end
+	if E18 or not (coop_main.connected and db.actor) or not text or text == "" then return end
 	coop_main.send("dlg", db.actor:character_name(), speaker or "", text, other or "")
 end
 
@@ -33,7 +35,7 @@ function on_options(other, list, npc_id)
 		coop_main.log(string.format("talk options here: %s, npc %s, connected %s", tostring(other), tostring(npc_id),
 			tostring(coop_main.connected)))
 	end
-	if not (coop_main.connected and db.actor) then return end
+	if E18 or not (coop_main.connected and db.actor) then return end
 	local args = { db.actor:character_name(), other or "", tostring(npc_id and coop_spawn.R(npc_id) or "") }
 	for id, text in (list or ""):gmatch("([^\t\n]+)\t([^\n]*)\n") do
 		args[#args + 1] = id
@@ -42,10 +44,12 @@ function on_options(other, list, npc_id)
 	coop_main.send("dlg_opts", unpack(args))
 end
 
-coop_main.on_event("dlg_pick", function(a)
-	if not (db.actor and db.actor:is_talking() and a[1]) then return end
-	if rawget(_G, "coop_dialog_pick") then coop_dialog_pick(a[1]) end
-end)
+local function picked(id)
+	if not (db.actor and db.actor:is_talking() and id) then return end
+	if rawget(_G, "coop_dialog_pick") then coop_dialog_pick(id) end
+end
+coop_main.on_event("dlg_pick", function(a) picked(a[1]) end)
+function engine_pick(id) picked(id) end
 
 ------------------------------------------------------------------ the partner's copy of the talk window
 -- the game's own talk window with the same NPC here, run by the partner's game (r11)
@@ -58,7 +62,7 @@ end
 
 -- the engine: an answer was chosen in the copy, or the copy closed (or went on to its own trade)
 function on_mirror_pick(id)
-	coop_main.send("dlg_pick", id)
+	if not E18 then coop_main.send("dlg_pick", id) end
 end
 
 function on_mirror_closed(how)
@@ -67,12 +71,15 @@ end
 
 -- the engine: an answer the partner chose here opens a trade or upgrades - they open in the partner's game
 function on_partner_switch(kind)
-	coop_main.send("dlg_switch", kind)
+	if not E18 then coop_main.send("dlg_switch", kind) end
 end
 
 coop_main.on_event("dlg_switch", function(a)
 	if mirror_shown() then coop_talk_mirror_switch(a[1] or "trade") end
 end)
+function engine_switch(kind)
+	if mirror_shown() then coop_talk_mirror_switch(kind or "trade") end
+end
 
 ------------------------------------------------------------------ the partner's lines and answers arrive
 local said = {}          -- the current talk's lines as said: { speaker, text, npc } (a copy opened late shows them)
@@ -96,7 +103,7 @@ local function new_talk(who, other)
 	add(string.format("%%c[255,240,200,120]%s говорит с %s%%c[default]", who, other))
 end
 
-coop_main.on_event("dlg", function(a)
+local function partner_line(a)
 	if not db.actor then return end
 	local who, speaker, text, other = a[1] or "", a[2] or "", a[3] or "", a[4] or ""
 	if #text > 400 then text = text:sub(1, 397) .. "..." end
@@ -106,15 +113,15 @@ coop_main.on_event("dlg", function(a)
 	said[#said + 1] = { speaker, text, other }
 	-- in the copy the partner's lines stand on this player's side, as in the partner's own window
 	if mirror_shown() then coop_talk_mirror_line(speaker, text, speaker ~= other) end
-end)
+end
+coop_main.on_event("dlg", partner_line)
+function engine_line(who, speaker, text, other) partner_line({ who, speaker, text, other }) end
 
-coop_main.on_event("dlg_opts", function(a)
-	if coop_main.debug then coop_main.log("talk options from the partner: " .. tostring(a[2]) .. ", npc " .. tostring(a[3])) end
+local function partner_options(who, other, npc, list)
+	if coop_main.debug then coop_main.log("talk options from the partner: " .. tostring(other) .. ", npc " .. tostring(npc)) end
 	if not db.actor then return end
-	local who, other, npc = a[1] or "", a[2] or "", coop_spawn.L(a[3])
+	local a = { who, other, tostring(npc) }
 	new_talk(who, other)
-	local list = {}
-	for i = 4, #a - 1, 2 do list[#list + 1] = a[i] .. "\t" .. (a[i + 1] or "") .. "\n" end
 	if not mirror_shown() and not declined then
 		local obj = npc and level.object_by_id(npc)
 		coop_main.log(string.format("talk copy: npc %s -> %s (%s), engine %d, talking %s, hud %s", tostring(a[3]),
@@ -128,17 +135,30 @@ coop_main.on_event("dlg_opts", function(a)
 		for _, l in ipairs(said) do coop_talk_mirror_line(l[1], l[2], l[1] ~= l[3]) end
 	end
 	if mirror_shown() then coop_talk_mirror_options(table.concat(list)) end
+end
+coop_main.on_event("dlg_opts", function(a)
+	local list = {}
+	for i = 4, #a - 1, 2 do list[#list + 1] = a[i] .. "\t" .. (a[i + 1] or "") .. "\n" end
+	partner_options(a[1] or "", a[2] or "", coop_spawn.L(a[3]), list)
 end)
+-- r18: the answers as the engine has them ("id\ttext\n..."), the NPC's id here
+function engine_options(who, other, npc, text)
+	local list = {}
+	for line in tostring(text):gmatch("[^\n]+\n?") do list[#list + 1] = line:sub(-1) == "\n" and line or (line .. "\n") end
+	partner_options(who or "", other or "", npc and npc >= 0 and npc or nil, list)
+end
 
 -- the starter closed its talk window: the copy closes, the subtitles go after a while
-coop_main.on_event("dlg_end", function()
+local function talk_over()
 	if mirror_shown() then coop_talk_mirror_close() end
 	declined = false
 	local at = time_global() + AFTER_MS
 	for _, l in ipairs(lines) do
 		if l[2] > at then l[2] = at end
 	end
-end)
+end
+coop_main.on_event("dlg_end", talk_over)
+function engine_end() talk_over() end
 
 -- Num5: the whole last conversation again, for a while
 coop_main.on_event("_cmd_talk", function()
@@ -193,7 +213,9 @@ end
 -- this player's talk window closing tells the partner the conversation is over
 local function actor_on_update()
 	local now_talking = db.actor:is_talking() and not mirror_shown()
-	if talking and not now_talking and coop_main.connected then coop_main.send("dlg_end") end
+	if talking and not now_talking and coop_main.connected then
+		if E18 then coop_talk_end() else coop_main.send("dlg_end") end
+	end
 	talking = now_talking
 end
 

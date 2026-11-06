@@ -32,6 +32,7 @@ local function host() return coop_main.is_host() end
 local function guest() return coop_session.is_guest_session() end
 local function dbg(s) if coop_main.debug then coop_main.log("quests: " .. s) end end
 local L, R = function(x) return coop_spawn.L(x) end, function(x) return coop_spawn.R(x) end
+local told_ready = nil
 local function ready() return coop_main.connected and ready_at and time_global() > ready_at end
 local function tm() return task_manager.get_task_manager() end
 
@@ -130,7 +131,11 @@ local function apply_vars(vars)
 end
 
 ------------------------------------------------------------------ story flags
+-- engine r18: the engine sends this player's story flags (and their removal) itself; this script tells it when the
+-- world is ready for them
+local E18 = (rawget(_G, "coop_engine_version") and coop_engine_version() or 0) >= 18
 local function send_info(info, on)
+	if E18 then return end
 	local n = (info_sent[info] or 0) + 1
 	info_sent[info] = n
 	if n <= 3 then coop_main.send("qinfo", info, on and 1 or 0) end
@@ -144,6 +149,11 @@ end
 
 -- flags can be removed by any script: watch the ones we know of
 local function check_infos()
+	if E18 then
+		local r = ready() and true or false
+		if r ~= told_ready then coop_info_ready(r) told_ready = r end
+		return
+	end
 	for info, had in pairs(info_known) do
 		local has = has_alife_info(info)
 		if had and not has then

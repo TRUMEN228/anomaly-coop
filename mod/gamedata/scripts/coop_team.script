@@ -171,8 +171,11 @@ local function npc_on_before_hit(npc, shit, bone_id, flags)
 	partner_hit(shit.power, shit.type)
 end
 
+local ff_taken = 0
+function ff_count() return ff_taken end
 function engine_ffhit(power, htype, bone, dx, dy, dz, impulse)
 	if not db.actor or downed_until or (power or 0) <= 0 then return end
+	ff_taken = ff_taken + 1
 	local h = hit()
 	h.power = power
 	h.type = htype or hit.fire_wound

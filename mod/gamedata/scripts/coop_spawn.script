@@ -14,6 +14,9 @@
 -- engine r17: with the guest on the host's level the host's new items go as their whole state through the engine
 -- (coop_spawn_item); the guest's engine asks engine_may_spawn and tells engine_spawned
 local E17 = (rawget(_G, "coop_engine_version") and coop_engine_version() or 0) >= 17
+-- engine r18: the host's engine sees what comes and goes in the simulation's registry itself (coop_props) and sends
+-- it; this script only tells it the copies of the partner's things (engine_quiet) and makes the creatures here
+local E18 = (rawget(_G, "coop_engine_version") and coop_engine_version() or 0) >= 18
 local armed = false          -- host: replicate; guest: block own spawns
 local replicating = false    -- guest: true while we create objects the host sent
 local h2g, g2h = {}, {}
@@ -46,6 +49,7 @@ end
 function arm(reason)
 	if not armed then dbg("armed (" .. tostring(reason) .. ")") end
 	armed = true
+	if E18 then coop_spawn_arm(true) end
 end
 
 local function f2(n) return string.format("%.2f", n) end
@@ -53,7 +57,7 @@ local function vec(x, y, z) return vector():set(tonumber(x) or 0, tonumber(y) or
 
 ------------------------------------------------------------------ host side
 local function squad_on_add_npc(squad, se_npc, sec, pos, lvid, gvid)
-	if not (armed and host() and coop_main.connected and squad and se_npc) then return end
+	if E18 or not (armed and host() and coop_main.connected and squad and se_npc) then return end
 	local p = pos or se_npc.position
 	coop_main.send("sqm", squad.id, squad:section_name(), se_npc.id, sec or se_npc:section_name(),
 		f2(p.x), f2(p.y), f2(p.z), lvid or se_npc.m_level_vertex_id, gvid or se_npc.m_game_vertex_id, squad.smart_id or "")
@@ -66,6 +70,7 @@ local function on_register(se, type_name)
 	-- objects created by mirrored events (a partner's drop) are not new spawns
 	if replicating or not armed or coop_world.is_applying() then return end
 	if host() then
+		if E18 then return end
 		if type_name == "se_artefact" and se.parent_id == 65535 then pending_art[se.id] = true
 		elseif se.parent_id and se.parent_id ~= 65535 and se.parent_id ~= AC_ID and type_name:find("^se_") and not REMOVABLE[type_name] then
 			pending_box[se.id] = true
@@ -79,6 +84,7 @@ end
 local function on_unregister(se, type_name)
 	if replicating or not (armed and REMOVABLE[type_name]) then return end
 	if host() and coop_main.connected then
+		if E18 then return end
 		coop_main.send("unreg", se.id, se:section_name())
 	elseif h2g[g2h[se.id] or -1] then
 		unmap(g2h[se.id])
@@ -95,6 +101,7 @@ local function on_created(se)
 	local is_art = IsArtefact(nil, se:clsid())
 	local on_ground = se.parent_id == 65535
 	if host() then
+		if E18 then return end
 		if is_art and on_ground then pending_art[se.id] = true
 		elseif on_ground and is_inv_item(se:section_name()) then pending_world[se.id] = true
 		elseif se.parent_id and not on_ground and se.parent_id ~= AC_ID then pending_box[se.id] = true end
@@ -187,6 +194,15 @@ coop_main.on_event("sqm", function(a)
 		tonumber(a[10]))
 end)
 
+-- r18: the host's engine - a member came to the host's squad; are we making a copy of the partner's thing now
+function engine_sqm(sq_h, sq_sec, npc_h, sec, x, y, z, lvid, gvid, smart)
+	if host() then return end
+	make_creature(sq_h, sq_sec, npc_h, sec, vector():set(x, y, z), lvid, gvid, smart and smart >= 0 and smart or nil)
+end
+function engine_quiet()
+	return replicating or coop_world.is_applying() or coop_objects.is_applying()
+end
+
 -- a creature of this game the host does not have: gone (no echo to the host)
 function release_creature(id)
 	local se = alife_object(id)
@@ -253,7 +269,7 @@ function engine_spawned(hid, gid, sec, kind)
 	dbg(string.format("%s %s host=%d guest=%d (whole state)", tostring(kind), tostring(sec), hid, gid))
 end
 
-coop_main.on_event("unreg", function(a)
+local function on_unreg(a)
 	if host() then return end
 	local hid, sec = tonumber(a[1]), a[2]
 	local gid = L(hid)
@@ -271,7 +287,9 @@ coop_main.on_event("unreg", function(a)
 		dbg("removed " .. sec .. " ok=" .. tostring(ok))
 	end
 	unmap(hid)
-end)
+end
+coop_main.on_event("unreg", on_unreg)
+function engine_unreg(hid, sec) on_unreg({ hid, sec }) end
 
 ------------------------------------------------------------------ main loop
 local next_tick = 0
