@@ -84,8 +84,13 @@ local function apply(t)
 	local now = time_global()
 	local listed, made, moved, killed, revive = {}, 0, 0, 0, {}
 	for i = 6, #t do
-		local hid, sec, x, y, z, lvid, gvid, alive, sq, sq_sec, smart =
-			t[i]:match("^(%d+):([^:]+):([^:]+):([^:]+):([^:]+):(%d+):(%d+):(%d):(%d*):([^:]*):(%d*)$")
+		-- (r16: the look and the name at the end)
+		local hid, sec, x, y, z, lvid, gvid, alive, sq, sq_sec, smart, look, name =
+			t[i]:match("^(%d+):([^:]+):([^:]+):([^:]+):([^:]+):(%d+):(%d+):(%d):(%d*):([^:]*):(%d*):([^:]*):(.*)$")
+		if not hid then
+			hid, sec, x, y, z, lvid, gvid, alive, sq, sq_sec, smart =
+				t[i]:match("^(%d+):([^:]+):([^:]+):([^:]+):([^:]+):(%d+):(%d+):(%d):(%d*):([^:]*):(%d*)$")
+		end
 		hid = tonumber(hid)
 		if hid then
 			listed[hid] = true
@@ -93,6 +98,16 @@ local function apply(t)
 			local id = coop_spawn.L(hid)
 			local obj = id and level.object_by_id(id)
 			if obj and obj:section() == sec then
+				-- the host's look and name (a copy made here picked its own)
+				if look and look ~= "" and obj:alive() and IsStalker(obj) then
+					local here_look = (obj:get_visual_name() or ""):gsub("%.[oO][gG][fF]$", "")
+					if here_look:lower() ~= look:gsub("%.[oO][gG][fF]$", ""):lower() then
+						pcall(obj.set_visual_name, obj, (look:gsub("%.[oO][gG][fF]$", "")))
+					end
+					if name and name ~= "" and obj.set_character_name and obj:character_name() ~= name then
+						pcall(obj.set_character_name, obj, name)
+					end
+				end
 				if alive == "0" and obj:alive() then
 					obj:kill(obj)
 					killed = killed + 1

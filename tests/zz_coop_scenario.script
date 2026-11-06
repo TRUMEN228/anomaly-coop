@@ -503,27 +503,29 @@ end
 
 -- a gift (r16): a worn pistol made here, then given to the host as its whole state
 local GIFT, GIFT_COND = "wpn_pm", 0.55
-local function worn_pistols()
-	local n = 0
+-- the pistols this player has: id -> condition
+local function pistols()
+	local t = {}
 	db.actor:iterate_inventory(function(_, o)
-		if o and o:section() == GIFT and math.abs(o:condition() - GIFT_COND) < 0.02 then n = n + 1 end
+		if o and o:section() == GIFT then t[o:id()] = o:condition() end
 	end, db.actor)
-	return n
+	return t
 end
 cmd.gift_make = function()
 	alife_create_item(GIFT, db.actor, { cond = GIFT_COND })
 	return true, "made"
 end
 cmd.gift_give = function()
-	local item
-	db.actor:iterate_inventory(function(_, o)
-		if not item and o and o:section() == GIFT and math.abs(o:condition() - GIFT_COND) < 0.02 then item = o end
-	end, db.actor)
-	if not item then return false, "no worn pistol here" end
-	if not coop_items_gift(item:id()) then return false, "the engine did not take it" end
-	local se = alife_object(item:id())
+	-- the newest pistol: the one just made
+	local id
+	for i in pairs(pistols()) do if not id or i > id then id = i end end
+	local item = id and level.object_by_id(id)
+	if not item then return false, "no pistol here" end
+	local cond = item:condition()
+	if not coop_items_gift(id) then return false, "the engine did not take it" end
+	local se = alife_object(id)
 	if se then alife_release(se) end
-	return true, "given"
+	return true, string.format("%.2f", cond)
 end
 
 -- is this game asleep (the sleep's dark screen, the controls off)
@@ -1305,13 +1307,23 @@ local STEPS = {
 	end },
 	{ 382, function()
 		announce("ШАГ 26. Передача вещи: гость передаёт хосту пистолет с износом 45 %.\\nУ хоста появляется такой же пистолет с тем же износом.", 8)
-		ctx.pistols = worn_pistols()
+		ctx.pistols = pistols()
 		ask("26make", "gift_make")
 	end },
-	{ 385, function() ask("26give", "gift_give") end },
+	{ 385, function()
+		ctx.expect["26give"] = function(ok, detail)
+			ctx.gift_cond = tonumber(detail)
+			return ok, "guest gave a pistol, condition " .. detail
+		end
+		ask("26give", "gift_give")
+	end },
 	{ 390, function()
-		local n = worn_pistols() - (ctx.pistols or 0)
-		record("26", n == 1, string.format("the host got %d worn pistol(s) from the guest (1, condition %.2f)", n, GIFT_COND))
+		local new = {}
+		for id, c in pairs(pistols()) do if not (ctx.pistols or {})[id] then new[#new + 1] = c end end
+		local c = new[1]
+		local same = #new == 1 and ctx.gift_cond and math.abs(c - ctx.gift_cond) < 0.02
+		record("26", same == true, string.format("the host got %d pistol(s), condition %s (the guest's %s)", #new,
+			c and string.format("%.2f", c) or "-", tostring(ctx.gift_cond)))
 	end },
 	{ 392, function()
 		announce("ТЕСТ ЗАКОНЧЕН. Итоги — в coop_qa.txt обеих игр.", 15)
