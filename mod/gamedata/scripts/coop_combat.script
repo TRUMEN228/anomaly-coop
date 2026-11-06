@@ -8,6 +8,9 @@
 	Anomaly asks on_enemy_eval whether a creature takes another for an enemy: the answer comes from here.
 --]]
 
+-- engine r17: the host's engine sends the creatures' hits on the guest's puppet itself ("phit" of coop_props) and the
+-- guest's hands them to engine_phit; partner_hit only counts them
+local E17 = (rawget(_G, "coop_engine_version") and coop_engine_version() or 0) >= 17
 local applying = false        -- guest: a hit from the host is being applied
 local stats = { sent = 0, got = 0, blocked = 0, on_guest = 0 } -- on_guest: times one was found fighting the guest
 local next_stats = 0
@@ -49,18 +52,18 @@ function partner_hit(power, htype, bone, who_id, dx, dy, dz, impulse)
 	local who = who_id and who_id >= 0 and level.object_by_id(who_id)
 	if not creature(who) then return end
 	stats.sent = stats.sent + 1
+	if E17 then return end
 	coop_main.send("phit", string.format("%.4f", power), tostring(htype), bone or "", tostring(who_id),
 		string.format("%.3f", dx or 0), string.format("%.3f", dy or 0), string.format("%.3f", dz or 1),
 		string.format("%.3f", impulse or 0))
 end
 
-coop_main.on_event("phit", function(a)
+local function take_hit(a, who)
 	if not (db.actor and guest()) then return end
 	local h = hit()
 	h.power = tonumber(a[1]) or 0
 	h.type = tonumber(a[2]) or hit.fire_wound
 	if a[3] and a[3] ~= "" then pcall(h.bone, h, a[3]) end
-	local who = coop_spawn.L(a[4])
 	h.draftsman = who and level.object_by_id(who) or db.actor
 	h.direction = vector():set(tonumber(a[5]) or 0, tonumber(a[6]) or 0, tonumber(a[7]) or 1)
 	h.impulse = tonumber(a[8]) or 0
@@ -69,7 +72,13 @@ coop_main.on_event("phit", function(a)
 	local ok, err = pcall(db.actor.hit, db.actor, h)
 	applying = false
 	if not ok then coop_main.log("combat: a hit from the host failed: " .. tostring(err)) end
-end)
+end
+coop_main.on_event("phit", function(a) take_hit(a, coop_spawn.L(a[4])) end)
+
+-- r17: the host's creature's hit from the engine (who: its id here)
+function engine_phit(power, htype, bone, who, dx, dy, dz, impulse)
+	take_hit({ power, htype, bone, nil, dx, dy, dz, impulse }, who and who >= 0 and who or nil)
+end
 
 -- the guest: the creatures' own hits on this player do nothing (the host's come as "phit")
 local function actor_on_before_hit(shit, bone_id, flags)

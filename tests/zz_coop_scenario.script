@@ -674,7 +674,7 @@ end)
 
 local STEPS = {
 	{ 0, function()
-		announce("ТЕСТ КООПЕРАТИВА: 26 шагов, около трёх с половиной минут.\\nОба игрока переносятся на улицу в деревню новичков, рядом ставится тестовый тайник.", 8)
+		announce("ТЕСТ КООПЕРАТИВА: 27 шагов, около трёх с половиной минут.\\nОба игрока переносятся на улицу в деревню новичков, рядом ставится тестовый тайник.", 8)
 		local center, lv, gv = village()
 		local dir, side = open_direction(center)
 		local me = aside(center, 0, 0)
@@ -1326,6 +1326,21 @@ local STEPS = {
 			c and string.format("%.2f", c) or "-", tostring(ctx.gift_cond)))
 	end },
 	{ 392, function()
+		announce("ШАГ 27. Новая вещь в мире: у хоста на земле появляется артефакт «Медуза».\\nУ ГОСТЯ он появляется там же.", 8)
+		local pos, lv = ahead(4)
+		local se = alife_create("af_medusa", pos, lv, db.actor:game_vertex_id())
+		ctx.art_pos = se and pos
+		if not se then record("27", false, "not made at the host") end
+	end },
+	{ 398, function()
+		local p = ctx.art_pos
+		if not p then return end
+		ctx.expect["27"] = function(ok, detail)
+			return ok and (tonumber(detail) or 0) >= 1, "the guest's medusas where the host's appeared (2 m): " .. detail
+		end
+		ask("27", "ground_r", "af_medusa", string.format("%.2f", p.x), string.format("%.2f", p.y), string.format("%.2f", p.z), "2")
+	end },
+	{ 402, function()
 		announce("ТЕСТ ЗАКОНЧЕН. Итоги — в coop_qa.txt обеих игр.", 15)
 		record("end", true, "done")
 	end },

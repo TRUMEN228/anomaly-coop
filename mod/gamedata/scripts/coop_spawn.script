@@ -11,6 +11,9 @@
 	own scripts spawn. Ids on the wire are always host ids: use L() for incoming ids and R() for outgoing.
 --]]
 
+-- engine r17: with the guest on the host's level the host's new items go as their whole state through the engine
+-- (coop_spawn_item); the guest's engine asks engine_may_spawn and tells engine_spawned
+local E17 = (rawget(_G, "coop_engine_version") and coop_engine_version() or 0) >= 17
 local armed = false          -- host: replicate; guest: block own spawns
 local replicating = false    -- guest: true while we create objects the host sent
 local h2g, g2h = {}, {}
@@ -225,6 +228,31 @@ coop_main.on_event("bspawn", function(a)
 	if se then map(hid, se.id); stats.made = stats.made + 1; dbg("box item " .. sec .. " -> box " .. box.id) end
 end)
 
+-- r17, guest: may the host's new item be made here (box: the box's id here)? The engine makes it then
+function engine_may_spawn(hid, kind, box_id)
+	if host() or not hid or h2g[hid] then return false end
+	if kind == "box" then
+		if not (box_id and box_id >= 0 and alife_object(box_id)) then return false end
+		if coop_objects.stash_spawned_here(box_id) then return false end
+		if treasure_manager and type(treasure_manager.caches[box_id]) == "string" then
+			treasure_manager.caches[box_id] = true -- the host opened it first: its spawn replaces our lazy one
+		end
+	end
+	replicating = true -- (its registration is no spawn of this game's own)
+	return true
+end
+
+function engine_spawned(hid, gid, sec, kind)
+	replicating = false
+	if not (gid and gid >= 0) then
+		dbg("engine could not make " .. tostring(kind) .. " " .. tostring(sec))
+		return
+	end
+	map(hid, gid)
+	stats.made = stats.made + 1
+	dbg(string.format("%s %s host=%d guest=%d (whole state)", tostring(kind), tostring(sec), hid, gid))
+end
+
 coop_main.on_event("unreg", function(a)
 	if host() then return end
 	local hid, sec = tonumber(a[1]), a[2]
@@ -247,6 +275,12 @@ end)
 
 ------------------------------------------------------------------ main loop
 local next_tick = 0
+local function by_engine(id, kind)
+	if not E17 then return false end
+	local r = coop_player.get_remote()
+	return r ~= nil and r.level == level.name() and coop_spawn_item(id, kind) == true
+end
+
 local function actor_on_update()
 	local now = time_global()
 	if now < next_tick then return end
@@ -257,7 +291,9 @@ local function actor_on_update()
 		local se = alife_object(id)
 		if se and se.parent_id == 65535 and coop_main.connected then
 			local p = se.position
-			coop_main.send("art", id, se:section_name(), f2(p.x), f2(p.y), f2(p.z), se.m_level_vertex_id, se.m_game_vertex_id)
+			if not by_engine(id, "art") then
+				coop_main.send("art", id, se:section_name(), f2(p.x), f2(p.y), f2(p.z), se.m_level_vertex_id, se.m_game_vertex_id)
+			end
 			stats.sent = stats.sent + 1
 		end
 	end
@@ -268,7 +304,9 @@ local function actor_on_update()
 		local se = alife_object(id)
 		if se and se.parent_id == 65535 and coop_main.connected then
 			local p = se.position
-			coop_main.send("wspawn", id, se:section_name(), f2(p.x), f2(p.y), f2(p.z), se.m_level_vertex_id, se.m_game_vertex_id)
+			if not by_engine(id, "ground") then
+				coop_main.send("wspawn", id, se:section_name(), f2(p.x), f2(p.y), f2(p.z), se.m_level_vertex_id, se.m_game_vertex_id)
+			end
 			stats.sent = stats.sent + 1
 		end
 	end
@@ -279,7 +317,7 @@ local function actor_on_update()
 		local se = alife_object(id)
 		local box = se and se.parent_id and alife_object(se.parent_id)
 		if box and IsInvbox(nil, box:clsid()) and coop_main.connected then
-			coop_main.send("bspawn", box.id, id, se:section_name())
+			if not by_engine(id, "box") then coop_main.send("bspawn", box.id, id, se:section_name()) end
 			stats.sent = stats.sent + 1
 		end
 	end
