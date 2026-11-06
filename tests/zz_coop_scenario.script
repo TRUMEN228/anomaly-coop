@@ -464,6 +464,19 @@ end
 cmd.weather = function() return true, string.format("%s at %02d:%02d", tostring(level.get_weather()),
 	level.get_time_hours(), level.get_time_minutes()) end
 
+-- PDA messages (r14): the guest's own one and one both games make
+local function pda(text) db.actor:give_game_news("QA", text, "ui_inGame2_PD_Lider", 0, 4000) end
+local function pda_count(text) return rawget(_G, "coop_news_count") and coop_news_count(text) or -1 end
+cmd.news_say = function()
+	pda("QA news from the guest")
+	pda("QA news both games make")
+	return true, "said"
+end
+cmd.news = function()
+	return true, string.format("%d,%d,%d", pda_count("QA news from the host"), pda_count("QA news from the guest"),
+		pda_count("QA news both games make"))
+end
+
 -- the guest's clock runs two hours ahead of the host's (the engine puts it back, r14)
 cmd.ahead = function()
 	level.change_game_time(0, 2, 0)
@@ -607,7 +620,7 @@ end)
 
 local STEPS = {
 	{ 0, function()
-		announce("ТЕСТ КООПЕРАТИВА: 21 шаг, около трёх с половиной минут.\\nОба игрока переносятся на улицу в деревню новичков, рядом ставится тестовый тайник.", 8)
+		announce("ТЕСТ КООПЕРАТИВА: 22 шага, около трёх с половиной минут.\\nОба игрока переносятся на улицу в деревню новичков, рядом ставится тестовый тайник.", 8)
 		local center, lv, gv = village()
 		local dir, side = open_direction(center)
 		local me = aside(center, 0, 0)
@@ -1158,6 +1171,22 @@ local STEPS = {
 		ask("21", "weather")
 	end },
 	{ 300, function()
+		announce("ШАГ 22. Сообщения КПК: хост и гость получают по своему сообщению и одно общее.\\nУ обоих в КПК все три, общее — один раз.", 10)
+		pda("QA news from the host")
+		pda("QA news both games make")
+		ask("22say", "news_say")
+	end },
+	{ 306, function()
+		local h, g, b = pda_count("QA news from the host"), pda_count("QA news from the guest"),
+			pda_count("QA news both games make")
+		record("22host", h == 1 and g == 1 and b == 1,
+			string.format("host's PDA: its own %d, the guest's %d, the shared %d (1 each)", h, g, b))
+		ctx.expect["22"] = function(ok, detail)
+			return ok and detail == "1,1,1", "guest's PDA (host's, own, shared): " .. detail .. " (1 each)"
+		end
+		ask("22", "news")
+	end },
+	{ 310, function()
 		announce("ТЕСТ ЗАКОНЧЕН. Итоги — в coop_qa.txt обеих игр.", 15)
 		record("end", true, "done")
 	end },

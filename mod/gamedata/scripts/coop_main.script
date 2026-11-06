@@ -209,7 +209,11 @@ end
 
 function msg(text, header, icon)
 	if not db.actor then return end
+	-- (the mod's own messages are this player's: the engine does not send them to the partner's PDA, r14)
+	local keep = rawget(_G, "coop_news_keep")
+	if keep then keep(true) end
 	db.actor:give_game_news(header or "Кооператив", text, icon or "ui_inGame2_PD_Lider", 0, 6000)
+	if keep then keep(false) end
 	xr_sound.set_sound_play(AC_ID, "pda_tips")
 end
 
