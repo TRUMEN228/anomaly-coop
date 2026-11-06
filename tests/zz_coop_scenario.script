@@ -1401,8 +1401,9 @@ local STEPS = {
 		ask("28h", "has_info", "coop_qa_flag_host")
 		record("28g", has_alife_info("coop_qa_flag_guest"), "the guest's flag at the host: " ..
 			(has_alife_info("coop_qa_flag_guest") and "1" or "0"))
-		db.actor:disable_info_portion("coop_qa_flag_host")
 	end },
+	-- (a second later: the removal goes by the engine and would pass the question above)
+	{ 407, function() db.actor:disable_info_portion("coop_qa_flag_host") end },
 	{ 410, function()
 		ctx.expect["28off"] = function(ok, detail) return ok and detail == "0", "the host's removed flag at the guest: " .. detail end
 		ask("28off", "has_info", "coop_qa_flag_host")
