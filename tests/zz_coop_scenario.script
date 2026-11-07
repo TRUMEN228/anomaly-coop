@@ -543,7 +543,11 @@ end
 cmd.ff_count = function() return true, tostring(coop_team.ff_count and coop_team.ff_count() or -1) end
 
 -- is this game asleep (the sleep's dark screen, the controls off)
-cmd.asleep = function() return true, has_alife_info("actor_is_sleeping") and "1" or "0" end
+cmd.asleep = function()
+	-- (the partner's sleep ran here: not only the flag)
+	local ran = coop_team.partner_sleeps and coop_team.partner_sleeps() or 0
+	return true, (has_alife_info("actor_is_sleeping") and ran > 0) and "1" or "0"
+end
 
 -- the guest's clock runs two hours ahead of the host's (the engine puts it back, r14)
 cmd.ahead = function()

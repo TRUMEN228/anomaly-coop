@@ -279,8 +279,11 @@ function partner_wake()
 	disable_info("actor_is_sleeping")
 end
 
+local partner_slept = 0
+function partner_sleeps() return partner_slept end
 local function sleep_with_partner(h)
 	partner_hours = h
+	partner_slept = partner_slept + 1
 	pcall(function() local w = level.main_input_receiver(); if w then w:HideDialog() end end)
 	xr_effects.disable_ui(db.actor, nil)
 	saved_music = get_console_cmd(2, "snd_volume_music")
@@ -373,4 +376,8 @@ function on_game_start()
 	RegisterScriptCallback("npc_on_before_hit", npc_on_before_hit)
 	partner_hours = nil
 	pcall(hook_sleep)
+	-- (engine r18 sends story flags: these are this player's own sleep, not the world's)
+	if rawget(_G, "coop_info_skip") then
+		for _, f in ipairs({ "actor_is_sleeping", "sleep_active", "tutorial_sleep" }) do coop_info_skip(f) end
+	end
 end
