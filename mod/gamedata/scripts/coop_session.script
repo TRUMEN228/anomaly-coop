@@ -77,6 +77,12 @@ local session_owner = nil      -- player id stored in the loaded save
 local char_ready = false       -- false until the actor really is our character
 local next_export = 0
 local import_step = nil
+-- the guest's character goes into the host's saves: loading a save (after the guest's death, too) brings it back as
+-- it was at that save - not as the guest's file has it now (items and money taken after the save stayed)
+local guest_chars = {}         -- player id -> character text, as the loaded save holds it or the guest sent it since
+local next_char_send, last_sent_char = 0, nil
+local function pack_char(text) return (text:gsub("|", "\1"):gsub("\n", "\2")) end
+local function unpack_char(s) return (tostring(s or ""):gsub("\1", "|"):gsub("\2", "\n")) end
 
 local STARTER_KIT = {
 	{ "wpn_knife" }, { "wpn_pm" }, { "ammo_9x18_fmj" }, { "ammo_9x18_fmj" },
@@ -213,10 +219,16 @@ function export_character()
 end
 
 local function read_character()
-	local f = io.open(app_path(char_file()), "r")
-	if not f then return nil end
-	local raw = f:read("*a")
-	f:close()
+	-- the character the loaded save holds for this player first, this player's file when the save has none
+	local raw = player_id and guest_chars[player_id]
+	if raw and raw:find("\nend") then
+		coop_main.log("character: as the loaded save holds it")
+	else
+		local f = io.open(app_path(char_file()), "r")
+		if not f then return nil end
+		raw = f:read("*a")
+		f:close()
+	end
 	if not raw:find("\nend") then return nil end
 	local c = { money = 0, items = {} }
 	for line in raw:gmatch("[^\n]+") do
@@ -499,6 +511,19 @@ coop_main.on_event("_cmd_sync", function(a)
 	coop_main.msg("Перезагрузка мира у обоих: ждём, пока напарник получит сейв...")
 end)
 
+-- the tests: the money of the partner's character the next save would keep (nil: none)
+function partner_char_money()
+	for id, text in pairs(guest_chars) do
+		if id ~= player_id then return tonumber(text:match("\nm|(%-?%d+)") or "") end
+	end
+end
+
+-- host: the guest's character, kept for the next save
+coop_main.on_event("gchar", function(a)
+	if is_guest_session() or not (a[1] and a[2]) then return end
+	guest_chars[a[1]] = unpack_char(a[2])
+end)
+
 coop_main.on_event("_cmd_load", function()
 	-- the host: both games go back to the last save made (a quicksave too), as with Num2 but without a new one
 	if coop_main.role == "host" then
@@ -525,12 +550,18 @@ local function save_state(m_data)
 	-- sessions saved by the host are owned by the host; a guest's quicksave of a session stays the host's
 	m_data.coop_owner = session_owner or player_id
 	m_data.coop_world = world_name()
+	-- a guest's own save keeps its character as it is now
+	if is_guest_session() and db.actor and char_ready and player_id then
+		guest_chars[player_id] = table.concat(character_lines(), "\n")
+	end
+	m_data.coop_guest_chars = guest_chars
 	if not session_owner then session_owner = player_id end
 end
 
 local function load_state(m_data)
 	session_owner = m_data.coop_owner
 	loaded_world = m_data.coop_world
+	guest_chars = type(m_data.coop_guest_chars) == "table" and m_data.coop_guest_chars or {}
 end
 
 local function actor_on_first_update()
@@ -554,6 +585,17 @@ local function actor_on_update()
 	if mirror_at and now > mirror_at then
 		mirror_at = nil
 		exec_console_cmd("save " .. session_save())
+	end
+	-- the guest's character to the host every few seconds when it changed (alive only: the host's save after a
+	-- death keeps the character from before it)
+	if now > next_char_send and is_guest_session() and char_ready and player_id and coop_main.connected
+		and db.actor:alive() then
+		next_char_send = now + 3000
+		local text = table.concat(character_lines(), "\n")
+		if text ~= last_sent_char then
+			last_sent_char = text
+			coop_main.send("gchar", player_id, pack_char(text))
+		end
 	end
 	if now > next_export then
 		next_export = now + 15000

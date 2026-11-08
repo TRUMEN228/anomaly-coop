@@ -479,6 +479,8 @@ end
 
 -- money (r15): how much the guest has; a sum given to the host
 cmd.money = function() return true, tostring(db.actor:money()) end
+-- money for this player only (not a transfer)
+cmd.add_money = function(a) db.actor:give_money(tonumber(a[3]) or 0) return true, "added" end
 cmd.give_money = function(a)
 	local n = tonumber(a[3]) or 0
 	db.actor:give_money(-n)
@@ -692,7 +694,7 @@ end)
 
 local STEPS = {
 	{ 0, function()
-		announce("ТЕСТ КООПЕРАТИВА: 31 шаг, около трёх с половиной минут.\\nОба игрока переносятся на улицу в деревню новичков, рядом ставится тестовый тайник.", 8)
+		announce("ТЕСТ КООПЕРАТИВА: 33 шага, около трёх с половиной минут.\\nОба игрока переносятся на улицу в деревню новичков, рядом ставится тестовый тайник.", 8)
 		local center, lv, gv = village()
 		local dir, side = open_direction(center)
 		local me = aside(center, 0, 0)
@@ -1452,6 +1454,30 @@ local STEPS = {
 		coop_main.set_option("ff", false)
 	end },
 	{ 426, function()
+		announce("ШАГ 32. Быстрые сохранения: хост сохраняется пять раз подряд.\\nИгра не вылетает, модель гостя у хоста остаётся той же (её больше не пересоздают).", 6)
+		ctx.puppet0 = coop_player.get_puppet_id()
+		for i = 0, 4 do after(i * 700, function() exec_console_cmd("save coop_qa_quick") end) end
+	end },
+	{ 434, function()
+		local id = coop_player.get_puppet_id()
+		local here = id and level.object_by_id(id)
+		record("32", here ~= nil and id == ctx.puppet0, string.format("after 5 quick saves: puppet %s (before %s), %s",
+			tostring(id), tostring(ctx.puppet0), here and "here" or "not here"))
+	end },
+	{ 436, function()
+		announce("ШАГ 33. Персонаж гостя в сохранениях хоста: гость получает 777 рублей.\\nХост знает его новые деньги — загрузка сохранения вернёт персонажа гостя таким, каким он был при сохранении.", 6)
+		ask("33give", "add_money", "777")
+	end },
+	{ 437, function()
+		ctx.expect["33money"] = function(ok, detail) ctx.guest_money = tonumber(detail) return ok, "guest's money: " .. detail end
+		ask("33money", "money")
+	end },
+	{ 444, function()
+		local m = coop_session.partner_char_money and coop_session.partner_char_money()
+		record("33", m ~= nil and m == ctx.guest_money, string.format("the guest's money the host's save keeps: %s (guest has %s)",
+			tostring(m), tostring(ctx.guest_money)))
+	end },
+	{ 446, function()
 		announce("ТЕСТ ЗАКОНЧЕН. Итоги — в coop_qa.txt обеих игр.", 15)
 		record("end", true, "done")
 	end },

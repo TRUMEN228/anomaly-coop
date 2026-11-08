@@ -851,6 +851,9 @@ end)
 ------------------------------------------------------------------ saves
 -- never keep the puppet in a save file
 local function on_before_save_input()
+	-- engine r19 leaves the actor puppet out of the save itself: releasing and respawning it around every save
+	-- crashed when quick saves came one after another (a release while the puppet was still being spawned)
+	if ENGINE >= 19 and puppet_is_actor then return end
 	release_puppet()
 end
 
