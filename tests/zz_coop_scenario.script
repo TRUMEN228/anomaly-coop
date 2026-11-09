@@ -479,6 +479,8 @@ end
 
 -- money (r15): how much the guest has; a sum given to the host
 cmd.money = function() return true, tostring(db.actor:money()) end
+-- the link's own view (engine r20: the UDP side of a TCP link)
+cmd.net_status = function() return true, rawget(_G, "coop_link_net_status") and coop_link_net_status() or "none" end
 -- money for this player only (not a transfer)
 cmd.add_money = function(a) db.actor:give_money(tonumber(a[3]) or 0) return true, "added" end
 cmd.give_money = function(a)
@@ -694,7 +696,7 @@ end)
 
 local STEPS = {
 	{ 0, function()
-		announce("ТЕСТ КООПЕРАТИВА: 33 шага, около трёх с половиной минут.\\nОба игрока переносятся на улицу в деревню новичков, рядом ставится тестовый тайник.", 8)
+		announce("ТЕСТ КООПЕРАТИВА: 34 шага, около трёх с половиной минут.\\nОба игрока переносятся на улицу в деревню новичков, рядом ставится тестовый тайник.", 8)
 		local center, lv, gv = village()
 		local dir, side = open_direction(center)
 		local me = aside(center, 0, 0)
@@ -1478,6 +1480,13 @@ local STEPS = {
 			tostring(m), tostring(ctx.guest_money)))
 	end },
 	{ 446, function()
+		announce("ШАГ 34. Быстрый канал: движение и существа идут по UDP у обоих (с потерями и задержкой реле).", 4)
+		local st = rawget(_G, "coop_link_net_status") and coop_link_net_status() or "none"
+		record("34host", st:find("udp on") ~= nil, "host's link: " .. st)
+		ctx.expect["34"] = function(ok, detail) return ok and detail:find("udp on") ~= nil, "guest's link: " .. detail end
+		ask("34", "net_status")
+	end },
+	{ 450, function()
 		announce("ТЕСТ ЗАКОНЧЕН. Итоги — в coop_qa.txt обеих игр.", 15)
 		record("end", true, "done")
 	end },

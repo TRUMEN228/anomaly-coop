@@ -338,7 +338,7 @@ function CoopMenu:StatusText()
 	if k == "connected" then
 		return "Подключён: " .. a .. (tonumber(b) and tonumber(b) > 0 and (", пинг " .. b .. " мс") or "")
 	elseif k == "listening" then return "Ждём напарника..."
-	elseif k == "connecting" then return "Подключаюсь..."
+	elseif k == "connecting" then return a ~= "" and ("Подключаюсь... Не вышло: " .. a) or "Подключаюсь..."
 	elseif k == "starting" then return "Запускаю Steam..."
 	elseif k == "error" then return "Ошибка: " .. a
 	end

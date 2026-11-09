@@ -1,5 +1,7 @@
 # TCP relay that makes a localhost link behave like a laggy internet one (two test games on one PC).
 # Each chunk is delivered after a random one-way delay, in order, as TCP would.
+# The link's UDP side (engine r20) goes through the same port: each datagram on its own delay, some lost, some
+# out of order, as the internet does.
 # usage: python lag_relay.py <listen_port> <target_port> [min_ms] [max_ms]
 import asyncio, random, sys, time
 
@@ -51,9 +53,49 @@ async def handle(client_r, client_w):
     await asyncio.gather(pipe(client_r, host_w, "guest->host"), pipe(host_r, client_w, "host->guest"))
 
 
+LOSS = 0.02
+
+
+class ToHost(asyncio.DatagramProtocol):
+    # the relay's socket towards the host for one guest address: the host answers here
+    def __init__(self, front, guest):
+        self.front, self.guest = front, guest
+
+    def connection_made(self, transport):
+        self.transport = transport
+
+    def datagram_received(self, data, addr):
+        later(lambda: self.front.transport.sendto(data, self.guest))
+
+
+class Front(asyncio.DatagramProtocol):
+    # the guest's datagrams come here (the port the guest reached the host's TCP at)
+    def __init__(self):
+        self.back = {}
+
+    def connection_made(self, transport):
+        self.transport = transport
+
+    def datagram_received(self, data, addr):
+        back = self.back.get(addr)
+        if back is None:
+            loop = asyncio.get_running_loop()
+            self.back[addr] = back = ToHost(self, addr)
+            loop.create_task(loop.create_datagram_endpoint(lambda: back, remote_addr=("127.0.0.1", TARGET)))
+            print("udp side up", flush=True)
+        later(lambda: back.transport.sendto(data) if hasattr(back, "transport") else None)
+
+
+def later(fn):
+    if random.random() < LOSS:
+        return
+    asyncio.get_running_loop().call_later(random.uniform(MIN_MS, MAX_MS) / 1000, fn)
+
+
 async def main():
     server = await asyncio.start_server(handle, "127.0.0.1", LISTEN)
-    print(f"relay 127.0.0.1:{LISTEN} -> :{TARGET}", flush=True)
+    await asyncio.get_running_loop().create_datagram_endpoint(Front, local_addr=("127.0.0.1", LISTEN))
+    print(f"relay 127.0.0.1:{LISTEN} -> :{TARGET} (tcp and udp)", flush=True)
     async with server:
         await server.serve_forever()
 
