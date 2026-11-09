@@ -377,7 +377,7 @@ function is_client() return connected and role == "client" end
 ------------------------------------------------------------------ hotkeys
 -- defaults; CoopLauncher writes the player's choice to appdata\coop_keys.txt ("tp=DIK_NUMPAD1")
 local keys = { tp = "DIK_NUMPAD1", sync = "DIK_NUMPAD2", load = "DIK_NUMPAD3", status = "DIK_NUMPAD0", give = "DIK_NUMPAD4",
-	talk = "DIK_NUMPAD5", money = "DIK_NUMPAD6" }
+	talk = "DIK_NUMPAD5", money = "DIK_NUMPAD6", admin = "DIK_NUMPAD7" }
 local options = nil          -- launcher options from the same file ("rewards=1")
 
 local function load_keys()
@@ -410,6 +410,9 @@ function set_option(name, v)
 	options[name] = v
 end
 
+-- the key of an action as DIK_keys names it ("DIK_NUMPAD7")
+function key_dik(action) return keys[action] end
+
 -- "DIK_NUMPAD3" -> "Num3" for messages
 function key_name(action)
 	local k = (keys[action] or ""):gsub("^DIK_", "")
@@ -429,6 +432,8 @@ local function on_key_press(key)
 		dispatch_event("_cmd_talk", {})
 	elseif key == DIK_keys[keys.money] then
 		dispatch_event("_cmd_money", {})
+	elseif key == DIK_keys[keys.admin] then
+		dispatch_event("_cmd_admin", {})
 	elseif key == DIK_keys[keys.status] then
 		if not bridge_alive then
 			msg("Лаунчер кооператива не запущен")
@@ -439,6 +444,9 @@ local function on_key_press(key)
 		end
 	end
 end
+
+-- a hotkey's command from a script (the host's panel): as if its key was pressed
+function run_cmd(name, ...) dispatch_event("_cmd_" .. name, { ... }) end
 
 -- what the launcher's window would show, from the engine link
 on_event("note", function(a) msg(a[1] or "") end)

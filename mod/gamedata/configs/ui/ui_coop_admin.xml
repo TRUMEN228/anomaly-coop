@@ -1,0 +1,196 @@
+<?xml version="1.0" encoding="windows-1251"?>
+<!-- Anomaly Co-op: the host's panel (coop_admin.script) - players and the link live, the rules, actions, items for anyone -->
+<w>
+	<!-- left: players, the link, the rules, actions -->
+	<panel x="16" y="24" width="330" height="720">
+		<background x="0" y="0" width="330" height="720" stretch="1">
+			<texture r="0" g="0" b="0" a="170">ui_icons_PDA_tooltips</texture>
+		</background>
+		<caption x="0" y="4" width="330" height="30">
+			<text font="graffiti22" r="200" g="200" b="200" align="c" vert_align="c">Панель хоста</text>
+		</caption>
+		<players x="14" y="38" width="302" height="96">
+			<text font="letterica16" r="200" g="200" b="200" align="l" vert_align="t" complex_mode="1"/>
+		</players>
+		<net x="14" y="136" width="302" height="92">
+			<text font="letterica16" r="150" g="200" b="150" align="l" vert_align="t" complex_mode="1"/>
+		</net>
+		<rules_cap x="14" y="232" width="302" height="20">
+			<text font="letterica18" r="230" g="200" b="120" align="l" vert_align="c">Правила</text>
+		</rules_cap>
+		<check_ff x="14" y="256" width="32" height="21" vert_align="c">
+			<texture>ui_inGame2_checkbox</texture>
+			<text x="-8" font="letterica16" r="190" g="190" b="190">Огонь по своим</text>
+		</check_ff>
+		<check_money x="170" y="256" width="32" height="21" vert_align="c">
+			<texture>ui_inGame2_checkbox</texture>
+			<text x="-8" font="letterica16" r="190" g="190" b="190">Общие деньги</text>
+		</check_money>
+		<check_rewards x="14" y="280" width="32" height="21" vert_align="c">
+			<texture>ui_inGame2_checkbox</texture>
+			<text x="-8" font="letterica16" r="190" g="190" b="190">Награды обоим</text>
+		</check_rewards>
+		<check_revive x="170" y="280" width="32" height="21" vert_align="c">
+			<texture>ui_inGame2_checkbox</texture>
+			<text x="-8" font="letterica16" r="190" g="190" b="190">Нокдаун</text>
+		</check_revive>
+		<check_follow x="14" y="304" width="32" height="21" vert_align="c">
+			<texture>ui_inGame2_checkbox</texture>
+			<text x="-8" font="letterica16" r="190" g="190" b="190">Переход вместе</text>
+		</check_follow>
+		<check_loot x="170" y="304" width="32" height="21" vert_align="c">
+			<texture>ui_inGame2_checkbox</texture>
+			<text x="-8" font="letterica16" r="190" g="190" b="190">Общий лут</text>
+		</check_loot>
+		<actions_cap x="14" y="334" width="302" height="20">
+			<text font="letterica18" r="230" g="200" b="120" align="l" vert_align="c">Действия</text>
+		</actions_cap>
+		<btn_tp_to x="14" y="358" width="146" height="28">
+			<text font="letterica16" align="c">К напарнику</text>
+			<texture>ui_button_ordinary</texture>
+		</btn_tp_to>
+		<btn_tp_here x="170" y="358" width="146" height="28">
+			<text font="letterica16" align="c">Напарника ко мне</text>
+			<texture>ui_button_ordinary</texture>
+		</btn_tp_here>
+		<btn_revive x="14" y="392" width="146" height="28">
+			<text font="letterica16" align="c">Поднять</text>
+			<texture>ui_button_ordinary</texture>
+		</btn_revive>
+		<btn_heal x="170" y="392" width="146" height="28">
+			<text font="letterica16" align="c">Вылечить обоих</text>
+			<texture>ui_button_ordinary</texture>
+		</btn_heal>
+		<btn_save x="14" y="426" width="146" height="28">
+			<text font="letterica16" align="c">Сохранить</text>
+			<texture>ui_button_ordinary</texture>
+		</btn_save>
+		<btn_load x="170" y="426" width="146" height="28">
+			<text font="letterica16" align="c">Загрузить у обоих</text>
+			<texture>ui_button_ordinary</texture>
+		</btn_load>
+		<time_cap x="14" y="462" width="302" height="20">
+			<text font="letterica18" r="230" g="200" b="120" align="l" vert_align="c">Время и погода</text>
+		</time_cap>
+		<btn_morning x="14" y="486" width="96" height="28">
+			<text font="letterica16" align="c">Утро</text>
+			<texture>ui_button_ordinary</texture>
+		</btn_morning>
+		<btn_noon x="117" y="486" width="96" height="28">
+			<text font="letterica16" align="c">Полдень</text>
+			<texture>ui_button_ordinary</texture>
+		</btn_noon>
+		<btn_night x="220" y="486" width="96" height="28">
+			<text font="letterica16" align="c">Ночь</text>
+			<texture>ui_button_ordinary</texture>
+		</btn_night>
+		<btn_clear x="14" y="520" width="96" height="28">
+			<text font="letterica16" align="c">Ясно</text>
+			<texture>ui_button_ordinary</texture>
+		</btn_clear>
+		<btn_cloudy x="117" y="520" width="96" height="28">
+			<text font="letterica16" align="c">Пасмурно</text>
+			<texture>ui_button_ordinary</texture>
+		</btn_cloudy>
+		<btn_rain x="220" y="520" width="96" height="28">
+			<text font="letterica16" align="c">Дождь</text>
+			<texture>ui_button_ordinary</texture>
+		</btn_rain>
+		<check_overlay x="14" y="560" width="32" height="21" vert_align="c">
+			<texture>ui_inGame2_checkbox</texture>
+			<text x="-8" font="letterica16" r="190" g="190" b="190">Сеть на экране во время игры</text>
+		</check_overlay>
+		<btn_kick x="14" y="596" width="146" height="28">
+			<text font="letterica16" align="c">Выгнать напарника</text>
+			<texture>ui_button_ordinary</texture>
+		</btn_kick>
+		<btn_close x="170" y="596" width="146" height="28">
+			<text font="letterica16" align="c">Закрыть</text>
+			<texture>ui_button_ordinary</texture>
+		</btn_close>
+		<status x="14" y="634" width="302" height="74">
+			<text font="letterica16" r="230" g="200" b="120" align="l" vert_align="t" complex_mode="1"/>
+		</status>
+	</panel>
+
+	<!-- middle: what kind of item -->
+	<kinds x="356" y="24" width="170" height="720">
+		<background x="0" y="0" width="170" height="720" stretch="1">
+			<texture r="0" g="0" b="0" a="170">ui_icons_PDA_tooltips</texture>
+		</background>
+		<caption x="0" y="4" width="170" height="30">
+			<text font="letterica18" r="230" g="200" b="120" align="c" vert_align="c">Предметы</text>
+		</caption>
+		<list x="10" y="40" width="150" height="670" item_height="22" can_select="1">
+			<font font="letterica16" r="210" g="210" b="210"/>
+		</list>
+	</kinds>
+
+	<!-- right: to whom, how many, the icons -->
+	<items x="536" y="24" width="472" height="720">
+		<background x="0" y="0" width="472" height="720" stretch="1">
+			<texture r="0" g="0" b="0" a="170">ui_icons_PDA_tooltips</texture>
+		</background>
+		<to_cap x="12" y="8" width="70" height="28">
+			<text font="letterica16" r="200" g="200" b="200" align="l" vert_align="c">Кому:</text>
+		</to_cap>
+		<btn_to_me x="80" y="8" width="180" height="28">
+			<text font="letterica16" align="c">Мне</text>
+			<texture>ui_button_ordinary</texture>
+		</btn_to_me>
+		<btn_to_partner x="270" y="8" width="190" height="28">
+			<text font="letterica16" align="c">Напарнику</text>
+			<texture>ui_button_ordinary</texture>
+		</btn_to_partner>
+		<count_cap x="12" y="44" width="70" height="28">
+			<text font="letterica16" r="200" g="200" b="200" align="l" vert_align="c">Сколько:</text>
+		</count_cap>
+		<fld_count x="80" y="44" width="60" height="28">
+			<text x="3" font="letterica18" complex_mode="0" vert_align="c" align="c"/>
+			<texture>ui_inGame2_edit_box_2</texture>
+		</fld_count>
+		<find_cap x="152" y="44" width="60" height="28">
+			<text font="letterica16" r="200" g="200" b="200" align="l" vert_align="c">Найти:</text>
+		</find_cap>
+		<fld_find x="210" y="44" width="250" height="28">
+			<text x="3" font="letterica18" complex_mode="0" vert_align="c" align="l"/>
+			<texture>ui_inGame2_edit_box_2</texture>
+		</fld_find>
+		<hint x="12" y="78" width="448" height="20">
+			<text font="letterica16" r="150" g="150" b="150" align="l" vert_align="c">Нажмите на иконку, чтобы выдать</text>
+		</hint>
+		<cont_list x="12" y="104" width="448" height="604" stretch="1"/>
+	</items>
+
+	<!-- the item cells (as the game's spawner draws them) -->
+	<container>
+		<scroll stretch="1" right_ident="0" left_ident="0" top_indent="0" bottom_indent="0" vert_interval="0" always_show_scroll="0"/>
+		<st stretch="1"/>
+		<cell stretch="1">
+			<highlight stretch="1">
+				<texture>ui_button_inv_h</texture>
+			</highlight>
+			<pic stretch="1" align="c" alignment="c"/>
+			<upgrade width="12" height="12" stretch="1">
+				<texture a="180">ui_upgrade_arrow2</texture>
+			</upgrade>
+			<cnt x="-2" y="-1" width="21" height="11" stretch="1">
+				<texture a="200">ui_item_count_back</texture>
+				<text x="0" y="0" width="21" height="11" font="arial_14" color="ui_2" align="c" vert_align="c"/>
+			</cnt>
+			<bar x="-2" y="0" width="25" height="3" horz="1" min="0" max="-2" pos="1" stretch="1">
+				<background width="27" height="3" stretch="1">
+					<texture r="62" g="74" b="74">ui_inGame2_inventory_item_status_bar</texture>
+				</background>
+				<progress stretch="1">
+					<texture r="142" g="149" b="149">ui_inGame2_inventory_item_status_bar</texture>
+				</progress>
+			</bar>
+		</cell>
+	</container>
+
+	<!-- the network on screen while playing -->
+	<overlay x="760" y="8" width="256" height="110">
+		<text font="letterica16" r="150" g="220" b="150" align="l" vert_align="t" complex_mode="1"/>
+	</overlay>
+</w>

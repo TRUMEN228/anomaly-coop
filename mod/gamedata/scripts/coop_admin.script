@@ -1,0 +1,602 @@
+--[[
+	Anomaly Co-op: the host's panel and the co-op's console commands (engine r20).
+	The commands (coop_help lists them) and the panel (its key, Num7 by default, or coop_panel) run the same functions:
+	players and the link live, the rules, teleports, revive and heal, save and load for both, time and weather, and
+	items for anyone - by the game's icons, as its spawner shows them. The panel does not pause the game; what it shows
+	is refreshed four times a second. The guest sees the players and the link and may go to the host; the rest is
+	the host's.
+--]]
+
+local ENGINE = rawget(_G, "coop_engine_version") and coop_engine_version() or 0
+local OPTIONS = { "ff", "money", "rewards", "revive", "follow", "loot" }
+local OPTION_NAMES = { ff = "огонь по своим", money = "общие деньги", rewards = "награды обоим", revive = "нокдаун",
+	follow = "переход вместе", loot = "общий лут" }
+local WEATHERS = { clear = "w_clear1", cloudy = "w_cloudy1", rain = "w_rain1", storm = "w_storm1", fog = "w_foggy1" }
+local KINDS = {
+	{ "Artefacts", "Артефакты" }, { "Artefacts (Container)", "Контейнеры" }, { "Items (Food)", "Еда" },
+	{ "Items (Drink)", "Напитки" }, { "Items (Medical)", "Медицина" }, { "Items (Device)", "Устройства" },
+	{ "Items (Tool)", "Инструменты" }, { "Items (Repair)", "Ремонт" }, { "Items (Parts)", "Запчасти" },
+	{ "Items (Misc.)", "Разное" }, { "Items (Note)", "Записки" }, { "Items (Quest)", "Квестовые" },
+	{ "Items (Upgrades)", "Улучшения" }, { "Helmets", "Шлемы" }, { "Outfits (Attachments)", "Навесное" },
+	{ "Outfits (Light)", "Костюмы лёгкие" }, { "Outfits (Medium)", "Костюмы средние" },
+	{ "Outfits (Heavy)", "Костюмы тяжёлые" }, { "Weapons (Ammo)", "Патроны" }, { "Weapons (Melee)", "Ножи" },
+	{ "Weapons (Pistol)", "Пистолеты" }, { "Weapons (Shotgun)", "Дробовики" }, { "Weapons (SMG)", "ПП" },
+	{ "Weapons (Rifle)", "Винтовки" }, { "Weapons (Sniper)", "Снайперские" }, { "Weapons (Explosive)", "Взрывчатка" },
+	{ "Weapons (Misc.)", "Оружие: разное" },
+}
+
+local function is_host() return coop_main.role == "host" end
+local function connected() return coop_main.connected end
+local function partner_name() return coop_main.peer_name ~= "" and coop_main.peer_name or "напарник" end
+
+------------------------------------------------------------------ what is going on
+-- the engine's last second of the link: key=value;...
+local function net_figures()
+	local raw = rawget(_G, "coop_link_net_line") and coop_link_net_line() or ""
+	local t = {}
+	for k, v in raw:gmatch("(%w+)=([^;]*);?") do t[k] = v end
+	return t, raw ~= ""
+end
+
+local function short_level(name) return name and game.translate_string(name) or "?" end
+
+function players_text()
+	local lines = {}
+	local me = db.actor
+	if me then
+		lines[#lines+1] = string.format("%%c[255,230,200,120]Вы%%c[default]: %s (%s), здоровье %d%%, %s", me:character_name(),
+			is_host() and "хост" or (coop_main.role == "client" and "гость" or "один"), math.floor(me.health * 100 + 0.5),
+			short_level(level.name()))
+	end
+	if not connected() then
+		lines[#lines+1] = "Напарник не подключён"
+		return table.concat(lines, "\\n")
+	end
+	local r = coop_player.get_remote()
+	local hp = r and r.health and math.floor(r.health * 100 + 0.5) or nil
+	local where = "?"
+	if r and r.level then
+		if r.level == level.name() and me and r.pos then
+			where = string.format("%.0f м от вас", me:position():distance_to(r.pos))
+		else
+			where = short_level(r.level)
+		end
+	end
+	local downed = coop_team.partner_is_downed and coop_team.partner_is_downed()
+	lines[#lines+1] = string.format("%%c[255,230,200,120]%s%%c[default]: здоровье %s, %s%s", partner_name(),
+		hp and (hp .. "%") or "?", where, downed and ", %c[255,255,90,90]ранен%c[default]" or "")
+	return table.concat(lines, "\\n")
+end
+
+function net_text()
+	if not connected() then return "" end
+	local t, ok = net_figures()
+	if not ok then return "Связь: данные появятся через секунду" end
+	local link = t.link or ""
+	local udp = link:find("udp on") and "UDP" or (link:find("steam") and "Steam" or "TCP")
+	local s = string.format("Пинг %s мс, канал %s, отдача %s КБ/с\\nДвижение напарника: %s/с, пропуск до %s мс",
+		t.rtt or "?", udp, t.out or "?", t.pin or "?", t.pgap or "?")
+	if is_host() then
+		s = s .. string.format("\\nКукла напарника: задержка %s мс, ждала %s мс", t.delay or "?", t.wait or "?")
+	else
+		s = s .. string.format("\\nСущества хоста: %s/с, пропуск до %s мс; кукла: задержка %s мс, ждала %s мс",
+			t.cin or "?", t.cgap or "?", t.delay or "?", t.wait or "?")
+	end
+	return s
+end
+
+------------------------------------------------------------------ the rules (the host's, kept in coop_keys.txt)
+local function save_option(name, on)
+	coop_main.set_option(name, on)
+	local path = getFS():update_path("$app_data_root$", "coop_keys.txt")
+	local lines, found = {}, false
+	local f = io.open(path, "r")
+	if f then
+		for line in f:lines() do
+			if line:match("^%s*" .. name .. "%s*=") then
+				line = name .. "=" .. (on and 1 or 0)
+				found = true
+			end
+			lines[#lines+1] = line
+		end
+		f:close()
+	end
+	if not found then lines[#lines+1] = name .. "=" .. (on and 1 or 0) end
+	f = io.open(path, "w")
+	if f then
+		f:write(table.concat(lines, "\n") .. "\n")
+		f:close()
+	end
+end
+
+function set_rule(name, on)
+	if not is_host() then return false, "Правила меняет хост" end
+	if not OPTION_NAMES[name] then return false, "Нет такого правила: " .. tostring(name) end
+	save_option(name, on)
+	return true, string.format("%s: %s", OPTION_NAMES[name], on and "вкл" or "выкл")
+end
+
+local function rule_default(name) return name == "rewards" or name == "revive" or name == "follow" or name == "loot" end
+function rule(name) return coop_main.option(name, rule_default(name)) and true or false end
+
+------------------------------------------------------------------ actions
+function tp_to_partner()
+	if not connected() then return false, "Напарник не подключён" end
+	coop_main.run_cmd("tp")
+	return true, "Телепорт к " .. partner_name()
+end
+
+function tp_partner_here()
+	if not is_host() then return false, "Это может хост" end
+	if not connected() then return false, "Напарник не подключён" end
+	local p = db.actor:position()
+	coop_main.send("admin_tp", level.name(), string.format("%.2f", p.x), string.format("%.2f", p.y),
+		string.format("%.2f", p.z), db.actor:level_vertex_id(), db.actor:game_vertex_id())
+	return true, partner_name() .. " переносится к вам"
+end
+
+function revive_partner()
+	if not is_host() then return false, "Это может хост" end
+	if not connected() then return false, "Напарник не подключён" end
+	coop_main.send("revive")
+	return true, partner_name() .. " поднят (если был ранен)"
+end
+
+local function heal_self()
+	if not db.actor then return end
+	db.actor:set_health_ex(1)
+	db.actor.radiation = -1
+	db.actor.bleeding = 1
+	db.actor.power = 1
+end
+
+function heal_both()
+	if not is_host() then return false, "Это может хост" end
+	heal_self()
+	if connected() then coop_main.send("admin_heal") end
+	return true, connected() and "Вылечены оба" or "Вы вылечены"
+end
+
+function save_now()
+	if not is_host() then return false, "Сохраняет хост" end
+	local name = string.format("coop_admin_%02d%02d", level.get_time_hours(), level.get_time_minutes())
+	exec_console_cmd("save " .. name)
+	return true, "Сохранено: " .. name
+end
+
+function load_both()
+	if not is_host() then return false, "Загружает хост" end
+	coop_main.run_cmd("load")
+	return true, "Загрузка последнего сохранения у обоих"
+end
+
+function kick_partner()
+	if not is_host() then return false, "Выгнать может хост" end
+	if not connected() then return false, "Напарник не подключён" end
+	coop_main.send("admin_kick")
+	return true, partner_name() .. " выгнан"
+end
+
+function set_time(h, m)
+	if not is_host() then return false, "Время меняет хост" end
+	h, m = math.floor(tonumber(h) or -1), math.floor(tonumber(m) or 0)
+	if h < 0 or h > 23 or m < 0 or m > 59 then return false, "Время: часы 0-23, минуты 0-59" end
+	local now = level.get_time_hours() * 60 + level.get_time_minutes()
+	local d = (h * 60 + m - now) % 1440
+	if d > 0 then level.change_game_time(0, math.floor(d / 60), d % 60) end
+	-- (the engine sends the host's clock to the guest)
+	return true, string.format("Время: %02d:%02d", h, m)
+end
+
+function set_weather(kind)
+	if not is_host() then return false, "Погоду меняет хост" end
+	local w = WEATHERS[kind] or kind
+	if not (w and w:match("^w_")) then return false, "Погода: clear, cloudy, rain, storm, fog или имя w_..." end
+	level.set_weather(w, true)
+	if coop_world.weather_jumped then coop_world.weather_jumped() end
+	return true, "Погода: " .. w
+end
+
+------------------------------------------------------------------ items
+local pending = {}   -- items made for the partner: given away when they come online here
+
+local function item_name(sec) return ui_item.get_sec_name(sec) or sec end
+
+function give(sec, n, to_partner)
+	if not is_host() then return false, "Выдаёт хост" end
+	if not (sec and ini_sys:section_exist(sec)) then return false, "Нет такого предмета: " .. tostring(sec) end
+	n = math.max(1, math.min(50, math.floor(tonumber(n) or 1)))
+	if to_partner and not connected() then return false, "Напарник не подключён" end
+	for _ = 1, n do
+		local se = alife_create_item(sec, db.actor)
+		if se and to_partner then pending[#pending+1] = { id = se.id, until_ = time_global() + 5000 } end
+	end
+	return true, string.format("%s: %s x%d", to_partner and partner_name() or "вам", item_name(sec), n)
+end
+
+local function give_pending()
+	if #pending == 0 then return end
+	local ready, keep = {}, {}
+	for _, p in ipairs(pending) do
+		local o = level.object_by_id(p.id)
+		if o then ready[#ready+1] = o
+		elseif time_global() < p.until_ then keep[#keep+1] = p end
+	end
+	pending = keep
+	if #ready > 0 and not coop_trade.give_objects(ready) then
+		coop_main.msg("Напарник отключился: вещи остались у вас")
+	end
+end
+
+------------------------------------------------------------------ the partner's side
+coop_main.on_event("admin_tp", function(a)
+	if not db.actor then return end
+	local pos = vector():set(tonumber(a[2]) or 0, tonumber(a[3]) or 0, tonumber(a[4]) or 0)
+	if a[1] == level.name() then
+		db.actor:set_actor_position(pos)
+	else
+		ChangeLevel(pos, tonumber(a[5]) or 0, tonumber(a[6]) or 0, VEC_ZERO, true)
+	end
+	coop_main.msg(coop_main.peer_name .. " перенёс вас к себе")
+end)
+
+coop_main.on_event("admin_heal", function()
+	heal_self()
+	coop_main.msg(coop_main.peer_name .. " вылечил вас")
+end)
+
+coop_main.on_event("admin_kick", function()
+	coop_main.msg("Хост выгнал вас из игры")
+	if rawget(_G, "coop_link_stop") then coop_link_stop() end
+	exec_console_cmd("disconnect")
+end)
+
+------------------------------------------------------------------ console
+local function out(ok, text)
+	printf("%s %s", ok and "~ co-op:" or "! co-op:", text)
+end
+
+local HELP = {
+	"coop_status                 - игроки и связь",
+	"coop_net                    - связь за последнюю секунду",
+	"coop_panel                  - открыть панель хоста",
+	"coop_overlay [0|1]          - связь на экране во время игры",
+	"coop_tp to|here             - к напарнику / напарника к себе",
+	"coop_option <имя> <0|1>     - правило: ff money rewards revive follow loot",
+	"coop_time <ч> [м]           - время суток",
+	"coop_weather <вид>          - clear cloudy rain storm fog или w_...",
+	"coop_give <секция> [n] [me|partner] - выдать предмет",
+	"coop_revive / coop_heal     - поднять напарника / вылечить обоих",
+	"coop_save / coop_load       - сохранить / загрузить у обоих",
+	"coop_kick                   - выгнать напарника",
+}
+
+last_console = nil   -- the tests: the last command the engine passed here
+function console(name, args)
+	last_console = name
+	local a = {}
+	for w in tostring(args or ""):gmatch("%S+") do a[#a+1] = w end
+	local ok, text
+	if name == "coop_help" then
+		for _, l in ipairs(HELP) do printf("~ %s", l) end
+		return
+	elseif name == "coop_status" then
+		printf("~ co-op: %s", players_text():gsub("%%c%[[^%]]*%]", ""):gsub("\\n", " | "))
+		for o, n in pairs(OPTION_NAMES) do printf("~   %s (%s): %s", n, o, rule(o) and "вкл" or "выкл") end
+		return
+	elseif name == "coop_net" then
+		printf("~ co-op: %s", net_text():gsub("\\n", " | "))
+		printf("~ co-op: %s", rawget(_G, "coop_link_net_status") and coop_link_net_status() or "")
+		return
+	elseif name == "coop_panel" then
+		open_panel()
+		return
+	elseif name == "coop_overlay" then
+		set_overlay(a[1] == nil and not overlay_on or a[1] == "1")
+		ok, text = true, "связь на экране: " .. (overlay_on and "вкл" or "выкл")
+	elseif name == "coop_tp" then
+		if a[1] == "here" then ok, text = tp_partner_here() else ok, text = tp_to_partner() end
+	elseif name == "coop_option" then
+		if not a[1] then
+			for o, n in pairs(OPTION_NAMES) do printf("~   %s (%s): %s", n, o, rule(o) and "вкл" or "выкл") end
+			return
+		end
+		ok, text = set_rule(a[1], a[2] == "1" or a[2] == "on")
+	elseif name == "coop_time" then
+		local h, m = (a[1] or ""):match("^(%d+):?(%d*)$")
+		ok, text = set_time(h, a[2] or (m ~= "" and m) or 0)
+	elseif name == "coop_weather" then
+		ok, text = set_weather(a[1])
+	elseif name == "coop_give" then
+		ok, text = give(a[1], a[2], a[3] ~= "me")
+	elseif name == "coop_revive" then
+		ok, text = revive_partner()
+	elseif name == "coop_heal" then
+		ok, text = heal_both()
+	elseif name == "coop_save" then
+		ok, text = save_now()
+	elseif name == "coop_load" then
+		ok, text = load_both()
+	elseif name == "coop_kick" then
+		ok, text = kick_partner()
+	else
+		ok, text = false, "нет такой команды (coop_help)"
+	end
+	out(ok, text)
+end
+
+------------------------------------------------------------------ the network on screen while playing
+overlay_on = false
+local OVERLAY = nil
+
+class "UICoopNetOverlay" (CUIScriptWnd)
+
+function UICoopNetOverlay:__init() super()
+	local xml = CScriptXmlInit()
+	xml:ParseFile("ui_coop_admin.xml")
+	self.text = xml:InitTextWnd("overlay", self)
+	self.next = 0
+end
+
+function UICoopNetOverlay:__finalize() end
+
+function UICoopNetOverlay:Update()
+	CUIScriptWnd.Update(self)
+	local now = time_global()
+	if now < self.next then return end
+	self.next = now + 250
+	self.text:SetText(main_hud_shown() and net_text() or "")
+end
+
+function set_overlay(on)
+	overlay_on = on and true or false
+	if overlay_on and not OVERLAY and get_hud() then
+		OVERLAY = UICoopNetOverlay()
+		get_hud():AddDialogToRender(OVERLAY)
+	elseif not overlay_on and OVERLAY then
+		get_hud():RemoveDialogToRender(OVERLAY)
+		OVERLAY = nil
+	end
+end
+
+------------------------------------------------------------------ the panel
+-- cp1251 letters to lower case (string.lower knows only Latin)
+local function lower(s)
+	return (s:lower():gsub("[\192-\223]", function(c) return string.char(c:byte() + 32) end):gsub("\168", "\184"))
+end
+
+class "UICoopAdmin" (CUIScriptWnd)
+
+function UICoopAdmin:__init() super()
+	self:SetWndRect(Frect():set(0, 0, 1024, 768))
+	self.xml = CScriptXmlInit()
+	local xml = self.xml
+	xml:ParseFile("ui_coop_admin.xml")
+	self.to_partner = connected()
+	self.kind = nil
+
+	local panel = xml:InitStatic("panel", self)
+	xml:InitStatic("panel:background", panel)
+	xml:InitStatic("panel:caption", panel)
+	self.players = xml:InitTextWnd("panel:players", panel)
+	self.net = xml:InitTextWnd("panel:net", panel)
+	xml:InitStatic("panel:rules_cap", panel)
+	self.checks = {}
+	for _, o in ipairs(OPTIONS) do
+		self.checks[o] = xml:InitCheck("panel:check_" .. o, panel)
+		self:Register(self.checks[o], "chk_" .. o)
+		self:AddCallback("chk_" .. o, ui_events.BUTTON_CLICKED, function() self:OnRule(o) end, self)
+	end
+	xml:InitStatic("panel:actions_cap", panel)
+	xml:InitStatic("panel:time_cap", panel)
+	local buttons = {
+		btn_tp_to = tp_to_partner, btn_tp_here = tp_partner_here, btn_revive = revive_partner, btn_heal = heal_both,
+		btn_save = save_now, btn_load = load_both, btn_kick = kick_partner,
+		btn_morning = function() return set_time(7, 0) end, btn_noon = function() return set_time(12, 0) end,
+		btn_night = function() return set_time(23, 0) end, btn_clear = function() return set_weather("clear") end,
+		btn_cloudy = function() return set_weather("cloudy") end, btn_rain = function() return set_weather("rain") end,
+	}
+	self.host_only = {}
+	for id, fn in pairs(buttons) do
+		local b = xml:Init3tButton("panel:" .. id, panel)
+		self:Register(b, id)
+		self:AddCallback(id, ui_events.BUTTON_CLICKED, function()
+			local ok, text = fn()
+			self:Say(text, ok)
+		end, self)
+		if id ~= "btn_tp_to" then self.host_only[#self.host_only+1] = b end
+	end
+	self:Register(xml:Init3tButton("panel:btn_close", panel), "btn_close")
+	self:AddCallback("btn_close", ui_events.BUTTON_CLICKED, self.Close, self)
+	self.overlay = xml:InitCheck("panel:check_overlay", panel)
+	self:Register(self.overlay, "chk_overlay")
+	self:AddCallback("chk_overlay", ui_events.BUTTON_CLICKED, function() set_overlay(self.overlay:GetCheck()) end, self)
+	self.status = xml:InitTextWnd("panel:status", panel)
+
+	-- items
+	local kinds = xml:InitStatic("kinds", self)
+	xml:InitStatic("kinds:background", kinds)
+	xml:InitStatic("kinds:caption", kinds)
+	self.kinds = xml:InitListBox("kinds:list", kinds)
+	self.kinds:ShowSelectedItem(true)
+	self:Register(self.kinds, "kinds")
+	self:AddCallback("kinds", ui_events.LIST_ITEM_SELECT, self.OnKind, self)
+	for i, k in ipairs(KINDS) do
+		local e = ui_debug_launcher.list_element(i, self.kinds:GetWidth(), 22, 5, k[2], nil)
+		self.kinds:AddExistingItem(e)
+	end
+
+	self.items = xml:InitStatic("items", self)
+	xml:InitStatic("items:background", self.items)
+	xml:InitStatic("items:to_cap", self.items)
+	xml:InitStatic("items:count_cap", self.items)
+	xml:InitStatic("items:find_cap", self.items)
+	xml:InitStatic("items:hint", self.items)
+	self.btn_me = xml:Init3tButton("items:btn_to_me", self.items)
+	self.btn_partner = xml:Init3tButton("items:btn_to_partner", self.items)
+	self:Register(self.btn_me, "btn_to_me")
+	self:Register(self.btn_partner, "btn_to_partner")
+	self:AddCallback("btn_to_me", ui_events.BUTTON_CLICKED, function() self.to_partner = false self:ShowTarget() end, self)
+	self:AddCallback("btn_to_partner", ui_events.BUTTON_CLICKED, function() self.to_partner = true self:ShowTarget() end, self)
+	self.count = xml:InitEditBox("items:fld_count", self.items)
+	self.count:SetText("1")
+	self.find = xml:InitEditBox("items:fld_find", self.items)
+	self:Register(self.find, "fld_find")
+	self:AddCallback("fld_find", ui_events.EDIT_TEXT_COMMIT, self.OnFind, self)
+	self.CC = utils_ui.UICellContainer("items", self, nil, "items:cont_list", self.items)
+	self.CC.showcase = true
+	self.CC.disable_drag = true
+	self.CC.disable_stack = true
+	self.info = utils_ui.UIInfoItem(self, 500)
+
+	self.next = 0
+	self:SyncRules()
+	self:ShowTarget()
+	self:Refresh()
+	self.overlay:SetCheck(overlay_on)
+end
+
+function UICoopAdmin:__finalize() end
+
+function UICoopAdmin:Say(text, ok)
+	self.status:SetText((ok == false and "%c[255,255,110,110]" or "") .. tostring(text or ""))
+end
+
+function UICoopAdmin:SyncRules()
+	for _, o in ipairs(OPTIONS) do
+		self.checks[o]:SetCheck(rule(o))
+		self.checks[o]:Enable(is_host())
+	end
+	for _, b in ipairs(self.host_only) do b:Enable(is_host()) end
+end
+
+function UICoopAdmin:OnRule(name)
+	local ok, text = set_rule(name, self.checks[name]:GetCheck())
+	if not ok then self.checks[name]:SetCheck(rule(name)) end
+	self:Say(text, ok)
+end
+
+function UICoopAdmin:ShowTarget()
+	local me = db.actor and db.actor:character_name() or "вам"
+	if not connected() then self.to_partner = false end
+	self.btn_me:TextControl():SetText((self.to_partner and "" or "> ") .. "Мне (" .. me .. ")")
+	self.btn_partner:TextControl():SetText((self.to_partner and "> " or "") .. partner_name())
+	self.btn_partner:Enable(connected() and is_host())
+	self.btn_me:Enable(is_host())
+end
+
+function UICoopAdmin:Fill(list)
+	self.CC:Reinit(list)
+	for _, ci in pairs(self.CC.cell) do
+		if ci:IsShown() then ci.flags.note_str = item_name(ci.section) end
+	end
+end
+
+function UICoopAdmin:OnKind()
+	local pick = self.kinds:GetSelectedItem()
+	if not pick then return end
+	local k = KINDS[pick.index]
+	local t = {}
+	for _, e in ipairs(ui_debug_launcher.get_spawn_table(k[1]) or {}) do
+		if ini_sys:section_exist(e.sec) then t[#t+1] = e.sec end
+	end
+	self:Fill(t)
+	self:Say(string.format("%s: %d", k[2], #t))
+end
+
+function UICoopAdmin:OnFind()
+	local q = lower(self.find:GetText() or "")
+	if q == "" then return end
+	local t, seen = {}, {}
+	for _, k in ipairs(KINDS) do
+		for _, e in ipairs(ui_debug_launcher.get_spawn_table(k[1]) or {}) do
+			local sec = e.sec
+			if not seen[sec] and ini_sys:section_exist(sec) and (sec:lower():find(q, 1, true)
+				or lower(item_name(sec)):find(q, 1, true)) then
+				seen[sec] = true
+				t[#t+1] = sec
+			end
+		end
+	end
+	self:Fill(t)
+	self:Say(string.format("Найдено: %d", #t))
+end
+
+function UICoopAdmin:On_CC_Mouse1(cont, idx)
+	local ci = self.CC.cell[idx]
+	if not ci then return end
+	local ok, text = give(ci.section, (self.count:GetText() or ""):match("%d+"), self.to_partner)
+	self:Say(text, ok)
+end
+
+function UICoopAdmin:Refresh()
+	self.players:SetText(players_text())
+	self.net:SetText(net_text())
+end
+
+function UICoopAdmin:Update()
+	CUIScriptWnd.Update(self)
+	if not self.CC:Update(self.info) then self.info:Update() end
+	local now = time_global()
+	if now < self.next then return end
+	self.next = now + 250
+	self:Refresh()
+	-- the partner came or went
+	if self.was_connected ~= connected() then
+		self.was_connected = connected()
+		self:ShowTarget()
+		self:SyncRules()
+	end
+end
+
+function UICoopAdmin:Close()
+	if self:IsShown() then self:HideDialog() end
+end
+
+function UICoopAdmin:OnKeyboard(dik, action)
+	local res = CUIScriptWnd.OnKeyboard(self, dik, action)
+	if not res then
+		self.CC:OnKeyboard(dik, action)
+		if action == ui_events.WINDOW_KEY_PRESSED and (dik == DIK_keys.DIK_ESCAPE or dik == DIK_keys[coop_main.key_dik("admin")]) then
+			self:Close()
+		end
+	end
+	return res
+end
+
+local PANEL = nil
+function panel_shown() return PANEL ~= nil and PANEL:IsShown() end
+function close_panel() if PANEL then PANEL:Close() end end
+function open_panel()
+	if not db.actor then return end
+	if PANEL and PANEL:IsShown() then
+		PANEL:Close()
+		return
+	end
+	PANEL = UICoopAdmin()
+	PANEL:ShowDialog(true)
+end
+
+coop_main.on_event("_cmd_admin", function() open_panel() end)
+
+------------------------------------------------------------------ callbacks
+local function actor_on_update() give_pending() end
+local function actor_on_net_destroy()
+	if OVERLAY then
+		pcall(function() get_hud():RemoveDialogToRender(OVERLAY) end)
+		OVERLAY = nil
+	end
+	pending = {}
+end
+local function actor_on_first_update()
+	if overlay_on then
+		overlay_on = false
+		set_overlay(true)
+	end
+end
+
+function on_game_start()
+	RegisterScriptCallback("actor_on_update", actor_on_update)
+	RegisterScriptCallback("actor_on_net_destroy", actor_on_net_destroy)
+	RegisterScriptCallback("actor_on_first_update", actor_on_first_update)
+end

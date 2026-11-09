@@ -696,7 +696,7 @@ end)
 
 local STEPS = {
 	{ 0, function()
-		announce("ТЕСТ КООПЕРАТИВА: 34 шага, около трёх с половиной минут.\\nОба игрока переносятся на улицу в деревню новичков, рядом ставится тестовый тайник.", 8)
+		announce("ТЕСТ КООПЕРАТИВА: 36 шагов, около трёх с половиной минут.\\nОба игрока переносятся на улицу в деревню новичков, рядом ставится тестовый тайник.", 8)
 		local center, lv, gv = village()
 		local dir, side = open_direction(center)
 		local me = aside(center, 0, 0)
@@ -1487,6 +1487,37 @@ local STEPS = {
 		ask("34", "net_status")
 	end },
 	{ 450, function()
+		announce("ШАГ 35. Панель хоста и консоль: хост открывает панель, вызывает coop_status и выдаёт гостю два хлеба.", 6)
+		exec_console_cmd("coop_status")
+		coop_admin.open_panel()
+		ctx.expect["35pre"] = function(ok, detail) ctx.bread0 = tonumber(detail) return ok, "guest's bread before: " .. detail end
+		ask("35pre", "has", "bread")
+	end },
+	{ 452, function()
+		record("35cmd", coop_admin.last_console == "coop_status", "the engine's console passed: " .. tostring(coop_admin.last_console))
+		record("35panel", coop_admin.panel_shown(), "the panel is shown: " .. tostring(coop_admin.panel_shown()))
+		local ok, text = coop_admin.give("bread", 2, true)
+		record("35give", ok, text)
+	end },
+	{ 457, function()
+		coop_admin.close_panel()
+		ctx.expect["35"] = function(ok, detail)
+			local n = tonumber(detail) or -1
+			return ok and n == (ctx.bread0 or 0) + 2, string.format("guest's bread: %s (before %s, +2)", detail, tostring(ctx.bread0))
+		end
+		ask("35", "has", "bread")
+	end },
+	{ 459, function()
+		announce("ШАГ 36. Хост переносит гостя к себе кнопкой панели.", 4)
+		local ok, text = coop_admin.tp_partner_here()
+		record("36go", ok, text)
+	end },
+	{ 464, function()
+		local r = coop_player.get_remote()
+		local d = r and r.pos and db.actor:position():distance_to(r.pos) or -1
+		record("36", d >= 0 and d < 4, string.format("the guest is %.1f m from the host", d))
+	end },
+	{ 466, function()
 		announce("ТЕСТ ЗАКОНЧЕН. Итоги — в coop_qa.txt обеих игр.", 15)
 		record("end", true, "done")
 	end },

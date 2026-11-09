@@ -63,6 +63,24 @@ local function names(list)
 	return s
 end
 
+-- these items of this player go to the partner (the host's panel): as the exchange box sends them; false when the
+-- partner is not connected
+function give_objects(objs)
+	if not (coop_main.connected and #objs > 0) then return false end
+	local r = coop_player.get_remote()
+	local engine = E16 and r and r.level == level.name()
+	local entries = {}
+	for _, o in ipairs(objs) do
+		if not (engine and coop_items_gift(o:id())) then entries[#entries+1] = item_entry(o) end
+	end
+	if #entries > 0 then coop_main.send("gift", table.concat(entries, ";")) end
+	for _, o in ipairs(objs) do
+		local se = alife_object(o:id())
+		if se then alife_release(se) end
+	end
+	return true
+end
+
 -- the window closed: send what is in the box, or give it back when the partner is gone
 local function close_box(box)
 	local items, entries, secs = {}, {}, {}
