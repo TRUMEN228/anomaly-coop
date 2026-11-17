@@ -381,6 +381,9 @@ end
 
 function on_game_start()
 	armed, replicating = false, false
+	-- (a new game or a load: this module's state of the last one goes - the scripts stay loaded between games)
+	h2g, g2h, pending_art, pending_box, pending_world, pending_release = {}, {}, {}, {}, {}, {}
+	stats = { sent = 0, made = 0, blocked = 0 }
 	hook_alife_create()
 	RegisterScriptCallback("squad_on_add_npc", squad_on_add_npc)
 	RegisterScriptCallback("server_entity_on_register", on_register)

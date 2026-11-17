@@ -234,6 +234,8 @@ local function hide_panel()
 end
 
 function on_game_start()
+	-- (a new game or a load: this module's state of the last one goes - the scripts stay loaded between games)
+	lines, history, said, last_other, declined, talking = {}, {}, {}, nil, false, false
 	RegisterScriptCallback("actor_on_first_update", show_panel)
 	RegisterScriptCallback("actor_on_update", actor_on_update)
 	RegisterScriptCallback("actor_on_net_destroy", hide_panel)

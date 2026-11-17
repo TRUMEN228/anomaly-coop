@@ -5,8 +5,10 @@
 # windows every 2 s: local\qa_shots (and run.webp made of them).
 # -Mode travel: the travel test instead (zz_coop_travel.script): the host goes to another level, then to the main
 # menu; what the guest does then is checked here, in its log
-# usage: scenario.ps1 [-Minutes 8] [-Mode scenario|travel]
-param([int]$Minutes = 8, [string]$Mode = "scenario")
+# usage: scenario.ps1 [-Minutes 12] [-Mode scenario|travel]
+# exit code: 0 when every check passed and the run reached its end, 1 otherwise (a FAIL, a check left without an
+# answer, or the time ran out before "QA end")
+param([int]$Minutes = 12, [string]$Mode = "scenario")
 $r = 'D:\Projects\stalker_coop'
 
 python "$r\build.py" --scripts-only | Out-Null
@@ -111,13 +113,16 @@ $t0 = Get-Date
 $qa = "$r\local\testA\appdata\coop_qa.txt"
 $seen = 0
 $step = "wait"
-$focusFile = "$r\local	estAppdata\coop_qa_focus.txt"
-Remove-Item $focusFile -ErrorAction SilentlyContinue
+# (each game writes the window it wants active into its own appdata: the newest wish wins)
+$focusFiles = @("$r\local\testA\appdata\coop_qa_focus.txt", "$r\local\testB\appdata\coop_qa_focus.txt")
+Remove-Item $focusFiles -ErrorAction SilentlyContinue
 $focused = ""
 while (((Get-Date) - $t0).TotalMinutes -lt $Minutes) {
     Start-Sleep 2
     # the scenario asks for a game's window to be the active one (a game without it closes a talk as it opens)
-    $want = (Get-Content $focusFile -ErrorAction SilentlyContinue | Select -First 1)
+    $ff = Get-Item $focusFiles -ErrorAction SilentlyContinue | Sort-Object LastWriteTime | Select -Last 1
+    $want = if ($ff) { (Get-Content $ff.FullName -ErrorAction SilentlyContinue | Select -First 1) } else { $null }
+    if ($want) { $want = $want.Trim() }
     if ($want -and $want -ne $focused -and $win[$want]) { [Win]::SwitchToThisWindow($win[$want], $true); $focused = $want }
     $lines = @(Get-Content $qa -ErrorAction SilentlyContinue)
     for ($i = $seen; $i -lt $lines.Count; $i++) { "  " + $lines[$i] }
@@ -191,3 +196,15 @@ if ($recorder -and (Test-Path "$rec\run.mp4") -and (Test-Path $steps)) {
     "frames: $fr ($($index.Count))"
 }
 python -I "$r\tests\shots_video.py" $shots "$shots\run.webp" 500
+
+# the verdict: every check of both games, the end reached
+$all = @()
+foreach ($n in 'A', 'B') { $all += @(Get-Content "$r\local\test$n\appdata\coop_qa.txt" -ErrorAction SilentlyContinue) }
+$pass = @($all | ? { $_ -match '^QA .* PASS' }).Count
+$fails = @($all | ? { $_ -match '^QA .* (FAIL|SKIP)' })
+$ended = @($all | ? { $_ -match '^QA end ' }).Count -gt 0
+if ($Mode -eq 'travel') { $ended = $true }
+"RESULT: $pass passed, $($fails.Count) failed" + $(if ($ended) { '' } else { ', the run did not reach its end (QA end)' })
+$fails | % { "  $_" }
+if ($fails.Count -gt 0 -or -not $ended) { exit 1 }
+exit 0

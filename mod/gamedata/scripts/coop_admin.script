@@ -62,7 +62,7 @@ function players_text()
 			where = short_level(r.level)
 		end
 	end
-	local downed = coop_team.partner_is_downed and coop_team.partner_is_downed()
+	local downed = coop_team.is_partner_down and coop_team.is_partner_down()
 	lines[#lines+1] = string.format("%%c[255,230,200,120]%s%%c[default]: здоровье %s, %s%s", partner_name(),
 		hp and (hp .. "%") or "?", where, downed and ", %c[255,255,90,90]ранен%c[default]" or "")
 	return table.concat(lines, "\\n")

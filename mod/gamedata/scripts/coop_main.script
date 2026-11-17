@@ -198,7 +198,16 @@ function add_state_provider(tag, fn, fast)
 end
 
 -- queue a reliable event for the partner (or the bridge when typ starts with "@")
+local OUT_MAX = 512           -- events waiting for the partner's ack at most (older ones go: nobody takes them)
+local out_dropped = 0
 function send(typ, ...)
+	-- nobody to take it (no link, no launcher): a game played alone with the mod does not pile events up
+	if not (link_on or bridge_alive) and tostring(typ):sub(1, 1) ~= "@" then return end
+	if #out_queue >= OUT_MAX then
+		table.remove(out_queue, 1)
+		out_dropped = out_dropped + 1
+		if out_dropped == 1 or out_dropped % 100 == 0 then log("events dropped (no ack): " .. out_dropped) end
+	end
 	out_seq = out_seq + 1
 	local parts = {...}
 	for i = 1, #parts do parts[i] = esc(parts[i]) end

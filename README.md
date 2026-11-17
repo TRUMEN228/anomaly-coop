@@ -260,7 +260,7 @@ python build.py
 Результат — `dist\CoopLauncher.exe`. Скрипты мода встраиваются в exe в кодировке cp1251.
 
 - `mod/gamedata/scripts/` — Lua-мод:
-  - `coop_main` — обмен с лаунчером через `appdata\coop_out.txt` и `coop_in.txt`, клавиши и опции;
+  - `coop_main` — обмен с движком (`coop_link_in/out`) или лаунчером, клавиши и опции;
   - `coop_player` — марионетка (движение, стрельба, перезарядка, фонарь, ранение);
   - `coop_hud` — ник и здоровье над напарником;
   - `coop_world` — время, погода, NPC, урон, лут, предметы;
@@ -269,11 +269,14 @@ python build.py
   - `coop_quests` — флаги сюжета и общие задания;
   - `coop_team` — нокдаун, переход за напарником, сон, огонь по своим, общие деньги;
   - `coop_trade` — передача вещей; `coop_fx` — взрывы гранат напарника;
-  - `coop_session` — сессия и персонаж гостя.
+  - `coop_session` — сессия, миры и персонаж гостя (в сохранениях хоста);
+  - `coop_menu` — пункт «Сетевая игра» главного меню и лобби; `coop_newgame` — новая игра из лобби;
+  - `coop_mirror` — зеркало существ хоста у гостя; `coop_combat` — попадания существ хоста по гостю;
+  - `coop_dialog` — копия окна разговора и субтитры; `coop_admin` — панель хоста (Num7) и консольные команды `coop_*`.
 - `launcher/` — CoopLauncher (WinForms, .NET Framework 4.8): связь через Steam или TCP, передача сейва, запуск игры, чат, опции, схема и смена клавиш, установка улучшенного движка (`Engine.cs`).
-- `tests/` — QA на реальной игре с поддельным напарником (`fake_peer.py` и сценарии `qa_*.ps1`); самотесты лаунчера: `CoopLauncher.exe --selftest-loopback | --selftest-steam | --selftest-dialogs | --selftest-rebind | --selftest-engine`.
+- `tests/` — `scenario.ps1`: две настоящие игры, сценарий `zz_coop_scenario.script` (код возврата 1 при провале); `smoke.ps1`: быстрые проверки без игры (версии, кодировка, остатки в `build\`). Старые `qa_*.ps1` на `fake_peer.py` говорят по устаревшему протоколу лаунчера. Самотесты лаунчера: `CoopLauncher.exe --selftest-loopback | --selftest-steam | --selftest-dialogs | --selftest-rebind | --selftest-engine`.
 - Движок: форк [TRUMEN228/xray-monolith](https://github.com/TRUMEN228/xray-monolith), ветка `coop`. Режим марионетки — `src/xrGame/coop_net_puppet.*`,
   из Lua: `npc:net_puppet(вкл, задержка)`, `npc:net_puppet_push(позиция, время отправителя)`, `coop_engine_version()`.
-  Тег `coop-engine-N` собирает exe в Actions и публикует релиз, из которого лаунчер ставит движок.
+  Движок собирается локально (MSBuild, `DX11-AVX` для тестов, `DX11` перед выпуском); Actions на форке выключены. Релиз `coop-engine-N` публикуется вручную вместе с выпуском мода.
 
 Сделано по плейбуку [coop-anything](https://github.com/cranebeaker/coop-anything).

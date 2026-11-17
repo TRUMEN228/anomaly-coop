@@ -369,6 +369,8 @@ function on_game_start()
 	downed_until, down_pos, partner_down, money_last, follow_at, partner_level, mset_at = nil, nil, false, nil, nil, nil, nil
 	told_money = nil
 	told_ff = nil
+	-- (a new game or a load: this module's state of the last one goes - the scripts stay loaded between games)
+	told_loot, last_dn, last_partner_pos, applying_money = nil, nil, nil, false
 	RegisterScriptCallback("actor_on_update", actor_on_update)
 	RegisterScriptCallback("actor_on_before_death", actor_on_before_death)
 	RegisterScriptCallback("actor_on_before_hit", actor_on_before_hit)

@@ -913,6 +913,11 @@ local function hook_lights()
 end
 
 function on_game_start()
+	-- (a new game or a load: this module's state of the last one goes - the scripts stay loaded between games)
+	puppet_id, puppet_visual, spawn_pending, puppet_is_actor, firing = nil, nil, false, false, false
+	last_remote_shots, last_remote_reloads, reload_pending, puppet_wpn_id, puppet_wpn_sec = nil, nil, false, nil, nil
+	puppet_torch_id, puppet_torch_on, actor_pose_checked, actor_mode_broken = nil, nil, false, false
+	planner_done, told_partner, last_target, stuck_pos, stuck_since, last_level_note = {}, nil, nil, nil, 0, nil
 	RegisterScriptCallback("actor_on_update", actor_on_update)
 	RegisterScriptCallback("npc_on_before_hit", npc_on_before_hit)
 	RegisterScriptCallback("monster_on_before_hit", monster_on_before_hit)

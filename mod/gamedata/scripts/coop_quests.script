@@ -453,6 +453,9 @@ end
 
 function on_game_start()
 	info_known, info_sent, remote_end, pending_done, suppress, ready_at, resync_at = {}, {}, {}, {}, nil, nil, nil
+	-- (a new game or a load: this module's state of the last one goes - the scripts stay loaded between games)
+	incoming, traded, outgoing, told_ready = {}, {}, {}, nil
+	applying, gifting, in_task_end, in_give_task, reward_remote = false, false, false, false, false
 	RegisterScriptCallback("actor_on_first_update", actor_on_first_update)
 	RegisterScriptCallback("actor_on_update", actor_on_update)
 	RegisterScriptCallback("actor_on_info_callback", actor_on_info_callback)

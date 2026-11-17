@@ -612,6 +612,9 @@ function on_game_start()
 	pcall(hook_saves)
 	player_id = load_player_id()
 	session_owner, char_ready, import_step = nil, false, nil
+	-- (a new game or a load: this module's state of the last one goes - the scripts stay loaded between games)
+	guest_chars, next_char_send, last_sent_char = {}, 0, nil
+	partner_card, partner_lobby, card_cache, card_at, mirror_at, loaded_world = nil, nil, nil, 0, nil, nil
 	RegisterScriptCallback("save_state", save_state)
 	RegisterScriptCallback("load_state", load_state)
 	RegisterScriptCallback("actor_on_first_update", actor_on_first_update)

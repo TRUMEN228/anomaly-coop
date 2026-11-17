@@ -696,7 +696,7 @@ end)
 
 local STEPS = {
 	{ 0, function()
-		announce("ТЕСТ КООПЕРАТИВА: 36 шагов, около трёх с половиной минут.\\nОба игрока переносятся на улицу в деревню новичков, рядом ставится тестовый тайник.", 8)
+		announce("ТЕСТ КООПЕРАТИВА: 36 шагов, около восьми минут.\\nОба игрока переносятся на улицу в деревню новичков, рядом ставится тестовый тайник.", 8)
 		local center, lv, gv = village()
 		local dir, side = open_direction(center)
 		local me = aside(center, 0, 0)
@@ -1519,6 +1519,9 @@ local STEPS = {
 	end },
 	{ 466, function()
 		announce("ТЕСТ ЗАКОНЧЕН. Итоги — в coop_qa.txt обеих игр.", 15)
+		-- a question the guest never answered is a failed check, not silence
+		for step in pairs(ctx.expect) do record(step, false, "no answer from the guest") end
+		ctx.expect = {}
 		record("end", true, "done")
 	end },
 }

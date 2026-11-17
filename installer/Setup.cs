@@ -273,11 +273,12 @@ namespace CoopLauncher
             using (var res = Assembly.GetExecutingAssembly().GetManifestResourceStream("AnomalyCoop.zip"))
             using (var zip = new ZipArchive(res, ZipArchiveMode.Read))
             {
-                foreach (var entry in zip.Entries.Where(e => e.Name != ""))
+                var entries = zip.Entries.Where(e => e.Name != "").ToList();
+                // 1) the originals of the game's files this setup has not put there yet go to the backup, once
+                foreach (var entry in entries)
                 {
                     var rel = entry.FullName.Replace('/', '\\');
                     var target = Path.Combine(Game, rel);
-                    // a file of the game this setup has not put there yet: its original goes to the backup, once
                     if (File.Exists(target) && !installed.Contains(rel) && !backedUp.Contains(rel))
                     {
                         var copy = Path.Combine(Backup, rel);
@@ -286,15 +287,23 @@ namespace CoopLauncher
                         backedUp.Add(rel);
                         saved++;
                     }
+                }
+                // 2) the lists go to disk before anything of the game is overwritten: a restore needs them even when the
+                // copying below stops halfway (a file in use, a crash) - without them the next setup would take its own
+                // files for the game's and put them into the backup over the real originals
+                foreach (var entry in entries)
+                    installed.Add(entry.FullName.Replace('/', '\\'));
+                File.WriteAllLines(Path.Combine(Backup, Installed), installed.OrderBy(x => x));
+                File.WriteAllLines(Path.Combine(Backup, BackedUp), backedUp.OrderBy(x => x));
+                // 3) then the files
+                foreach (var entry in entries)
+                {
+                    var target = Path.Combine(Game, entry.FullName.Replace('/', '\\'));
                     Directory.CreateDirectory(Path.GetDirectoryName(target));
                     entry.ExtractToFile(target, true);
-                    installed.Add(rel);
                     put++;
                 }
             }
-            // the lists go first to disk: a restore needs them even if what follows fails
-            File.WriteAllLines(Path.Combine(Backup, Installed), installed.OrderBy(x => x));
-            File.WriteAllLines(Path.Combine(Backup, BackedUp), backedUp.OrderBy(x => x));
             File.WriteAllText(Path.Combine(Backup, "version.txt"), version);
 
             Say($"Установлено файлов: {put}.", Theme.Text);
