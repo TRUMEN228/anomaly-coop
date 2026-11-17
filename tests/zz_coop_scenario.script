@@ -1527,9 +1527,15 @@ local STEPS = {
 }
 
 ------------------------------------------------------------------ the clock
+local next_flush = 0
 local function actor_on_update()
 	if not active then return end
 	local now = time_global()
+	-- the engine's log on disk every 15 s: the run ends by closing the games, which would lose what it held
+	if now > next_flush then
+		next_flush = now + 15000
+		exec_console_cmd("flush")
+	end
 	local keep = {}
 	for _, l in ipairs(later) do
 		if now >= l[1] then pcall(l[2]) else keep[#keep + 1] = l end
