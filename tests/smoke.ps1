@@ -10,6 +10,8 @@ function Check($name, $ok, $detail) {
 }
 function Warn($name, $detail) { "WARN $name - $detail" }
 function Grab($file, $pattern) {
+    # (a file the repository does not hold, AI_CONTEXT.md on GitHub: no value; Actions stop on any error)
+    if (-not (Test-Path $file)) { return $null }
     $m = Select-String -Path $file -Pattern $pattern -ErrorAction SilentlyContinue | Select -First 1
     if ($m) { $m.Matches[0].Groups[1].Value } else { $null }
 }
