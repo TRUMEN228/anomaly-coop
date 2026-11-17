@@ -80,7 +80,15 @@ namespace CoopLauncher
         static ulong acceptOnlyFrom;                                   // guest: 0 = accept anyone
 
         /// <summary>Extract the bundled DLL next to the exe, set AppID 480 and start Steam API.</summary>
+        // one start at a time: the window's start in the background and a click on the friends' list could both start
+        // Steam (two pump threads, two SteamAPI_InitFlat); the second waits and finds it ready
+        static readonly object initLock = new object();
         public static bool Init(out string error)
+        {
+            lock (initLock) return InitOnce(out error);
+        }
+
+        static bool InitOnce(out string error)
         {
             error = null;
             if (Ready) return true;

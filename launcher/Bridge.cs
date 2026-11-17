@@ -38,7 +38,9 @@ namespace CoopLauncher
         public long BytesSent, BytesReceived;
         volatile bool running = true;
 
-        public bool Connected { get; private set; }
+        // read by the window's and the game's threads, written by the link's
+        volatile bool connected;
+        public bool Connected { get => connected; private set => connected = value; }
         /// <summary>Round trip to the partner in ms (0 until measured; older launchers do not answer pings).</summary>
         public int RttMs { get; private set; }
 
@@ -222,10 +224,12 @@ namespace CoopLauncher
             }
             finally
             {
-                if (link == l) link = null;
+                // only the link being served now takes the partner's state with it: a link that a new one replaced
+                // (a quick reconnect) just ends, or the new partner would look gone and lose its fresh state
+                bool current = Interlocked.CompareExchange(ref link, null, l) == l;
                 q.CompleteAdding();
                 l.Dispose();
-                Detach();
+                if (current) Detach();
             }
         }
 
@@ -581,15 +585,16 @@ namespace CoopLauncher
             if (Connected)
             {
                 // states that changed go to the sender, which sends the newest of each at most 20 times per second
-                foreach (var line in states)
-                {
-                    var tag = line.Split('|')[1];
-                    if (!lastSentState.TryGetValue(tag, out var prev) || prev != line)
+                lock (sync)
+                    foreach (var line in states)
                     {
-                        lastSentState[tag] = line;
-                        lock (pendingState) pendingState[tag] = line;
+                        var tag = line.Split('|')[1];
+                        if (!lastSentState.TryGetValue(tag, out var prev) || prev != line)
+                        {
+                            lastSentState[tag] = line;
+                            lock (pendingState) pendingState[tag] = line;
+                        }
                     }
-                }
             }
             return ack;
         }
